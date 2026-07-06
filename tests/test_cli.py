@@ -11,6 +11,7 @@ from wpfreeze.cli import (
     ConfigError,
     DB_MISSING_MESSAGE,
     load_config,
+    main,
     probe_site,
     run_acquire,
     run_report,
@@ -208,6 +209,29 @@ def test_run_report_missing_manifest_returns_error(tmp_path: Path):
 
     config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "nope", db=None)
     assert run_report(config, html_only=False, json_only=False) == 2
+
+
+def test_main_creates_logs_directory_with_content(tmp_path: Path):
+    with FixtureSite() as site:
+        output_dir = tmp_path / "out"
+        config_path = _write_yaml(
+            tmp_path / "site.yaml",
+            {
+                "base_url": site.site_base + "/",
+                "output_dir": str(output_dir),
+                "rate_limit": 0.0,
+                "wayback_rate_limit": 0.0,
+                "wayback": {"enabled": False},
+                "db": "none",
+            },
+        )
+        exit_code = main(["acquire", "--config", str(config_path)])
+        assert exit_code == 1
+
+        log_files = list((output_dir / "logs").glob("*.log"))
+        assert len(log_files) == 1
+        content = log_files[0].read_text()
+        assert "fetched" in content.lower()
 
 
 def test_run_status_reports_counts(tmp_path: Path, capsys):

@@ -325,8 +325,41 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+def _configure_logging(output_dir: Path) -> None:
+    """Per CLAUDE-acquire.md, output_dir gets a logs/ directory alongside
+    raw/ and the reports. Console stays at INFO (meaningful progress); the
+    file captures DEBUG (one line per fetch and below).
+
+    Handlers are attached directly to the "wpfreeze" package logger with
+    propagate=False, rather than relying on logging.basicConfig() on the
+    root logger -- basicConfig() silently no-ops if the root logger
+    already has handlers (as test runners and other host processes often
+    arrange), which would otherwise leave wpfreeze's own loggers filtered
+    out at an inherited level regardless of what we ask for here.
+    """
+    package_logger = logging.getLogger("wpfreeze")
+    package_logger.handlers.clear()  # idempotent if main() runs more than once in-process
+    package_logger.setLevel(logging.DEBUG)
+    package_logger.propagate = False
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    package_logger.addHandler(console_handler)
+
+    logs_dir = output_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = logs_dir / f"{datetime.now().strftime('%Y%m%dT%H%M%S')}.log"
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    package_logger.addHandler(file_handler)
+
+
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = build_arg_parser().parse_args(argv)
 
     try:
@@ -337,6 +370,8 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, yaml.YAMLError, KeyError) as exc:
         print(f"Failed to load config {args.config}: {exc}")
         return 2
+
+    _configure_logging(config.output_dir)
 
     if args.command == "acquire":
         return run_acquire(config, resume=args.resume, dry_run=args.dry_run)
