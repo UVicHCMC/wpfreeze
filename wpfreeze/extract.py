@@ -60,7 +60,7 @@ _RENDER_ATTRS = {
     "object": ("data",),
 }
 
-_LINK_REL_RENDER = {"icon", "apple-touch-icon", "preload"}
+_LINK_REL_RENDER = {"icon", "apple-touch-icon", "preload", "stylesheet"}
 _LINK_REL_HYPERLINK = {"canonical", "next", "prev"}
 
 _META_RENDER_PROPERTIES = {"og:image", "twitter:image"}

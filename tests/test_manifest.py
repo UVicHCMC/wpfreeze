@@ -155,6 +155,27 @@ def test_by_status_filters():
     assert {r.url for r in fetched} == {"https://example.com/a", "https://example.com/c"}
 
 
+def test_resolve_redirect_merges_source_into_target():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/old/", discovered_via="sitemap")
+    target = manifest.resolve_redirect("https://example.com/old/", "https://example.com/new/")
+
+    assert "https://example.com/old/" not in manifest
+    assert target.url == "https://example.com/new/"
+    assert target.redirect_from == ["https://example.com/old/"]
+    assert target.aliases == ["https://example.com/old/"]
+    assert target.discovered_via == ["sitemap"]
+    assert len(manifest) == 1
+
+
+def test_resolve_redirect_noop_when_same_url():
+    manifest = Manifest()
+    record = manifest.get_or_create("https://example.com/")
+    target = manifest.resolve_redirect("https://example.com/", "https://example.com/")
+    assert target is record
+    assert len(manifest) == 1
+
+
 def test_resume_never_resets_existing_record_to_pending():
     manifest = Manifest()
     record = manifest.get_or_create("https://example.com/", discovered_via="sitemap")

@@ -131,15 +131,16 @@ def test_meta_og_url_is_hyperlink():
     assert links[0].kind == HYPERLINK
 
 
-def test_link_rel_icon_preload_apple_touch_are_render():
+def test_link_rel_icon_preload_apple_touch_stylesheet_are_render():
     html = (
         '<link rel="icon" href="/favicon.ico">'
         '<link rel="apple-touch-icon" href="/apple.png">'
         '<link rel="preload" href="/font.woff2">'
+        '<link rel="stylesheet" href="/style.css">'
     )
     links = extract_from_html(html, BASE)
     assert all(l.kind == RENDER for l in links)
-    assert len(links) == 3
+    assert len(links) == 4
 
 
 def test_link_rel_canonical_next_prev_are_hyperlinks():

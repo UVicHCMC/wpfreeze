@@ -163,6 +163,22 @@ class Manifest:
             record.add_discovered_via(discovered_via)
         return record
 
+    def resolve_redirect(self, from_url: str, to_url: str) -> ManifestRecord:
+        """Fold `from_url`'s record into `to_url`'s (creating the target
+        if needed): the target gains `from_url` as both a redirect origin
+        and an alias, and `from_url` stops existing as an independent
+        (pending) manifest entry."""
+        target = self.get_or_create(to_url)
+        if from_url == to_url:
+            return target
+        target.add_redirect_from(from_url)
+        target.add_alias(from_url)
+        source = self._records.pop(from_url, None)
+        if source is not None:
+            for provenance in source.discovered_via:
+                target.add_discovered_via(provenance)
+        return target
+
     def save(self, path: Path) -> None:
         """Write manifest.json atomically: temp file in the same directory,
         then os.replace, so interruption mid-write never corrupts the
