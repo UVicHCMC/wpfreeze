@@ -50,7 +50,7 @@ def local_path_for(url: str, raw_dir: Path, profile: SiteProfile) -> Path:
     return raw_dir / "_external" / host / path
 
 
-def _content_kind(content_type: str | None, url: str) -> str | None:
+def content_kind(content_type: str | None, url: str) -> str | None:
     ctype = (content_type or "").split(";")[0].strip().lower()
     if ctype in _HTML_CONTENT_TYPES or url.endswith((".html", ".htm")):
         return "html"
@@ -59,7 +59,7 @@ def _content_kind(content_type: str | None, url: str) -> str | None:
     return None
 
 
-def _store_bytes(url: str, content: bytes, raw_dir: Path, profile: SiteProfile) -> str:
+def store_bytes(url: str, content: bytes, raw_dir: Path, profile: SiteProfile) -> str:
     local_path = local_path_for(url, raw_dir, profile)
     local_path.parent.mkdir(parents=True, exist_ok=True)
     local_path.write_bytes(content)
@@ -89,13 +89,13 @@ def _record_success(
 
     target.content_hash = hashlib.sha256(result.content).hexdigest()
     target.content_type = result.content_type
-    target.local_path = _store_bytes(final_url, result.content, raw_dir, profile)
+    target.local_path = store_bytes(final_url, result.content, raw_dir, profile)
     target.status = Status.FETCHED.value
     target.source = Source.LIVE.value
     return target
 
 
-def _discover_links(html_or_css: bytes, final_url: str, kind: str) -> list:
+def discover_links(html_or_css: bytes, final_url: str, kind: str) -> list:
     text = html_or_css.decode("utf-8", errors="replace")
     if kind == "html":
         return extract_from_html(text, final_url)
@@ -131,9 +131,9 @@ def _process_one(
         final_url = normalize_url(result.final_url, profile)
         target = _record_success(record, result, final_url, manifest, profile, raw_dir)
 
-        kind = _content_kind(target.content_type, final_url)
+        kind = content_kind(target.content_type, final_url)
         if kind is not None:
-            for link in _discover_links(result.content, final_url, kind):
+            for link in discover_links(result.content, final_url, kind):
                 normalized = normalize_url(link.url, profile)
                 host = urlsplit(normalized).hostname or ""
                 owned = profile.owns_host(host)
