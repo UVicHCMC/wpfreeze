@@ -1,0 +1,24 @@
+[project]
+name = "wpfreeze"
+version = "0.1.0"
+description = "Acquires a complete, verified local copy of a WordPress site's pages and assets, with Wayback Machine recovery for missing content."
+requires-python = ">=3.12"
+dependencies = [
+    "requests",
+    "beautifulsoup4",
+    "lxml",
+    "PyYAML",
+]
+
+[project.scripts]
+wpfreeze = "wpfreeze.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["wpfreeze*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
