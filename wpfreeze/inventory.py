@@ -8,6 +8,7 @@ HTTP requests.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
@@ -16,7 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
+import requests
 from lxml import etree
+
+from wpfreeze.fetch import SUCCESS, FetchConfig, RateLimiter, fetch_with_retries
+from wpfreeze.manifest import Manifest
 
 logger = logging.getLogger(__name__)
 
@@ -232,3 +237,126 @@ def build_inventory_queries(table_prefix: str) -> dict[str, str]:
         "terms": TERMS_SQL_TEMPLATE.format(prefix=table_prefix),
         "authors": AUTHORS_SQL_TEMPLATE.format(prefix=table_prefix),
     }
+
+
+# ---------------------------------------------------------------------------
+# Network orchestration: seed a Manifest from every configured source
+# ---------------------------------------------------------------------------
+
+
+def discover_sitemaps(
+    manifest: Manifest,
+    base_url: str,
+    session: requests.Session,
+    rate_limiter: RateLimiter,
+    fetch_config: FetchConfig,
+) -> bool:
+    """Seed `manifest` from robots.txt's Sitemap: pointers plus the
+    conventional wp-sitemap.xml/sitemap_index.xml locations, recursing
+    through sitemap indexes to a fixpoint. Returns whether any sitemap was
+    reachable at all (for the report's inventory-source-availability line).
+    """
+    base = base_url.rstrip("/")
+    to_visit: list[str] = []
+
+    robots_outcome = fetch_with_retries(f"{base}/robots.txt", session, rate_limiter, fetch_config)
+    if robots_outcome.category == SUCCESS:
+        robots_text = robots_outcome.result.content.decode("utf-8", errors="replace")
+        to_visit.extend(parse_robots_sitemaps(robots_text))
+    to_visit.append(f"{base}/wp-sitemap.xml")
+    to_visit.append(f"{base}/sitemap_index.xml")
+
+    visited: set[str] = set()
+    found_any = False
+    while to_visit:
+        sitemap_url = to_visit.pop()
+        if sitemap_url in visited:
+            continue
+        visited.add(sitemap_url)
+        outcome = fetch_with_retries(sitemap_url, session, rate_limiter, fetch_config)
+        if outcome.category != SUCCESS:
+            logger.info("sitemap unavailable: %s", sitemap_url)
+            continue
+        try:
+            pages, nested = parse_sitemap_xml(outcome.result.content)
+        except Exception:
+            logger.warning("failed to parse sitemap XML: %s", sitemap_url)
+            continue
+        found_any = True
+        for page_url in pages:
+            manifest.get_or_create(page_url, discovered_via="sitemap")
+        for nested_url in nested:
+            if nested_url not in visited:
+                to_visit.append(nested_url)
+    return found_any
+
+
+def discover_rest_api(
+    manifest: Manifest,
+    base_url: str,
+    session: requests.Session,
+    rate_limiter: RateLimiter,
+    fetch_config: FetchConfig,
+) -> bool:
+    """Seed `manifest` from every WP REST API collection, paginated to
+    exhaustion. Degrades gracefully per collection: an unavailable or
+    blocked endpoint is logged and skipped, not a hard failure. Returns
+    whether any collection was reachable."""
+    found_any = False
+    for collection in REST_COLLECTIONS:
+        page = 1
+        total_pages = 1
+        while page <= total_pages:
+            url = rest_collection_url(base_url, collection, page=page)
+            outcome = fetch_with_retries(url, session, rate_limiter, fetch_config)
+            if outcome.category != SUCCESS:
+                logger.info("REST API collection unavailable: %s", collection)
+                break
+            total_pages = parse_rest_total_pages(outcome.result.headers)
+            try:
+                items = json.loads(outcome.result.content)
+            except ValueError:
+                logger.warning("failed to parse REST API response: %s", url)
+                break
+            found_any = True
+            for item_url in extract_links_from_rest_items(items):
+                manifest.get_or_create(item_url, discovered_via="rest_api")
+            page += 1
+    return found_any
+
+
+def discover_database(manifest: Manifest, base_url: str, db_config: DbConfig) -> None:
+    """Seed `manifest` from the database inventory: published posts/pages/
+    attachments, non-empty terms, and authors with published posts --
+    entered as their query-string permalink fallback (see
+    CLAUDE-acquire.md Stage 1) for redirect-following to resolve."""
+    queries = build_inventory_queries(db_config.table_prefix)
+
+    posts_raw = run_mysql_query(db_config, queries["posts"])
+    for item in build_post_urls(base_url, parse_batch_output(posts_raw)):
+        manifest.get_or_create(item.url, discovered_via=item.discovered_via)
+
+    terms_raw = run_mysql_query(db_config, queries["terms"])
+    for item in build_term_urls(base_url, parse_batch_output(terms_raw)):
+        manifest.get_or_create(item.url, discovered_via=item.discovered_via)
+
+    authors_raw = run_mysql_query(db_config, queries["authors"])
+    for item in build_author_urls(base_url, parse_batch_output(authors_raw)):
+        manifest.get_or_create(item.url, discovered_via=item.discovered_via)
+
+
+def discover_inventory(
+    manifest: Manifest,
+    base_url: str,
+    db_config: DbConfig | None,
+    session: requests.Session,
+    rate_limiter: RateLimiter,
+    fetch_config: FetchConfig,
+) -> dict[str, bool]:
+    """Stage 1 top level: seed `manifest` from every configured inventory
+    source. Returns which sources were reachable, for the report."""
+    sitemap_ok = discover_sitemaps(manifest, base_url, session, rate_limiter, fetch_config)
+    rest_ok = discover_rest_api(manifest, base_url, session, rate_limiter, fetch_config)
+    if db_config is not None:
+        discover_database(manifest, base_url, db_config)
+    return {"sitemap": sitemap_ok, "rest_api": rest_ok, "database": db_config is not None}

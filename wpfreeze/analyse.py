@@ -17,6 +17,7 @@ from wpfreeze.manifest import (
     FLAG_AMBIGUOUS_CANONICAL,
     FLAG_ATTACHMENT_PAGE,
     FLAG_CONTAINS_FORM,
+    FLAG_DB_UNRESOLVED,
     FLAG_HASH_DUPLICATE,
     FLAG_ORPHAN,
     FLAG_PLUGIN_MARKUP,
@@ -82,6 +83,15 @@ def flag_orphans_and_unlisted(manifest: Manifest) -> None:
             record.add_flag(FLAG_ORPHAN)
         elif from_crawl and not from_inventory:
             record.add_flag(FLAG_UNLISTED)
+
+
+def flag_db_unresolved(manifest: Manifest) -> None:
+    """A database-inventory URL that never resolved to a servable page:
+    stronger signal than a plain `missing` since the database, not just a
+    sitemap or crawl, asserts this content should exist."""
+    for record in manifest.all():
+        if record.status == Status.MISSING.value and "database" in record.discovered_via:
+            record.add_flag(FLAG_DB_UNRESOLVED)
 
 
 def flag_forms_and_plugin_markup(manifest: Manifest, raw_dir: Path) -> None:

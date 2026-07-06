@@ -1,0 +1,89 @@
+# wpfreeze site configuration -- one file per target site.
+# Copy this file, fill in the values for your site, and run:
+#   wpfreeze acquire --config your-site.yaml
+
+# The site's root URL. Must be reachable; wpfreeze probes it once at
+# startup to learn whether it serves https, whether it prefers www or
+# non-www, and whether it prefers a trailing slash on directory-like URLs.
+base_url: "https://example.com/"
+
+# Working directory for this site's acquisition. wpfreeze creates:
+#   raw/            fetched files, byte-for-byte as retrieved
+#   manifest.json   the spine -- one record per canonical resource
+#   report.html     single self-contained static report
+#   report.json     the manifest plus summary statistics
+#   logs/           run logs
+output_dir: "./output/example-com"
+
+# Seconds between requests to the *same host*, enforced globally across
+# all workers regardless of `concurrency` (see below). If you start
+# getting throttled or banned, raise this -- don't touch concurrency.
+rate_limit: 1.0
+
+# Seconds between requests to web.archive.org specifically. The Wayback
+# Machine throttles aggressively and bans impolite clients; keep this
+# slower than rate_limit.
+wayback_rate_limit: 3.0
+
+# Worker count. Concurrency parallelizes across different hosts (e.g. the
+# main site plus a CDN extra_host); it does not multiply the per-host
+# rate_limit above.
+concurrency: 2
+
+# URL regex patterns to exclude from archiving. Matches are recorded as
+# `excluded` in the manifest -- never silently dropped. The defaults below
+# cover standard WordPress noise; add site-specific patterns as needed.
+# Category, tag, author, and date archives are intentionally NOT excluded
+# here -- they're kept, including their pagination.
+exclusions:
+  - '\?replytocom='            # comment reply permutations
+  - '/feed/?$'                 # feeds
+  - '/comments/feed'           # comment feeds
+  - '/feed/(rss2?|atom|rdf)/?$'  # feed format variants
+  - '\?s='                     # search query strings
+  - '/search/'                 # search results pages
+  - '/wp-json/'                # REST API endpoints (used for inventory, not archived as pages)
+  - '/wp-admin/'                # admin area
+  - '/wp-login'                 # login page
+  - '/xmlrpc\.php'              # XML-RPC endpoint
+  - '/comment-page-\d+/'        # paginated comments
+  # Common calendar/events-plugin expansions (e.g. The Events Calendar's
+  # tribe-events month/day views) -- uncomment/add patterns matching your
+  # site's actual plugin if it generates large numbers of these:
+  # - '/events/\d{4}-\d{2}(-\d{2})?/'
+
+# Additional hostnames to treat as internal (e.g. a CDN subdomain serving
+# this site's uploads). Renderable resources on these hosts are localized
+# the same as the main site's own assets.
+extra_hosts: []
+# extra_hosts:
+#   - "cdn.example.com"
+
+# Override the default identifying user-agent if needed. Keep it polite
+# and identifying -- this is the site owner archiving their own site.
+user_agent: "wpfreeze/0.1 (+https://example.invalid/wpfreeze-contact)"
+
+wayback:
+  enabled: true
+  # Date (YYYY-MM-DD) to prefer snapshots nearest to, when a page needs
+  # Wayback recovery. Defaults to today (most recent available) if unset.
+  prefer_snapshots_near: "2026-01-01"
+
+# REQUIRED: no default, on purpose -- forces a conscious decision every
+# time, since the database inventory is the strongest completeness check
+# available (immune to plugins that hide content from the sitemap/REST
+# API) and it's easy to forget it exists.
+#
+# Either declare explicitly that no database access is available:
+#   db: none
+#
+# ...or provide a connection block. Prefer `password_env` (naming an
+# environment variable) over a literal `password` so credentials never
+# live in this file:
+db:
+  host: "localhost"       # or use `socket:` instead for a Unix socket
+  port: 3306
+  name: "wordpress"
+  user: "wpfreeze_readonly"
+  password_env: "WPFREEZE_DB_PASSWORD"
+  table_prefix: "wp_"
