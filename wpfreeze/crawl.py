@@ -59,11 +59,59 @@ def content_kind(content_type: str | None, url: str) -> str | None:
     return None
 
 
-def store_bytes(url: str, content: bytes, raw_dir: Path, profile: SiteProfile) -> str:
+_COLLISION_LEAF_NAME = "_wpfreeze_leaf"
+
+
+def store_bytes(url: str, content: bytes, raw_dir: Path, profile: SiteProfile, manifest: Manifest) -> str:
+    """Store `content` at the path `local_path_for` computes for `url`.
+
+    Real sites routinely have one URL's path be a strict prefix of
+    another's (e.g. .../v1.2.3 as a page in its own right, and
+    .../v1.2.3/LICENSE as a file beneath it) -- a literal path-preserving
+    mirror can't represent both a leaf file and a directory at the same
+    name. When that collision is detected, in either direction, the
+    earlier arrival is moved one level down to a fixed disambiguating leaf
+    name and its manifest record's local_path is repointed to match, so
+    nothing already written is lost or orphaned.
+    """
     local_path = local_path_for(url, raw_dir, profile)
+    _make_ancestors_writable(local_path.parent, raw_dir, manifest)
+    if local_path.is_dir():
+        # An earlier URL was a child of this one and already claimed this
+        # exact path as a directory; this URL's own bytes get the leaf name.
+        local_path = local_path / _COLLISION_LEAF_NAME
     local_path.parent.mkdir(parents=True, exist_ok=True)
     local_path.write_bytes(content)
     return str(Path("raw") / local_path.relative_to(raw_dir))
+
+
+def _make_ancestors_writable(directory: Path, raw_dir: Path, manifest: Manifest) -> None:
+    """Ensure every path component from raw_dir down to `directory` is
+    either absent or already a directory, demoting any earlier file found
+    blocking the way."""
+    current = raw_dir
+    for part in directory.relative_to(raw_dir).parts:
+        current = current / part
+        if current.is_file():
+            _demote_file_to_directory(current, raw_dir, manifest)
+
+
+def _demote_file_to_directory(path: Path, raw_dir: Path, manifest: Manifest) -> None:
+    """An earlier URL's bytes are sitting exactly where a later URL now
+    needs a directory. Move the earlier file one level down to
+    _COLLISION_LEAF_NAME and repoint whichever manifest record pointed at
+    it, so both URLs keep their content."""
+    content = path.read_bytes()
+    old_rel = str(Path("raw") / path.relative_to(raw_dir))
+    path.unlink()
+    path.mkdir(parents=True)
+    new_path = path / _COLLISION_LEAF_NAME
+    new_path.write_bytes(content)
+    new_rel = str(Path("raw") / new_path.relative_to(raw_dir))
+    for record in manifest.all():
+        if record.local_path == old_rel:
+            record.local_path = new_rel
+            break
 
 
 def _record_success(
@@ -89,7 +137,7 @@ def _record_success(
 
     target.content_hash = hashlib.sha256(result.content).hexdigest()
     target.content_type = result.content_type
-    target.local_path = store_bytes(final_url, result.content, raw_dir, profile)
+    target.local_path = store_bytes(final_url, result.content, raw_dir, profile, manifest)
     target.status = Status.FETCHED.value
     target.source = Source.LIVE.value
     return target
@@ -131,14 +179,35 @@ def _process_one(
         final_url = normalize_url(result.final_url, profile)
         target = _record_success(record, result, final_url, manifest, profile, raw_dir)
 
+        final_host = urlsplit(final_url).hostname or ""
         kind = content_kind(target.content_type, final_url)
-        if kind is not None:
+        if kind is not None and profile.owns_host(final_host):
+            # Only ever parse a fetched resource for further links when the
+            # resource itself is on an owned host. Otherwise an external
+            # RENDER asset that happens to be HTML/CSS (however it entered
+            # the manifest -- a false-positive script match, a legitimate
+            # external CDN page, whatever) becomes a crawl root of its own,
+            # and its own outbound references cascade into fetching that
+            # other site's entire graph. A real run against a live WordPress
+            # site amplified one such external HTML page into 50,000+
+            # pending records across 1,000+ unrelated hosts this way.
+            # External resources are fetched and stored (satisfying "render
+            # even if external, localize it") but are always leaves.
             for link in discover_links(result.content, final_url, kind):
                 normalized = normalize_url(link.url, profile)
                 host = urlsplit(normalized).hostname or ""
                 owned = profile.owns_host(host)
                 if link.kind == HYPERLINK and not owned:
                     continue  # external hyperlink targets do not enter as pending
+                if link.context.startswith("script:") and not owned:
+                    # Per CLAUDE-acquire.md, "Link extraction": <script>
+                    # scanning is scoped to internal hosts/uploads paths --
+                    # unlike genuine src/CSS/preload/og:image contexts, a
+                    # script-derived match is only a URL-shaped-string
+                    # heuristic (JS comments, license/source-map mentions,
+                    # tracking config) and gets no "render even if
+                    # external" allowance.
+                    continue
                 manifest.get_or_create(normalized, discovered_via=f"crawl:{final_url}")
         return
 

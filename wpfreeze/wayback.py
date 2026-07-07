@@ -163,18 +163,25 @@ def _recover_one(
     result = fetch_outcome.result
     record.content_hash = hashlib.sha256(result.content).hexdigest()
     record.content_type = result.content_type
-    record.local_path = store_bytes(record.url, result.content, raw_dir, profile)
+    record.local_path = store_bytes(record.url, result.content, raw_dir, profile, manifest)
     record.status = Status.FETCHED_WAYBACK.value
     record.source = Source.WAYBACK.value
     record.wayback_url = snapshot_url
     logger.info("recovered %s from Wayback snapshot %s", record.url, chosen.timestamp)
 
+    final_host = (urlsplit(record.url).hostname or "").lower()
     kind = content_kind(record.content_type, record.url)
-    if kind is not None:
+    if kind is not None and profile.owns_host(final_host):
+        # See crawl.py::_process_one -- only ever parse a fetched resource
+        # for further links when the resource itself is on an owned host,
+        # or an external page/asset recovered from Wayback becomes a crawl
+        # root of its own and cascades into that other site's whole graph.
         for link in discover_links(result.content, record.url, kind):
             normalized = normalize_url(link.url, profile)
             host = (urlsplit(normalized).hostname or "").lower()
             owned = profile.owns_host(host)
             if link.kind == HYPERLINK and not owned:
                 continue
+            if link.context.startswith("script:") and not owned:
+                continue  # see crawl.py::_process_one for why
             manifest.get_or_create(normalized, discovered_via=f"wayback:{record.url}")

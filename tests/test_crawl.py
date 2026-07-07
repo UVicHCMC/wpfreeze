@@ -203,3 +203,173 @@ def test_crawl_is_resumable_after_interruption(tmp_path: Path, monkeypatch):
 
             path = urlsplit(url).path
             assert log.count(path) == 1
+
+
+# ---------------------------------------------------------------------------
+# store_bytes: a URL's path can be a strict prefix of another URL's path
+# (e.g. .../v1.2.3 as a page, .../v1.2.3/LICENSE as a file beneath it) --
+# this crashed a real run against a page linking to a GitHub blob URL.
+# ---------------------------------------------------------------------------
+
+
+def test_external_page_is_fetched_but_not_recursed_into(tmp_path: Path, monkeypatch):
+    """The real amplification bug: once ANY external HTML page enters the
+    manifest (however it got in), the crawler used to parse its content for
+    further links exactly like an internal page -- with RENDER-kind links
+    having no host boundary at all. On a real run this turned one stray
+    external URL into 50,000+ pending records across 1,000+ unrelated
+    hosts (that external page's own <img>/<script src> references cascaded
+    into fetching that whole other site). External resources must be
+    fetched and stored (still "localized") but never parsed for outbound
+    links -- they're leaves, not crawl roots."""
+    import wpfreeze.crawl as crawl_module
+    from wpfreeze.fetch import FetchOutcome, FetchResult
+
+    raw_dir = tmp_path / "raw"
+    manifest = Manifest()
+    profile = SiteProfile(canonical_host="example.com", site_hosts=frozenset({"example.com"}))
+
+    external_url = "https://other-site.example/"
+    # Simulate this having already entered the manifest as a render asset
+    # to localize (the exact mechanism doesn't matter -- the bug is that
+    # fetching it at all used to cascade further).
+    manifest.get_or_create(external_url, discovered_via="crawl:https://example.com/")
+
+    external_html = (
+        b"<html><body>"
+        b'<a href="https://yet-another.example/page">outbound link</a>'
+        b'<img src="https://yet-another.example/logo.png">'
+        b"</body></html>"
+    )
+
+    def fake_fetch(url, session, rate_limiter, fetch_config):
+        return FetchOutcome(
+            category="success",
+            http_status=200,
+            attempts=1,
+            result=FetchResult(
+                status_code=200,
+                content=external_html,
+                headers={"Content-Type": "text/html"},
+                content_type="text/html",
+                final_url=url,
+            ),
+        )
+
+    monkeypatch.setattr(crawl_module, "fetch_with_retries", fake_fetch)
+
+    crawl_fixpoint(
+        manifest, profile, requests.Session(), RateLimiter(0.0), FAST_CONFIG, raw_dir, compile_exclusions([])
+    )
+
+    urls = {r.url for r in manifest.all()}
+    assert external_url in urls
+    assert manifest.get(external_url).status == Status.FETCHED.value
+    assert not any("yet-another.example" in u for u in urls)  # never recursed into
+
+
+def test_store_bytes_file_then_child_demotes_earlier_file(tmp_path: Path):
+    from wpfreeze.crawl import store_bytes
+
+    raw_dir = tmp_path / "raw"
+    profile = SiteProfile(canonical_host="example.com", site_hosts=frozenset({"example.com"}))
+    manifest = Manifest()
+    parent_url = "https://example.com/blob/0.35.3"
+    child_url = "https://example.com/blob/0.35.3/LICENSE"
+
+    parent_record = manifest.get_or_create(parent_url)
+    parent_record.local_path = store_bytes(parent_url, b"parent page bytes", raw_dir, profile, manifest)
+
+    child_record = manifest.get_or_create(child_url)
+    child_record.local_path = store_bytes(child_url, b"license text", raw_dir, profile, manifest)  # must not raise
+
+    # Both files survive, with distinct content.
+    assert (raw_dir.parent / parent_record.local_path).read_bytes() == b"parent page bytes"
+    assert (raw_dir.parent / child_record.local_path).read_bytes() == b"license text"
+    assert parent_record.local_path != child_record.local_path
+    # The demotion moved the parent's file, so its manifest record was repointed.
+    assert "0.35.3/" in parent_record.local_path
+
+
+def test_store_bytes_child_then_parent_uses_leaf_name_for_parent(tmp_path: Path):
+    from wpfreeze.crawl import store_bytes
+
+    raw_dir = tmp_path / "raw"
+    profile = SiteProfile(canonical_host="example.com", site_hosts=frozenset({"example.com"}))
+    manifest = Manifest()
+    parent_url = "https://example.com/blob/0.35.3"
+    child_url = "https://example.com/blob/0.35.3/LICENSE"
+
+    child_record = manifest.get_or_create(child_url)
+    child_record.local_path = store_bytes(child_url, b"license text", raw_dir, profile, manifest)
+
+    parent_record = manifest.get_or_create(parent_url)
+    parent_record.local_path = store_bytes(parent_url, b"parent page bytes", raw_dir, profile, manifest)  # must not raise
+
+    assert (raw_dir.parent / child_record.local_path).read_bytes() == b"license text"
+    assert (raw_dir.parent / parent_record.local_path).read_bytes() == b"parent page bytes"
+    assert parent_record.local_path != child_record.local_path
+
+
+def test_script_derived_external_url_is_not_queued(tmp_path: Path, monkeypatch):
+    """CLAUDE-acquire.md scopes <script> scanning to internal hosts/uploads
+    paths, and excludes script-derived matches from the "render even if
+    external" allowance given to genuine src/CSS/preload/og:image contexts.
+    A JS blob merely mentioning a third-party URL (license comment,
+    source-map reference, tracking config) must not get fetched -- this
+    is exactly what pulled in unrelated github.com/yahoo.com pages on a
+    real run."""
+    import wpfreeze.crawl as crawl_module
+    from wpfreeze.fetch import FetchOutcome, FetchResult
+
+    raw_dir = tmp_path / "raw"
+    manifest = Manifest()
+    profile = SiteProfile(canonical_host="example.com", site_hosts=frozenset({"example.com"}))
+    base_url = "https://example.com/"
+    manifest.get_or_create(base_url, discovered_via="base_url")
+
+    html = (
+        b"<html><body>"
+        b"<script>"
+        b"// Bundled dependency: see https://github.com/paulmillr/es6-shim/blob/0.35.3/LICENSE\n"
+        b'var real = "/wp-content/uploads/real.jpg";'
+        b"</script>"
+        b"</body></html>"
+    )
+
+    def fake_fetch(url, session, rate_limiter, fetch_config):
+        return FetchOutcome(
+            category="success",
+            http_status=200,
+            attempts=1,
+            result=FetchResult(
+                status_code=200,
+                content=html,
+                headers={"Content-Type": "text/html"},
+                content_type="text/html",
+                final_url=url,
+            ),
+        )
+
+    monkeypatch.setattr(crawl_module, "fetch_with_retries", fake_fetch)
+
+    crawl_fixpoint(
+        manifest, profile, requests.Session(), RateLimiter(0.0), FAST_CONFIG, raw_dir, compile_exclusions([])
+    )
+
+    urls = {r.url for r in manifest.all()}
+    assert not any("github.com" in u for u in urls)
+    assert any("wp-content/uploads/real.jpg" in u for u in urls)
+
+
+def test_store_bytes_no_collision_stores_at_literal_path(tmp_path: Path):
+    from wpfreeze.crawl import store_bytes
+
+    raw_dir = tmp_path / "raw"
+    profile = SiteProfile(canonical_host="example.com", site_hosts=frozenset({"example.com"}))
+    manifest = Manifest()
+    url = "https://example.com/wp-content/uploads/photo.jpg"
+
+    local_path = store_bytes(url, b"jpeg bytes", raw_dir, profile, manifest)
+    assert local_path == "raw/wp-content/uploads/photo.jpg"
+    assert (raw_dir.parent / local_path).read_bytes() == b"jpeg bytes"
