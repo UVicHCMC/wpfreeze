@@ -105,6 +105,12 @@ def recover_via_wayback(
     interleaves with a further crawl_fixpoint pass (Stage 2/4 joint
     fixpoint) at the caller's discretion.
 
+    Deliberately sequential, unlike crawl_fixpoint -- every request here
+    (CDX lookup and snapshot fetch) targets the same host, web.archive.org,
+    and RateLimiter already serializes same-host requests globally. Worker
+    threads would just queue on that single limiter for zero throughput
+    gain; this isn't an oversight, don't "fix" it with a ThreadPoolExecutor.
+
     `cdx_api`/`wayback_base` default to the real Wayback Machine endpoints;
     tests override them to point at a local fake.
     """

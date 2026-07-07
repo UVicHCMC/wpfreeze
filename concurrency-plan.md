@@ -1,8 +1,12 @@
 # Concurrent fetching for the crawl fixpoint (ThreadPoolExecutor)
 
-Implementation plan, written 2026-07-07. Input brief: `fable-concurrency-prompt.md`.
-Implement exactly this; where code contradicts the plan, flag it rather than
-improvising silently.
+Implementation plan, written 2026-07-07 (Fable), reviewed and amended by
+Sonnet 2026-07-07 after cross-checking against actual source (four fixes
+folded in: narrower lock scope for `manifest.save()`, sha256-inside-lock
+clarification, explicit internal locking for `store_bytes` and friends,
+and always-use-the-executor for `workers=1`). Input brief:
+`fable-concurrency-prompt.md`. Implement exactly this; where code
+contradicts the plan, flag it rather than improvising silently.
 
 ## Context
 
@@ -45,18 +49,34 @@ dominates.
    directly).
 
    The workload is I/O-bound: workers spend nearly all their time inside
-   `fetch_with_retries`. Everything the lock covers is microseconds of
-   dict/list work plus one local file write, so the coarse lock costs no
-   measurable parallelism.
+   `fetch_with_retries`. Most of what the lock covers is microseconds of
+   dict/list work, so the coarse lock costs no measurable parallelism —
+   **except `manifest.save()`, which does not get this pass for free.**
+   `save()` re-serializes *every* record in the manifest to JSON and
+   writes it out on every single processed record; on a large site (we
+   watched a real run hit 56,904 records earlier) that's real work, and
+   done under this lock it would serialize every worker's bookkeeping
+   behind the slowest save. Fix, inside `Manifest.save()`: build the
+   `records` list (the part touching shared state) while holding the
+   lock, then release it before `json.dump`/`os.replace` (the part that's
+   actually slow). This keeps the exact "save after every record"
+   guarantee — the JSON on disk is still fully current as of that
+   record — while not holding the lock across the disk write.
+   `store_bytes` (and `_make_ancestors_writable`/`_demote_file_to_directory`)
+   must each take `manifest.lock` themselves, internally — they're called
+   directly by existing unit tests with no surrounding lock at all, so
+   they can't rely on always being invoked from an already-locked caller.
 
 3. **Critical-section boundaries in `_process_one`** (`wpfreeze/crawl.py`):
-   - OUTSIDE the lock: `fetch_with_retries` (the whole point), sha256,
-     `content_kind`, and `discover_links` (BeautifulSoup parse — the one
-     genuinely CPU-costly non-network step; parse from `result.content`
-     before locking).
+   - OUTSIDE the lock: `fetch_with_retries` (the whole point) and
+     `discover_links` (BeautifulSoup parse — the one genuinely
+     CPU-costly non-network step; parse from `result.content` before
+     locking). `content_kind` is a pure string check, cheap either way.
    - INSIDE the lock (one acquisition, in order): the staleness re-check
      (below), the excluded/retrying status flips, all of
-     `_record_success` (redirect-chain `resolve_redirect` folding +
+     `_record_success` (**including its sha256 hash** — it's computed
+     over already-in-memory bytes, microseconds, not worth a signature
+     change to hoist out; redirect-chain `resolve_redirect` folding +
      `store_bytes` + target field writes), the `get_or_create` loop over
      pre-parsed links, and the per-record `manifest.save`.
 
@@ -116,24 +136,38 @@ dominates.
 - **`wpfreeze/manifest.py`** — `Manifest.__init__` gains
   `self.lock = threading.RLock()` (+ `import threading`). Docstring: the
   lock guards compound mutation sequences during concurrent crawling;
-  single-threaded callers may ignore it. `Manifest.load` needs no change
-  (fresh instance gets a fresh lock; nothing serializes it).
+  single-threaded callers may ignore it. `save()` builds the `records`
+  list under `self.lock`, then releases it before `json.dump`/
+  `os.replace` (see design decision 2 — this is the one place the lock
+  boundary is narrower than "the whole method"). `Manifest.load` needs no
+  change (fresh instance gets a fresh lock; nothing serializes it).
 
 - **`wpfreeze/crawl.py`** —
-  - `crawl_fixpoint` gains a `workers: int = 1` parameter. Round loop:
-    snapshot pending (workers idle between rounds, but take the lock for
-    the snapshot anyway — it's free); if empty, break; else submit each
-    record to a `ThreadPoolExecutor(max_workers=workers)` and drain with
-    `concurrent.futures.as_completed`. Use one executor for the whole
-    call (created in a `with` block wrapping the round loop), not one
-    per round, to avoid thread churn.
+  - `crawl_fixpoint` gains a `workers: int = 1` parameter. Always builds
+    a `ThreadPoolExecutor(max_workers=workers)` — even for `workers=1` —
+    rather than branching to a separate sequential code path, so every
+    existing test that calls `crawl_fixpoint` directly (most of
+    `test_crawl.py`, via its default) exercises the same machinery the
+    concurrent path uses, not a divergent legacy loop. Round loop:
+    snapshot pending; if empty, break; else submit each record to the
+    executor and drain with `concurrent.futures.as_completed`. One
+    executor for the whole call (`with` block wrapping the round loop),
+    not one per round, to avoid thread churn.
   - `_process_one` restructured per the critical-section boundaries and
     staleness guard above. `manifest.save` moves inside the lock (still
-    once per processed record).
-  - Exception policy: on the first future that raises, call
+    once per processed record; note the narrower internal lock scope
+    inside `save()` itself, above).
+  - `store_bytes`, `_make_ancestors_writable`, `_demote_file_to_directory`
+    each wrap their body in `with manifest.lock:` — required because
+    existing unit tests call `store_bytes` directly with no external
+    locking; the `RLock` choice means this is safe even when the call
+    arrives already inside `_process_one`'s lock.
+  - Exception policy: on the first future that raises (observed via
+    `as_completed` — not necessarily the first submitted or first to
+    fail in wall-clock time, just the first one we see), call
     `executor.shutdown(wait=True, cancel_futures=True)` — queued records
     are cancelled, in-flight workers finish their current record (their
-    locked saves complete normally) — then re-raise the first exception.
+    locked saves complete normally) — then re-raise that exception.
     On-disk manifest stays valid and resumable: unfinished records are
     still `pending`, matching sequential-crash semantics that
     `test_crawl_is_resumable_after_interruption` already pins down.

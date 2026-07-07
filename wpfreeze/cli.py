@@ -87,12 +87,16 @@ def load_config(path: Path) -> SiteConfig:
     wayback_raw = raw.get("wayback") or {}
     prefer_near_raw = wayback_raw.get("prefer_snapshots_near")
 
+    concurrency = int(raw.get("concurrency", 2))
+    if concurrency < 1:
+        raise ConfigError(f"concurrency must be >= 1, got {concurrency}")
+
     return SiteConfig(
         base_url=raw["base_url"].rstrip("/") + "/",
         output_dir=Path(raw["output_dir"]),
         rate_limit=float(raw.get("rate_limit", 1.0)),
         wayback_rate_limit=float(raw.get("wayback_rate_limit", 3.0)),
-        concurrency=int(raw.get("concurrency", 2)),
+        concurrency=concurrency,
         exclusions=list(raw.get("exclusions", []) or []),
         extra_hosts=list(raw.get("extra_hosts", []) or []),
         user_agent=raw.get("user_agent", DEFAULT_USER_AGENT),
@@ -204,7 +208,10 @@ def _run_to_settled(manifest, profile, config, session, rate_limiter, wayback_ra
     """Interleave crawl -> Wayback recovery -> canonical cascade until no
     pending work remains (Stage 2/4 joint fixpoint, see CLAUDE-acquire.md)."""
     while True:
-        crawl_fixpoint(manifest, profile, session, rate_limiter, fetch_config, raw_dir, exclusions, manifest_save_path=manifest_path)
+        crawl_fixpoint(
+            manifest, profile, session, rate_limiter, fetch_config, raw_dir, exclusions,
+            manifest_save_path=manifest_path, workers=config.concurrency,
+        )
         if config.wayback.enabled:
             recover_via_wayback(
                 manifest, profile, session, wayback_rate_limiter, fetch_config, raw_dir,
@@ -231,6 +238,15 @@ def run_acquire(config: SiteConfig, resume: bool, dry_run: bool) -> int:
     manifest = Manifest.load(manifest_path) if manifest_path.exists() else Manifest()
 
     session = requests.Session()
+    # A single Session is shared across all worker threads -- deliberate,
+    # not an oversight: urllib3's connection pool underneath is
+    # thread-safe. Size it for the configured concurrency so connections
+    # aren't discarded once workers exceed the default pool size of 10.
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=10, pool_maxsize=max(10, config.concurrency)
+    )
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
     fetch_config = FetchConfig(user_agent=config.user_agent)
     rate_limiter = RateLimiter(config.rate_limit)
     wayback_rate_limiter = RateLimiter(config.wayback_rate_limit)

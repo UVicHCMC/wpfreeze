@@ -75,6 +75,24 @@ def test_load_config_defaults():
     pass  # covered implicitly below; kept as a placeholder for clarity
 
 
+def test_load_config_rejects_concurrency_below_one(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {"base_url": "https://example.com/", "output_dir": "out", "db": "none", "concurrency": 0},
+    )
+    with pytest.raises(ConfigError):
+        load_config(path)
+
+
+def test_load_config_concurrency_plumbs_through(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {"base_url": "https://example.com/", "output_dir": "out", "db": "none", "concurrency": 5},
+    )
+    config = load_config(path)
+    assert config.concurrency == 5
+
+
 def test_load_config_applies_defaults(tmp_path: Path):
     path = _write_yaml(
         tmp_path / "site.yaml",

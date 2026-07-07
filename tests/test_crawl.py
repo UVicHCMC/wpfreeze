@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -373,3 +375,198 @@ def test_store_bytes_no_collision_stores_at_literal_path(tmp_path: Path):
     local_path = store_bytes(url, b"jpeg bytes", raw_dir, profile, manifest)
     assert local_path == "raw/wp-content/uploads/photo.jpg"
     assert (raw_dir.parent / local_path).read_bytes() == b"jpeg bytes"
+
+
+# ---------------------------------------------------------------------------
+# Concurrency (workers > 1): deterministic races via a barrier-synced fake
+# fetch, guaranteeing genuinely concurrent workers at the moment of
+# interest rather than hoping for a scheduling accident.
+# ---------------------------------------------------------------------------
+
+
+def _fetch_outcome(final_url: str, content: bytes = b"ok", content_type: str = "text/plain"):
+    from wpfreeze.fetch import FetchOutcome, FetchResult
+
+    return FetchOutcome(
+        category="success",
+        http_status=200,
+        attempts=1,
+        result=FetchResult(
+            status_code=200,
+            content=content,
+            headers={"Content-Type": content_type},
+            content_type=content_type,
+            final_url=final_url,
+            redirect_chain=[],
+        ),
+    )
+
+
+def test_concurrent_redirect_race_merges_into_one_target(tmp_path: Path, monkeypatch):
+    """Two independently-pending URLs whose own fetches both redirect to
+    the same final URL, processed by two workers at once (barrier-synced).
+    Also checks the staleness guard: neither URL's fake fetch is ever
+    called more than once, even though resolving one redirect can only
+    happen after both fetches return (guarded by the barrier)."""
+    import wpfreeze.crawl as crawl_module
+
+    raw_dir = tmp_path / "raw"
+    manifest = Manifest()
+    profile = SiteProfile(
+        canonical_host="example.com", site_hosts=frozenset({"example.com"}), trailing_slash=False
+    )
+
+    url_a = "https://example.com/a"
+    url_b = "https://example.com/b"
+    url_c = "https://example.com/c"
+    manifest.get_or_create(url_a, discovered_via="base_url")
+    manifest.get_or_create(url_b, discovered_via="base_url")
+
+    barrier = threading.Barrier(2, timeout=5)
+    call_counts: dict[str, int] = {}
+    counts_lock = threading.Lock()
+
+    def fake_fetch(url, session, rate_limiter, fetch_config):
+        with counts_lock:
+            call_counts[url] = call_counts.get(url, 0) + 1
+        barrier.wait()
+        return _fetch_outcome(url_c)
+
+    monkeypatch.setattr(crawl_module, "fetch_with_retries", fake_fetch)
+
+    crawl_module.crawl_fixpoint(
+        manifest, profile, requests.Session(), RateLimiter(0.0), FAST_CONFIG, raw_dir,
+        compile_exclusions([]), workers=2,
+    )
+
+    assert manifest.get(url_a) is None
+    assert manifest.get(url_b) is None
+    target = manifest.get(url_c)
+    assert target is not None
+    assert target.status == Status.FETCHED.value
+    assert set(target.redirect_from) == {url_a, url_b}
+    assert set(target.aliases) == {url_a, url_b}
+    assert call_counts == {url_a: 1, url_b: 1}  # neither ever re-fetched
+
+
+def test_concurrent_storage_collision_parent_and_child_paths(tmp_path: Path, monkeypatch):
+    """Parent/child path-prefix collision (see store_bytes), but with both
+    URLs fetched by concurrent workers instead of sequentially."""
+    import wpfreeze.crawl as crawl_module
+
+    raw_dir = tmp_path / "raw"
+    manifest = Manifest()
+    profile = SiteProfile(
+        canonical_host="example.com", site_hosts=frozenset({"example.com"}), trailing_slash=False
+    )
+
+    parent_url = "https://example.com/blob/1.0"
+    child_url = "https://example.com/blob/1.0/LICENSE"
+    manifest.get_or_create(parent_url, discovered_via="base_url")
+    manifest.get_or_create(child_url, discovered_via="base_url")
+
+    barrier = threading.Barrier(2, timeout=5)
+
+    def fake_fetch(url, session, rate_limiter, fetch_config):
+        barrier.wait()
+        content = b"parent page bytes" if url == parent_url else b"license text"
+        return _fetch_outcome(url, content=content)
+
+    monkeypatch.setattr(crawl_module, "fetch_with_retries", fake_fetch)
+
+    crawl_module.crawl_fixpoint(
+        manifest, profile, requests.Session(), RateLimiter(0.0), FAST_CONFIG, raw_dir,
+        compile_exclusions([]), workers=2,
+    )
+
+    parent_record = manifest.get(parent_url)
+    child_record = manifest.get(child_url)
+    assert parent_record.status == Status.FETCHED.value
+    assert child_record.status == Status.FETCHED.value
+    assert (raw_dir.parent / parent_record.local_path).read_bytes() == b"parent page bytes"
+    assert (raw_dir.parent / child_record.local_path).read_bytes() == b"license text"
+    assert parent_record.local_path != child_record.local_path
+
+
+def test_concurrency_actually_parallelizes_across_hosts(tmp_path: Path, monkeypatch):
+    """Not just correctness -- proof the workers run concurrently at all.
+    N URLs on N distinct hosts, each fake fetch takes ~0.25s; sequential
+    processing would take N*0.25s, concurrent should take roughly 0.25s."""
+    import wpfreeze.crawl as crawl_module
+
+    raw_dir = tmp_path / "raw"
+    manifest = Manifest()
+    n = 5
+    hosts = [f"host{i}.example.com" for i in range(n)]
+    # Only host[0] is "the site" -- the rest are genuinely external hosts.
+    # normalize_url folds every *owned* host to the profile's single
+    # canonical_host, so declaring all N as owned would collapse these
+    # back down to one URL and defeat the point of this test.
+    profile = SiteProfile(canonical_host=hosts[0], site_hosts=frozenset({hosts[0]}))
+    urls = [f"https://{h}/" for h in hosts]
+    for url in urls:
+        manifest.get_or_create(url, discovered_via="base_url")
+
+    def fake_fetch(url, session, rate_limiter, fetch_config):
+        time.sleep(0.25)
+        return _fetch_outcome(url)
+
+    monkeypatch.setattr(crawl_module, "fetch_with_retries", fake_fetch)
+
+    started = time.monotonic()
+    crawl_module.crawl_fixpoint(
+        manifest, profile, requests.Session(), RateLimiter(0.0), FAST_CONFIG, raw_dir,
+        compile_exclusions([]), workers=n,
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.6 * n * 0.25, f"took {elapsed}s -- workers do not appear to run concurrently"
+    assert all(manifest.get(u).status == Status.FETCHED.value for u in urls)
+
+
+def test_concurrent_crawl_exception_propagates_and_stays_resumable(tmp_path: Path, monkeypatch):
+    """Mirrors test_crawl_is_resumable_after_interruption, but with
+    workers=2: a mid-crawl exception must still leave the on-disk manifest
+    valid, and a subsequent resume with a healthy fetch must complete."""
+    import wpfreeze.crawl as crawl_module
+
+    raw_dir = tmp_path / "raw"
+    manifest_path = tmp_path / "manifest.json"
+    manifest = Manifest()
+    profile = SiteProfile(canonical_host="example.com", site_hosts=frozenset({"example.com"}))
+    urls = [f"https://example.com/page{i}" for i in range(5)]
+    for url in urls:
+        manifest.get_or_create(url, discovered_via="base_url")
+
+    call_count = {"n": 0}
+    count_lock = threading.Lock()
+
+    def flaky_fetch(url, session, rate_limiter, fetch_config):
+        with count_lock:
+            call_count["n"] += 1
+            n = call_count["n"]
+        if n == 3:
+            raise RuntimeError("simulated crash mid-crawl")
+        return _fetch_outcome(url)
+
+    monkeypatch.setattr(crawl_module, "fetch_with_retries", flaky_fetch)
+
+    with pytest.raises(RuntimeError):
+        crawl_module.crawl_fixpoint(
+            manifest, profile, requests.Session(), RateLimiter(0.0), FAST_CONFIG, raw_dir,
+            compile_exclusions([]), manifest_save_path=manifest_path, workers=2,
+        )
+
+    reloaded = Manifest.load(manifest_path)
+    assert len(reloaded) == 5
+
+    def healthy_fetch(url, session, rate_limiter, fetch_config):
+        return _fetch_outcome(url)
+
+    monkeypatch.setattr(crawl_module, "fetch_with_retries", healthy_fetch)
+    crawl_module.crawl_fixpoint(
+        reloaded, profile, requests.Session(), RateLimiter(0.0), FAST_CONFIG, raw_dir,
+        compile_exclusions([]), manifest_save_path=manifest_path, workers=2,
+    )
+
+    assert all(r.status != Status.PENDING.value for r in reloaded.all())

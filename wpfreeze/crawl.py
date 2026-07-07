@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -74,26 +75,33 @@ def store_bytes(url: str, content: bytes, raw_dir: Path, profile: SiteProfile, m
     name and its manifest record's local_path is repointed to match, so
     nothing already written is lost or orphaned.
     """
-    local_path = local_path_for(url, raw_dir, profile)
-    _make_ancestors_writable(local_path.parent, raw_dir, manifest)
-    if local_path.is_dir():
-        # An earlier URL was a child of this one and already claimed this
-        # exact path as a directory; this URL's own bytes get the leaf name.
-        local_path = local_path / _COLLISION_LEAF_NAME
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    local_path.write_bytes(content)
-    return str(Path("raw") / local_path.relative_to(raw_dir))
+    # Each of store_bytes/_make_ancestors_writable/_demote_file_to_directory
+    # takes manifest.lock itself rather than trusting callers to already
+    # hold it -- unit tests call store_bytes directly with no external
+    # locking, and the RLock makes nested acquisition from _process_one's
+    # already-locked context safe too.
+    with manifest.lock:
+        local_path = local_path_for(url, raw_dir, profile)
+        _make_ancestors_writable(local_path.parent, raw_dir, manifest)
+        if local_path.is_dir():
+            # An earlier URL was a child of this one and already claimed this
+            # exact path as a directory; this URL's own bytes get the leaf name.
+            local_path = local_path / _COLLISION_LEAF_NAME
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(content)
+        return str(Path("raw") / local_path.relative_to(raw_dir))
 
 
 def _make_ancestors_writable(directory: Path, raw_dir: Path, manifest: Manifest) -> None:
     """Ensure every path component from raw_dir down to `directory` is
     either absent or already a directory, demoting any earlier file found
     blocking the way."""
-    current = raw_dir
-    for part in directory.relative_to(raw_dir).parts:
-        current = current / part
-        if current.is_file():
-            _demote_file_to_directory(current, raw_dir, manifest)
+    with manifest.lock:
+        current = raw_dir
+        for part in directory.relative_to(raw_dir).parts:
+            current = current / part
+            if current.is_file():
+                _demote_file_to_directory(current, raw_dir, manifest)
 
 
 def _demote_file_to_directory(path: Path, raw_dir: Path, manifest: Manifest) -> None:
@@ -101,17 +109,18 @@ def _demote_file_to_directory(path: Path, raw_dir: Path, manifest: Manifest) -> 
     needs a directory. Move the earlier file one level down to
     _COLLISION_LEAF_NAME and repoint whichever manifest record pointed at
     it, so both URLs keep their content."""
-    content = path.read_bytes()
-    old_rel = str(Path("raw") / path.relative_to(raw_dir))
-    path.unlink()
-    path.mkdir(parents=True)
-    new_path = path / _COLLISION_LEAF_NAME
-    new_path.write_bytes(content)
-    new_rel = str(Path("raw") / new_path.relative_to(raw_dir))
-    for record in manifest.all():
-        if record.local_path == old_rel:
-            record.local_path = new_rel
-            break
+    with manifest.lock:
+        content = path.read_bytes()
+        old_rel = str(Path("raw") / path.relative_to(raw_dir))
+        path.unlink()
+        path.mkdir(parents=True)
+        new_path = path / _COLLISION_LEAF_NAME
+        new_path.write_bytes(content)
+        new_rel = str(Path("raw") / new_path.relative_to(raw_dir))
+        for record in manifest.all():
+            if record.local_path == old_rel:
+                record.local_path = new_rel
+                break
 
 
 def _record_success(
@@ -159,28 +168,47 @@ def _process_one(
     fetch_config: FetchConfig,
     raw_dir: Path,
     exclusions: list[re.Pattern],
+    manifest_save_path: Path | None = None,
 ) -> None:
+    """Fetch and record the result for one pending record.
+
+    Two separate `manifest.lock` acquisitions, with the actual network
+    fetch happening between them (never under the lock): a pre-fetch
+    check that this record is still live and pending -- another worker
+    may have already folded it away as a redirect hop since this round's
+    snapshot was taken -- and a post-fetch block recording the outcome.
+    There is deliberately no re-check between fetching and recording: if
+    a record gets merged away while its fetch is in flight, the post-fetch
+    bookkeeping (resolve_redirect, add_alias/add_redirect_from) is
+    idempotent, so the worst case is one wasted fetch, never corruption.
+    """
     url = record.url
 
-    if is_excluded(url, exclusions):
-        record.status = Status.EXCLUDED.value
-        logger.info("excluded %s", url)
-        return
+    with manifest.lock:
+        if manifest.get(url) is not record or record.status != Status.PENDING.value:
+            return  # claimed or merged away by another worker already
+        if is_excluded(url, exclusions):
+            record.status = Status.EXCLUDED.value
+            logger.info("excluded %s", url)
+            if manifest_save_path is not None:
+                manifest.save(manifest_save_path)
+            return
 
     outcome = fetch_with_retries(url, session, rate_limiter, fetch_config)
-    record.fetch_attempts += outcome.attempts
-    record.last_fetched = utc_now()
-    record.http_status = outcome.http_status
     logger.info("fetched %s -> %s (%d attempt(s))", url, outcome.http_status, outcome.attempts)
 
+    # Discover links from the fetched content outside the lock -- the
+    # BeautifulSoup parse is the one genuinely CPU-costly non-network step
+    # here. content_kind/discover_links are pure functions of the fetch
+    # result, not the manifest record, so this needs no lock at all.
+    discovered_links: list = []
+    final_url: str | None = None
     if outcome.category == SUCCESS:
         result = outcome.result
         assert result is not None
         final_url = normalize_url(result.final_url, profile)
-        target = _record_success(record, result, final_url, manifest, profile, raw_dir)
-
         final_host = urlsplit(final_url).hostname or ""
-        kind = content_kind(target.content_type, final_url)
+        kind = content_kind(result.content_type, final_url)
         if kind is not None and profile.owns_host(final_host):
             # Only ever parse a fetched resource for further links when the
             # resource itself is on an owned host. Otherwise an external
@@ -193,7 +221,17 @@ def _process_one(
             # pending records across 1,000+ unrelated hosts this way.
             # External resources are fetched and stored (satisfying "render
             # even if external, localize it") but are always leaves.
-            for link in discover_links(result.content, final_url, kind):
+            discovered_links = discover_links(result.content, final_url, kind)
+
+    with manifest.lock:
+        record.fetch_attempts += outcome.attempts
+        record.last_fetched = utc_now()
+        record.http_status = outcome.http_status
+
+        if outcome.category == SUCCESS:
+            assert final_url is not None
+            _record_success(record, outcome.result, final_url, manifest, profile, raw_dir)
+            for link in discovered_links:
                 normalized = normalize_url(link.url, profile)
                 host = urlsplit(normalized).hostname or ""
                 owned = profile.owns_host(host)
@@ -209,13 +247,13 @@ def _process_one(
                     # external" allowance.
                     continue
                 manifest.get_or_create(normalized, discovered_via=f"crawl:{final_url}")
-        return
+        elif outcome.category == WAYBACK_CANDIDATE:
+            record.status = Status.RETRYING.value
+            if outcome.flag:
+                record.add_flag(outcome.flag)
 
-    if outcome.category == WAYBACK_CANDIDATE:
-        record.status = Status.RETRYING.value
-        if outcome.flag:
-            record.add_flag(outcome.flag)
-        return
+        if manifest_save_path is not None:
+            manifest.save(manifest_save_path)
 
 
 def crawl_fixpoint(
@@ -227,22 +265,49 @@ def crawl_fixpoint(
     raw_dir: Path,
     exclusions: list[re.Pattern],
     manifest_save_path: Path | None = None,
+    workers: int = 1,
 ) -> None:
     """Process every pending record, discovering more as links are
     extracted, until no pending records remain. Not a fixed number of
     passes -- a true fixpoint loop.
 
     If `manifest_save_path` is given, the manifest is saved atomically
-    after every processed record, so an interrupted run loses at most the
-    one in-flight fetch.
+    after every processed record. With `workers` concurrent fetchers, an
+    interrupted run loses at most the `workers` fetches that were still
+    in flight at the moment of interruption -- weaker than the sequential
+    "at most one" guarantee, but every save is still a fully consistent,
+    atomically-written snapshot.
+
+    Always runs through a ThreadPoolExecutor, even for the default
+    `workers=1`, rather than branching to a separate sequential loop, so
+    there's exactly one code path to trust regardless of worker count.
     """
-    while True:
-        pending = manifest.by_status(Status.PENDING.value)
-        if not pending:
-            break
-        for record in pending:
-            if record.status != Status.PENDING.value:
-                continue  # already resolved as part of a redirect merge this pass
-            _process_one(record, manifest, profile, session, rate_limiter, fetch_config, raw_dir, exclusions)
-            if manifest_save_path is not None:
-                manifest.save(manifest_save_path)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        while True:
+            pending = manifest.by_status(Status.PENDING.value)
+            if not pending:
+                break
+            futures = [
+                executor.submit(
+                    _process_one,
+                    record,
+                    manifest,
+                    profile,
+                    session,
+                    rate_limiter,
+                    fetch_config,
+                    raw_dir,
+                    exclusions,
+                    manifest_save_path,
+                )
+                for record in pending
+            ]
+            try:
+                for future in as_completed(futures):
+                    future.result()
+            except BaseException:
+                # Stop scheduling new work immediately; let anything
+                # already running finish (its locked save completes
+                # normally) rather than tearing down mid-write.
+                executor.shutdown(wait=True, cancel_futures=True)
+                raise
