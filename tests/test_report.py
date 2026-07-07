@@ -52,6 +52,35 @@ def test_referrers_extracted_from_discovered_via():
     assert _referrers(record) == ["https://example.com/", "https://example.com/old/"]
 
 
+def test_report_html_referrers_collapsed_behind_details(tmp_path: Path):
+    """Referrers are only useful for a deep dive -- must render collapsed
+    behind <details> (no `open` attribute), not as a bare inline list that
+    crowds the row and reads as if it were part of the URL column."""
+    record = _record("https://example.com/gone/", status=Status.MISSING.value)
+    record.add_discovered_via("crawl:https://example.com/a/")
+    record.add_discovered_via("crawl:https://example.com/b/")
+    manifest = Manifest()
+    manifest.upsert(record)
+
+    html = build_report_html(manifest, tmp_path)
+
+    assert "2 referrers" in html
+    assert '<ul class="referrer-list">' in html
+    assert 'href="https://example.com/a/"' in html
+    assert 'href="https://example.com/b/"' in html
+    # The referrers <details> must not be forced open.
+    referrers_start = html.find("<details><summary>2 referrers")
+    assert referrers_start != -1
+    assert not html[max(0, referrers_start - 20):referrers_start].rstrip().endswith("open")
+
+
+def test_report_html_no_referrers_shows_dash(tmp_path: Path):
+    manifest = Manifest()
+    manifest.upsert(_record("https://example.com/gone/", status=Status.MISSING.value))
+    html = build_report_html(manifest, tmp_path)
+    assert "<td>-</td>" in html
+
+
 def test_wayback_snapshot_date_parses_timestamp():
     url = "https://web.archive.org/web/20220301123456id_/https://example.com/"
     assert _wayback_snapshot_date(url) == "2022-03-01"
@@ -130,6 +159,41 @@ def test_report_html_action_required_shown_when_present(tmp_path: Path):
     assert "id=\"action-auth_gated\"" in html
 
 
+def test_report_html_all_details_elements_start_closed(tmp_path: Path):
+    """Every <details> in the report -- category sections, referrers,
+    discovered_via -- must start collapsed. None should carry the `open`
+    attribute."""
+    manifest = Manifest()
+    auth_record = _record("https://example.com/secret/", status=Status.RETRYING.value)
+    auth_record.add_flag(FLAG_AUTH_GATED)
+    auth_record.add_discovered_via("crawl:https://example.com/")
+    manifest.upsert(auth_record)
+
+    html = build_report_html(manifest, tmp_path)
+
+    assert "<details open" not in html
+    assert html.count("<details") >= 2  # category section + at least one referrers/sources block
+
+
+def test_report_html_action_required_categories_explain_meaning_and_action(tmp_path: Path):
+    """Every category with at least one record must show both an
+    explanation of what it means and a suggestion for what to do about
+    it, not just a bare table of URLs."""
+    manifest = Manifest()
+    auth_record = _record("https://example.com/secret/", status=Status.RETRYING.value)
+    auth_record.add_flag(FLAG_AUTH_GATED)
+    manifest.upsert(auth_record)
+    manifest.upsert(_record("https://example.com/gone/", status=Status.MISSING.value))
+
+    html = build_report_html(manifest, tmp_path)
+
+    assert "What this means:" in html
+    assert "What you might do:" in html
+    assert "credentials or permissions" in html  # auth_gated explanation
+    assert "recovered live or from the" in html  # missing explanation
+    assert 'class="category-help"' in html
+
+
 def test_report_html_action_required_hidden_when_empty(tmp_path: Path):
     manifest = Manifest()
     manifest.upsert(_record("https://example.com/", status=Status.FETCHED.value))
@@ -147,6 +211,27 @@ def test_report_html_has_filter_controls_and_data_attributes(tmp_path: Path):
     assert 'id="filter-flag"' in html
     assert 'data-status="fetched"' in html
     assert 'data-flags="orphan"' in html
+
+
+def test_report_html_full_manifest_discovered_via_collapsed_behind_details(tmp_path: Path):
+    """Same treatment as the Action-required referrers column: discovered_via
+    can list many provenance entries (inventory-source labels plus
+    crawl:/wayback: entries) and must not crowd the Full manifest row as a
+    bare inline string."""
+    record = _record("https://example.com/x/", status=Status.FETCHED.value)
+    record.add_discovered_via("sitemap")
+    record.add_discovered_via("crawl:https://example.com/a/")
+    manifest = Manifest()
+    manifest.upsert(record)
+
+    html = build_report_html(manifest, tmp_path)
+
+    assert "2 sources" in html
+    full_manifest_start = html.find('id="full-manifest"')
+    assert "<ul class=\"referrer-list\"><li>sitemap</li>" in html[full_manifest_start:]
+    details_pos = html.find("<details><summary>2 sources", full_manifest_start)
+    assert details_pos != -1
+    assert not html[max(0, details_pos - 20):details_pos].rstrip().endswith("open")
 
 
 def test_report_html_no_external_resources(tmp_path: Path):
