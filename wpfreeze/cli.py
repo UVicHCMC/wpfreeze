@@ -306,7 +306,9 @@ def run_status(config: SiteConfig) -> int:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wpfreeze")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    # Not required: no subcommand at all launches the interactive wizard
+    # (see run_wizard in wpfreeze.wizard).
+    subparsers = parser.add_subparsers(dest="command", required=False)
 
     acquire_p = subparsers.add_parser("acquire", help="run (or resume) the full acquisition pipeline")
     acquire_p.add_argument("--config", required=True, type=Path)
@@ -321,6 +323,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     status_p = subparsers.add_parser("status", help="print a one-screen manifest summary")
     status_p.add_argument("--config", required=True, type=Path)
+
+    # Own argparse parser (wpfreeze.dbsetup.build_arg_parser); registered
+    # here with REMAINDER only so `wpfreeze --help` lists it -- main()
+    # intercepts "setup-db" before this parser ever sees its flags.
+    setup_db_p = subparsers.add_parser(
+        "setup-db", help="interactively import a SQL dump into a local scoped database"
+    )
+    setup_db_p.add_argument("rest", nargs=argparse.REMAINDER)
 
     return parser
 
@@ -360,7 +370,19 @@ def _configure_logging(output_dir: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_arg_parser().parse_args(argv)
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+
+    if not raw_argv:
+        from wpfreeze.wizard import run_wizard
+
+        return run_wizard()
+
+    if raw_argv[0] == "setup-db":
+        from wpfreeze.dbsetup import interactive_main
+
+        return interactive_main(raw_argv[1:])
+
+    args = build_arg_parser().parse_args(raw_argv)
 
     try:
         config = load_config(args.config)

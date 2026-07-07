@@ -79,7 +79,10 @@ wayback:
 #
 # ...or provide a connection block. Prefer `password_env` (naming an
 # environment variable) over a literal `password` so credentials never
-# live in this file:
+# live in this file. If the site's own database isn't reachable (typical
+# on commercial/managed hosting) but you have a .sql/.sql.gz export, see
+# SETUP.md -- `wpfreeze setup-db` imports it into a local database and
+# prints a ready-to-paste block for this section:
 db:
   host: "localhost"       # or use `socket:` instead for a Unix socket
   port: 3306

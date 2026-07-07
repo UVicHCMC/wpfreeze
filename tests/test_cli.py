@@ -243,3 +243,27 @@ def test_run_status_reports_counts(tmp_path: Path, capsys):
         captured = capsys.readouterr()
         assert "Total records" in captured.out
         assert "fetched" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# main() dispatch: no subcommand -> wizard, "setup-db" -> dbsetup
+# ---------------------------------------------------------------------------
+
+
+def test_main_with_no_args_launches_wizard(monkeypatch):
+    calls = []
+    monkeypatch.setattr("wpfreeze.wizard.run_wizard", lambda: calls.append("wizard") or 0)
+    assert main([]) == 0
+    assert calls == ["wizard"]
+
+
+def test_main_setup_db_dispatches_with_remaining_args(monkeypatch):
+    captured = {}
+
+    def fake_interactive_main(argv):
+        captured["argv"] = argv
+        return 0
+
+    monkeypatch.setattr("wpfreeze.dbsetup.interactive_main", fake_interactive_main)
+    assert main(["setup-db", "--dump", "/tmp/x.sql", "--yes"]) == 0
+    assert captured["argv"] == ["--dump", "/tmp/x.sql", "--yes"]
