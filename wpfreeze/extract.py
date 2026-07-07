@@ -24,12 +24,19 @@ RENDER = "render"
 _SKIPPED_SCHEMES = ("data:", "mailto:", "tel:", "javascript:", "#")
 
 # URL-shaped heuristics used for data-* attributes and <script> bodies,
-# where a value may be a bare URL, or a URL buried in a JS/JSON blob.
-_ABSOLUTE_OR_PROTOCOL_RELATIVE_RE = re.compile(r"(?:https?:)?//[^\s\"'<>\\]+", re.IGNORECASE)
-_WP_PATH_RE = re.compile(r"/wp-(?:content|includes)/[^\s\"'<>\\]+", re.IGNORECASE)
+# where a value may be a bare URL, or a URL buried in a JS/JSON blob. The
+# character class excludes *{} on top of the obvious delimiters: real URL
+# paths never contain a literal glob-wildcard character, but cache/PWA
+# plugins routinely embed exclusion-glob arrays (e.g.
+# '/wp-content/uploads/*/') in a sitewide inline <script> block -- without
+# this exclusion those get matched whole and queued as if they were real
+# pages, wasting a live-fetch + Wayback-lookup cycle on each one (seen on
+# a real crawl, though it degrades to a one-time cost, not a hang).
+_ABSOLUTE_OR_PROTOCOL_RELATIVE_RE = re.compile(r"(?:https?:)?//[^\s\"'<>\\*{}]+", re.IGNORECASE)
+_WP_PATH_RE = re.compile(r"/wp-(?:content|includes)/[^\s\"'<>\\*{}]+", re.IGNORECASE)
 _ASSET_EXT_RE = re.compile(
-    r"/[^\s\"'<>\\]+\.(?:jpe?g|png|gif|webp|svg|bmp|ico|mp4|webm|mp3|pdf|css|js|woff2?|ttf|eot)"
-    r"(?:\?[^\s\"'<>\\]*)?",
+    r"/[^\s\"'<>\\*{}]+\.(?:jpe?g|png|gif|webp|svg|bmp|ico|mp4|webm|mp3|pdf|css|js|woff2?|ttf|eot)"
+    r"(?:\?[^\s\"'<>\\*{}]*)?",
     re.IGNORECASE,
 )
 _URL_SHAPED_PATTERNS = (_ABSOLUTE_OR_PROTOCOL_RELATIVE_RE, _WP_PATH_RE, _ASSET_EXT_RE)

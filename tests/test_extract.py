@@ -221,6 +221,28 @@ def test_script_regex_false_positive_does_not_crash_extraction():
     assert not any("[0]" in url for url in urls)
 
 
+def test_script_regex_ignores_cache_exclusion_glob_patterns():
+    """Cache/PWA plugins routinely embed a sitewide inline <script> array
+    of glob-style cache-exclusion paths (e.g. '/wp-content/uploads/*/').
+    The URL-shaped regex fallback must not match past the literal '*' --
+    without this, every such glob entry gets queued as if it were a real
+    page, wasting a fetch + Wayback-lookup cycle on each one for every
+    single page on the site (this exact pattern set was seen on a real
+    crawl)."""
+    html = """
+    <script>
+    var excludeFromCache = [
+      "/wp-content/uploads/*/",
+      "/wp-content/plugins/*/",
+      "/wp-content/themes/Divi/*/"
+    ];
+    </script>
+    """
+    links = extract_from_html(html, BASE)
+    urls = {l.url for l in links}
+    assert not any("*" in url for url in urls)
+
+
 def test_skipped_schemes_are_not_extracted():
     html = (
         '<a href="mailto:someone@example.com">mail</a>'
