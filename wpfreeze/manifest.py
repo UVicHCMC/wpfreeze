@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -117,12 +118,21 @@ class ManifestRecord:
 
 
 class Manifest:
-    """In-memory manifest keyed by canonical URL, with atomic persistence."""
+    """In-memory manifest keyed by canonical URL, with atomic persistence.
+
+    `lock` is a re-entrant lock guarding *compound* read-then-mutate
+    sequences (e.g. resolve_redirect followed by mutating the merge
+    target, or store_bytes's collision repair) during concurrent
+    crawling -- not held by individual dict/list accessors below.
+    Single-threaded callers may ignore it entirely.
+    """
 
     SCHEMA_VERSION = 1
 
     def __init__(self) -> None:
         self._records: dict[str, ManifestRecord] = {}
+        self._redirect_aliases: dict[str, str] = {}
+        self.lock = threading.RLock()
 
     def __len__(self) -> int:
         return len(self._records)
@@ -153,7 +163,27 @@ class Manifest:
 
         Safe to call repeatedly during discovery/crawl: existing records are
         never reset to pending, only annotated with additional provenance.
+
+        If `url` is already known to redirect elsewhere (recorded by an
+        earlier resolve_redirect call), this resolves straight to that
+        target instead of resurrecting `url` as fresh pending work. Without
+        this, a URL that redirects to a page whose own content links back
+        to it (e.g. a stray comment quoting the pre-redirect URL of the
+        very post it's on) creates a self-sustaining loop: fetch, redirect,
+        fold away, get rediscovered via the target's own content, fetch
+        again, forever. This surfaced on a real crawl.
         """
+        target_url = self._redirect_aliases.get(url)
+        if target_url is not None:
+            seen = {url}
+            while target_url in self._redirect_aliases and target_url not in seen:
+                seen.add(target_url)
+                target_url = self._redirect_aliases[target_url]
+            target = self.get_or_create(target_url, discovered_via)
+            target.add_redirect_from(url)
+            target.add_alias(url)
+            return target
+
         record = self._records.get(url)
         if record is None:
             record = ManifestRecord(url=url)
@@ -167,13 +197,16 @@ class Manifest:
         """Fold `from_url`'s record into `to_url`'s (creating the target
         if needed): the target gains `from_url` as both a redirect origin
         and an alias, and `from_url` stops existing as an independent
-        (pending) manifest entry."""
+        (pending) manifest entry. `from_url` is remembered as a known
+        redirect source (see get_or_create) so it's never resurrected as
+        pending again if rediscovered later."""
         target = self.get_or_create(to_url)
         if from_url == to_url:
             return target
         target.add_redirect_from(from_url)
         target.add_alias(from_url)
         source = self._records.pop(from_url, None)
+        self._redirect_aliases[from_url] = to_url
         if source is not None:
             for provenance in source.discovered_via:
                 target.add_discovered_via(provenance)
@@ -182,12 +215,25 @@ class Manifest:
     def save(self, path: Path) -> None:
         """Write manifest.json atomically: temp file in the same directory,
         then os.replace, so interruption mid-write never corrupts the
-        existing file."""
+        existing file.
+
+        Only the snapshot of `_records` is taken under `self.lock` --
+        re-serializing every record to JSON and writing it out is real
+        work on a large manifest, and holding the lock across it would
+        serialize every concurrent worker's bookkeeping behind the
+        slowest save. The snapshot is a plain list assembled while the
+        lock is held, so it's safe against a concurrent insert; the
+        actual dump/replace happens after releasing the lock.
+        """
         path = Path(path)
+        with self.lock:
+            records_snapshot = [r.to_dict() for r in self._records.values()]
+            redirect_aliases_snapshot = dict(self._redirect_aliases)
         payload = {
             "schema_version": self.SCHEMA_VERSION,
             "generated": utc_now(),
-            "records": [r.to_dict() for r in self._records.values()],
+            "records": records_snapshot,
+            "redirect_aliases": redirect_aliases_snapshot,
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(
@@ -214,4 +260,5 @@ class Manifest:
         for raw in payload.get("records", []):
             record = ManifestRecord.from_dict(raw)
             manifest._records[record.url] = record
+        manifest._redirect_aliases = dict(payload.get("redirect_aliases", {}))
         return manifest

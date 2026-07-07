@@ -176,6 +176,65 @@ def test_resolve_redirect_noop_when_same_url():
     assert len(manifest) == 1
 
 
+def test_get_or_create_resolves_known_redirect_source_instead_of_resurrecting():
+    """The real-world loop this fixes: /a/ redirects to /b/, and /b/'s own
+    content links back to /a/ (e.g. a comment quoting the pre-redirect
+    URL). Rediscovering /a/ after the fold must resolve straight to /b/,
+    not recreate /a/ as fresh pending work -- otherwise fetch/redirect/
+    fold/relink repeats forever."""
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/a/", discovered_via="sitemap")
+    manifest.resolve_redirect("https://example.com/a/", "https://example.com/b/")
+
+    # /b/'s own content links back to /a/ -- simulates discover_links
+    # re-registering it after the fold.
+    rediscovered = manifest.get_or_create(
+        "https://example.com/a/", discovered_via="crawl:https://example.com/b/"
+    )
+
+    assert "https://example.com/a/" not in manifest  # never resurrected as its own record
+    assert rediscovered.url == "https://example.com/b/"
+    assert "crawl:https://example.com/b/" in rediscovered.discovered_via
+    assert len(manifest) == 1
+
+
+def test_get_or_create_chases_multi_hop_redirect_chain():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/a/")
+    manifest.resolve_redirect("https://example.com/a/", "https://example.com/b/")
+    manifest.resolve_redirect("https://example.com/b/", "https://example.com/c/")
+
+    target = manifest.get_or_create("https://example.com/a/")
+    assert target.url == "https://example.com/c/"
+    assert len(manifest) == 1
+
+
+def test_redirect_aliases_survive_save_and_load(tmp_path: Path):
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/a/", discovered_via="sitemap")
+    manifest.resolve_redirect("https://example.com/a/", "https://example.com/b/")
+
+    path = tmp_path / "manifest.json"
+    manifest.save(path)
+    reloaded = Manifest.load(path)
+
+    # The redirect memory persists across --resume, so a rediscovery of
+    # /a/ after a crash-and-resume still resolves to /b/ instead of
+    # resurrecting /a/.
+    target = reloaded.get_or_create("https://example.com/a/")
+    assert target.url == "https://example.com/b/"
+    assert len(reloaded) == 1
+
+
+def test_load_of_older_manifest_without_redirect_aliases_key_still_works(tmp_path: Path):
+    import json
+
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps({"schema_version": 1, "generated": "x", "records": []}))
+    manifest = Manifest.load(path)
+    assert manifest._redirect_aliases == {}
+
+
 def test_resume_never_resets_existing_record_to_pending():
     manifest = Manifest()
     record = manifest.get_or_create("https://example.com/", discovered_via="sitemap")
