@@ -140,6 +140,14 @@ def test_resolve_url(base: str, link: str, expected: str):
     assert resolve_url(base, link) == expected
 
 
+def test_resolve_url_returns_none_for_malformed_bracketed_link():
+    """A regex-matched, URL-shaped string pulled out of arbitrary <script>
+    text can be garbage that merely looks protocol-relative -- e.g. JS
+    array-index syntax like `//foo[0]/bar` -- which urlsplit rejects as an
+    invalid IPv6 host. This must degrade to None, not raise."""
+    assert resolve_url("https://example.com/", "//foo[0]/bar") is None
+
+
 def test_idempotent_on_already_normalized_urls():
     """Normalizing an already-normalized URL must be a no-op (fixpoint
     property the crawl loop depends on for alias detection)."""

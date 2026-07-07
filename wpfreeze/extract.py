@@ -123,11 +123,15 @@ def extract_from_css(css_text: str, base_url: str) -> list[ExtractedLink]:
     for match in _CSS_URL_RE.finditer(css_text):
         raw = match.group(2).strip()
         if raw and not raw.startswith("data:"):
-            links.append(ExtractedLink(resolve_url(base_url, raw), RENDER, "css:url()"))
+            resolved = resolve_url(base_url, raw)
+            if resolved is not None:
+                links.append(ExtractedLink(resolved, RENDER, "css:url()"))
     for match in _CSS_IMPORT_PLAIN_RE.finditer(css_text):
         raw = match.group(1).strip()
         if raw:
-            links.append(ExtractedLink(resolve_url(base_url, raw), RENDER, "css:@import"))
+            resolved = resolve_url(base_url, raw)
+            if resolved is not None:
+                links.append(ExtractedLink(resolved, RENDER, "css:@import"))
     return links
 
 
@@ -140,7 +144,9 @@ def extract_from_html(html: str, base_url: str) -> list[ExtractedLink]:
     def add(raw: str, kind: str, context: str) -> None:
         raw = (raw or "").strip()
         if raw and not raw.startswith(_SKIPPED_SCHEMES):
-            links.append(ExtractedLink(resolve_url(base_url, raw), kind, context))
+            resolved = resolve_url(base_url, raw)
+            if resolved is not None:
+                links.append(ExtractedLink(resolved, kind, context))
 
     for tag in soup.find_all(True):
         name = tag.name

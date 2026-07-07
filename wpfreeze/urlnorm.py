@@ -46,9 +46,20 @@ class SiteProfile:
         return host in self.site_hosts or host == self.canonical_host
 
 
-def resolve_url(base: str, link: str) -> str:
-    """Resolve a possibly-relative link against a base URL."""
-    return urljoin(base, link)
+def resolve_url(base: str, link: str) -> str | None:
+    """Resolve a possibly-relative link against a base URL.
+
+    Returns None if `link` isn't parseable as a URL at all. This matters
+    for the best-effort URL-shaped-string scanners over <script> bodies and
+    data-* attributes (extract.py) -- a loose regex over arbitrary JS text
+    will occasionally match something that merely looks URL-shaped (e.g.
+    JS array-index syntax like `//foo[i]`), which urlsplit rejects as a
+    malformed IPv6 host. One bad match on one page must not crash the run.
+    """
+    try:
+        return urljoin(base, link)
+    except ValueError:
+        return None
 
 
 def _decode_unreserved_percent_encodings(s: str) -> str:

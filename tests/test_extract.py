@@ -201,6 +201,26 @@ def test_script_plain_js_with_embedded_url_uses_regex_fallback():
     assert all(l.context == "script:regex" for l in links)
 
 
+def test_script_regex_false_positive_does_not_crash_extraction():
+    """The URL-shaped regex fallback over raw <script> text has no real
+    host validation, so on non-WordPress sites with heavy minified JS it
+    will occasionally match ordinary JS syntax that merely looks
+    protocol-relative -- e.g. array-index code like `//list[0]/x` -- which
+    urlsplit rejects as an invalid IPv6 host. This must be dropped, not
+    raise and kill the whole crawl (this exact shape crashed a real run
+    against microsoft.com)."""
+    html = """
+    <script>
+    var real = "/wp-content/uploads/real.jpg";
+    var garbage = list[0]//not/a/real/host;
+    </script>
+    """
+    links = extract_from_html(html, BASE)  # must not raise
+    urls = {l.url for l in links}
+    assert "https://example.com/wp-content/uploads/real.jpg" in urls
+    assert not any("[0]" in url for url in urls)
+
+
 def test_skipped_schemes_are_not_extracted():
     html = (
         '<a href="mailto:someone@example.com">mail</a>'
