@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0"
+	xmlns:excerpt="http://wordpress.org/export/1.2/excerpt/"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:wfw="http://wellformedweb.org/CommentAPI/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:wp="http://wordpress.org/export/1.2/"
+>
+
+<channel>
+	<title>Fixture Site</title>
+	<link>https://example.com</link>
+	<wp:wxr_version>1.2</wp:wxr_version>
+
+	<wp:author>
+		<wp:author_id>1</wp:author_id>
+		<wp:author_login><![CDATA[alice]]></wp:author_login>
+	</wp:author>
+	<wp:author>
+		<wp:author_id>2</wp:author_id>
+		<wp:author_login><![CDATA[bob]]></wp:author_login>
+	</wp:author>
+
+	<wp:category>
+		<wp:term_id>5</wp:term_id>
+		<wp:category_nicename><![CDATA[news]]></wp:category_nicename>
+	</wp:category>
+
+	<wp:tag>
+		<wp:term_id>9</wp:term_id>
+		<wp:tag_slug><![CDATA[announcement]]></wp:tag_slug>
+	</wp:tag>
+
+	<item>
+		<title>Published post</title>
+		<link>https://example.com/news/published-post/</link>
+		<dc:creator><![CDATA[alice]]></dc:creator>
+		<wp:post_id>101</wp:post_id>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<category domain="category" nicename="news"><![CDATA[News]]></category>
+		<category domain="post_tag" nicename="announcement"><![CDATA[Announcement]]></category>
+	</item>
+
+	<item>
+		<title>Draft post</title>
+		<link>https://example.com/?p=102</link>
+		<dc:creator><![CDATA[alice]]></dc:creator>
+		<wp:post_id>102</wp:post_id>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:status><![CDATA[draft]]></wp:status>
+	</item>
+
+	<item>
+		<title>Published page</title>
+		<link>https://example.com/?page_id=103</link>
+		<dc:creator><![CDATA[bob]]></dc:creator>
+		<wp:post_id>103</wp:post_id>
+		<wp:post_type><![CDATA[page]]></wp:post_type>
+		<wp:status><![CDATA[publish]]></wp:status>
+	</item>
+
+	<item>
+		<title>An attachment</title>
+		<link>https://example.com/news/published-post/an-attachment/</link>
+		<dc:creator><![CDATA[alice]]></dc:creator>
+		<wp:post_id>104</wp:post_id>
+		<wp:post_type><![CDATA[attachment]]></wp:post_type>
+		<wp:status><![CDATA[inherit]]></wp:status>
+	</item>
+
+	<item>
+		<title>Nav menu junk (must be excluded despite publish status)</title>
+		<link>https://example.com/?p=105</link>
+		<dc:creator><![CDATA[alice]]></dc:creator>
+		<wp:post_id>105</wp:post_id>
+		<wp:post_type><![CDATA[nav_menu_item]]></wp:post_type>
+		<wp:status><![CDATA[publish]]></wp:status>
+	</item>
+
+	<item>
+		<title>Item with a category that has no top-level definition</title>
+		<link>https://example.com/news/orphan-category/</link>
+		<dc:creator><![CDATA[bob]]></dc:creator>
+		<wp:post_id>106</wp:post_id>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:status><![CDATA[publish]]></wp:status>
+		<category domain="category" nicename="undefined-category"><![CDATA[Undefined]]></category>
+	</item>
+
+	<item>
+		<title>Item with an unresolvable creator</title>
+		<link>https://example.com/news/ghost-author/</link>
+		<dc:creator><![CDATA[ghost]]></dc:creator>
+		<wp:post_id>107</wp:post_id>
+		<wp:post_type><![CDATA[post]]></wp:post_type>
+		<wp:status><![CDATA[publish]]></wp:status>
+	</item>
+
+</channel>
+</rss>

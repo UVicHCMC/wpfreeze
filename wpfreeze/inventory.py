@@ -110,6 +110,239 @@ def extract_links_from_rest_items(items: list[dict]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# WXR (WordPress eXtended RSS export) inventory
+# ---------------------------------------------------------------------------
+
+# XML 1.0's valid character ranges: #x9 | #xA | #xD | [#x20-#xD7FF] |
+# [#xE000-#xFFFD] | [#x10000-#x10FFFF]. Real-world WXR exports can carry
+# characters outside these ranges (pasted-in Word/PDF content is a common
+# source) -- lxml refuses to parse a document containing them at all.
+_VALID_XML_CHARS_RE = re.compile("[^\x09\x0a\x0d\x20-퟿-�\U00010000-\U0010ffff]")
+
+POST_TYPE_ALLOWLIST = frozenset({"post", "page", "attachment"})
+
+
+def _strip_invalid_xml_chars(text: str) -> tuple[str, int]:
+    """Remove characters outside XML 1.0's valid ranges. lxml's
+    `recover=True` "fixes" a document containing them too, but silently
+    drops whole malformed subtrees -- unacceptable for a tool whose entire
+    point is catching content other inventory sources hide. Sanitizing
+    first and parsing strictly instead recovers every item. Returns
+    (cleaned_text, count_removed) so callers can log when this actually
+    did something."""
+    return _VALID_XML_CHARS_RE.subn("", text)
+
+
+@dataclass(frozen=True)
+class WxrAuthor:
+    author_id: str
+    login: str
+
+
+@dataclass(frozen=True)
+class WxrCategory:
+    term_id: str
+    nicename: str
+
+
+@dataclass(frozen=True)
+class WxrItem:
+    post_id: str
+    post_type: str
+    status: str
+    link: str
+    creator: str
+    categories: list[tuple[str, str]]  # (domain, nicename)
+
+
+@dataclass(frozen=True)
+class WxrDocument:
+    authors: list[WxrAuthor]
+    categories: list[WxrCategory]
+    items: list[WxrItem]
+
+
+@dataclass(frozen=True)
+class WxrInventoryItem:
+    url: str
+    discovered_via: str = "xml_backup"
+
+
+def _child_text(element, local_name: str) -> str:
+    for child in element:
+        if _local_name(child.tag) == local_name:
+            return (child.text or "").strip()
+    return ""
+
+
+def _parse_wxr_author(element) -> WxrAuthor:
+    return WxrAuthor(
+        author_id=_child_text(element, "author_id"),
+        login=_child_text(element, "author_login"),
+    )
+
+
+def _parse_wxr_category(element) -> WxrCategory:
+    return WxrCategory(
+        term_id=_child_text(element, "term_id"),
+        nicename=_child_text(element, "category_nicename"),
+    )
+
+
+def _parse_wxr_item(element) -> WxrItem:
+    categories = [
+        (child.get("domain", ""), child.get("nicename", ""))
+        for child in element
+        if _local_name(child.tag) == "category"
+    ]
+    return WxrItem(
+        post_id=_child_text(element, "post_id"),
+        post_type=_child_text(element, "post_type"),
+        status=_child_text(element, "status"),
+        link=_child_text(element, "link"),
+        creator=_child_text(element, "creator"),
+        categories=categories,
+    )
+
+
+def parse_wxr_xml(xml_bytes: bytes) -> WxrDocument:
+    """Parse a WordPress eXtended RSS (WXR) export -- wp-admin's
+    Tools > Export. Namespace-agnostic by local tag name (see
+    _local_name), the same style as parse_sitemap_xml, plus a
+    sanitization pass (see _strip_invalid_xml_chars) before a strict
+    parse."""
+    text = xml_bytes.decode("utf-8", errors="replace")
+    cleaned, stripped_count = _strip_invalid_xml_chars(text)
+    if stripped_count:
+        logger.warning(
+            "stripped %d XML-invalid character(s) from WXR export before parsing",
+            stripped_count,
+        )
+    root = etree.fromstring(cleaned.encode("utf-8"))
+    channel = next(child for child in root if _local_name(child.tag) == "channel")
+
+    authors: list[WxrAuthor] = []
+    categories: list[WxrCategory] = []
+    items: list[WxrItem] = []
+    for child in channel:
+        name = _local_name(child.tag)
+        if name == "author":
+            authors.append(_parse_wxr_author(child))
+        elif name == "category":
+            categories.append(_parse_wxr_category(child))
+        elif name == "item":
+            items.append(_parse_wxr_item(child))
+    return WxrDocument(authors=authors, categories=categories, items=items)
+
+
+def _is_kept_published(item: WxrItem) -> bool:
+    """Type-conditional publish check. Attachments are never
+    wp:status=publish in WordPress -- they inherit their parent's status,
+    and 'inherit' is their permanent, normal state -- so a uniform
+    status=='publish' filter (which is what the DB-based inventory this
+    replaces actually did) silently drops every attachment. Do not
+    "simplify" this back to a uniform check."""
+    if item.post_type not in POST_TYPE_ALLOWLIST:
+        return False
+    if item.post_type == "attachment":
+        return item.status == "inherit"
+    return item.status == "publish"
+
+
+def wxr_post_urls(document: WxrDocument) -> list[WxrInventoryItem]:
+    """Allow-listed, kept items' <link> verbatim -- WP's own exporter
+    already resolved the fallback-vs-pretty-permalink question, so there
+    is nothing to reconstruct here (contrast the old DB path, which had
+    to hand-build ?p=/?attachment_id= itself)."""
+    return [
+        WxrInventoryItem(item.link)
+        for item in document.items
+        if _is_kept_published(item) and item.link
+    ]
+
+
+def wxr_term_urls(base_url: str, document: WxrDocument) -> list[WxrInventoryItem]:
+    """Category assignments need a nicename -> numeric term_id
+    cross-reference against the top-level <wp:category> blocks for the
+    ?cat={id} fallback; tags and custom taxonomies use their slug
+    directly, no id needed."""
+    base = base_url.rstrip("/")
+    nicename_to_id = {category.nicename: category.term_id for category in document.categories}
+    seen: set[str] = set()
+    out: list[WxrInventoryItem] = []
+    for item in document.items:
+        if not _is_kept_published(item):
+            continue
+        for domain, nicename in item.categories:
+            if domain == "category":
+                term_id = nicename_to_id.get(nicename)
+                if term_id is None:
+                    logger.warning(
+                        "WXR category %r has no top-level <wp:category> entry; skipping",
+                        nicename,
+                    )
+                    continue
+                url = f"{base}/?cat={term_id}"
+            elif domain == "post_tag":
+                url = f"{base}/?tag={quote(nicename)}"
+            else:
+                url = f"{base}/?taxonomy={quote(domain)}&term={quote(nicename)}"
+            if url not in seen:
+                seen.add(url)
+                out.append(WxrInventoryItem(url))
+    return out
+
+
+def wxr_author_urls(base_url: str, document: WxrDocument) -> list[WxrInventoryItem]:
+    """?author={id}, restricted to authors of at least one kept published
+    post/page -- mirrors the old SQL's "authors with published posts"
+    scope. Attachments excluded: dc:creator on an attachment is the
+    uploader, not a content author in the sense that scope meant."""
+    base = base_url.rstrip("/")
+    login_to_id = {author.login: author.author_id for author in document.authors}
+    seen: set[str] = set()
+    out: list[WxrInventoryItem] = []
+    for item in document.items:
+        if item.post_type not in ("post", "page") or item.status != "publish":
+            continue
+        author_id = login_to_id.get(item.creator)
+        if author_id is None:
+            logger.warning(
+                "WXR dc:creator %r has no top-level <wp:author> entry; skipping",
+                item.creator,
+            )
+            continue
+        if author_id not in seen:
+            seen.add(author_id)
+            out.append(WxrInventoryItem(f"{base}/?author={author_id}"))
+    return out
+
+
+def discover_wxr(manifest: Manifest, base_url: str, xml_backup_path: Path) -> bool:
+    """Seed manifest from a WXR export file. No network -- a local file
+    read plus pure XML parsing. Returns whether the file was readable and
+    parseable (mirrors discover_sitemaps/discover_rest_api's boolean
+    convention for the report's inventory-source-availability line)."""
+    try:
+        xml_bytes = Path(xml_backup_path).read_bytes()
+    except OSError:
+        logger.warning("configured xml_backup not readable: %s", xml_backup_path)
+        return False
+    try:
+        document = parse_wxr_xml(xml_bytes)
+    except etree.XMLSyntaxError:
+        logger.warning("failed to parse xml_backup as WXR: %s", xml_backup_path)
+        return False
+    for item in wxr_post_urls(document):
+        manifest.get_or_create(item.url, discovered_via=item.discovered_via)
+    for item in wxr_term_urls(base_url, document):
+        manifest.get_or_create(item.url, discovered_via=item.discovered_via)
+    for item in wxr_author_urls(base_url, document):
+        manifest.get_or_create(item.url, discovered_via=item.discovered_via)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Database inventory
 # ---------------------------------------------------------------------------
 
