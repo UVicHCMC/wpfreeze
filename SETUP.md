@@ -4,7 +4,22 @@ The easy on-ramp, plus the fully manual path for when you want full control.
 
 ## `wpfreeze` — the wizard (recommended for a first run)
 
-Run `wpfreeze` with no arguments and answer the questions:
+If the current directory has a site config YAML with an existing,
+resumable run (a `manifest.json` already sitting at its `output_dir`),
+`wpfreeze` offers to pick that back up first:
+
+```
+$ wpfreeze
+Found an existing run: www-example-com.yaml (https://www.example.com/) -- 5747 fetched, 76 pending/retrying, 5846 total. Resume it? [Y/n]
+```
+
+Say yes and it resumes immediately, no further questions asked. Say no
+(or there's nothing to resume) and it falls through to the ordinary
+question flow. With more than one resumable config in the directory,
+you get a numbered list to choose from instead, plus a "none of these"
+option.
+
+Otherwise, run `wpfreeze` with no arguments and answer the questions:
 
 ```
 $ wpfreeze

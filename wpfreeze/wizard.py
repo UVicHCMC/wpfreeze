@@ -1,8 +1,11 @@
-"""No-args wizard mode: `wpfreeze` with no subcommand walks through building
-a site config interactively -- base URL, output directory, politeness,
-Wayback recovery, and an optional WordPress XML export (WXR) to augment
-inventory completeness -- then writes a normal site YAML and offers to
-dry-run and run it immediately.
+"""No-args wizard mode: `wpfreeze` with no subcommand first looks in the
+current directory for a site config with an existing, resumable run and
+offers to pick that back up (see find_resumable_configs) -- and only if
+there's none, or the user declines all of them, walks through building a
+new config interactively: base URL, output directory, politeness, Wayback
+recovery, and an optional WordPress XML export (WXR) to augment inventory
+completeness -- then writes a normal site YAML and offers to dry-run and
+run it immediately.
 
 Every question here maps onto the same SiteConfig/YAML shape load_config()
 already reads (see wpfreeze.cli) -- the file this writes is a completely
@@ -11,11 +14,15 @@ with no wizard involved.
 """
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 from urllib.parse import urlsplit
 
 import yaml
+
+if TYPE_CHECKING:
+    from wpfreeze.cli import SiteConfig
 
 # Mirrors example-site.yaml's default exclusions -- kept in sync manually,
 # see that file's comments for what each pattern covers.
@@ -84,6 +91,87 @@ def _ask_xml_backup(ask: Callable[[str], str], tell: Callable[[str], None]) -> s
     return _ask_required("Path to the WXR export file", ask)
 
 
+def find_resumable_configs(directory: Path = Path(".")) -> list[tuple[Path, SiteConfig]]:
+    """Site config YAML files directly in `directory` that already have a
+    manifest.json at their output_dir -- i.e., a prior run that --resume
+    would continue rather than refuse (see run_acquire's collision guard).
+
+    Every *.yaml/*.yml in the directory is a candidate; anything that
+    doesn't parse as a valid site config is silently skipped rather than
+    raised, deliberately broadly -- most directories wpfreeze runs from
+    will have unrelated YAML files, and probing them is not this
+    function's business to fail loudly over.
+    """
+    from wpfreeze.cli import load_config  # deferred: cli imports this module
+
+    candidates = []
+    paths = sorted(directory.glob("*.yaml")) + sorted(directory.glob("*.yml"))
+    for path in paths:
+        try:
+            config = load_config(path)
+        except Exception:
+            continue
+        if (config.output_dir / "manifest.json").exists():
+            candidates.append((path, config))
+    return candidates
+
+
+def _describe_manifest(output_dir: Path) -> str:
+    from wpfreeze.manifest import Manifest, Status
+
+    manifest = Manifest.load(output_dir / "manifest.json")
+    counts = Counter(r.status for r in manifest.all())
+    fetched = counts.get(Status.FETCHED.value, 0) + counts.get(Status.FETCHED_WAYBACK.value, 0)
+    pending = counts.get(Status.PENDING.value, 0) + counts.get(Status.RETRYING.value, 0)
+    return f"{fetched} fetched, {pending} pending/retrying, {len(manifest)} total"
+
+
+def _offer_resume(
+    candidates: list[tuple[Path, SiteConfig]],
+    ask: Callable[[str], str],
+    tell: Callable[[str], None],
+) -> tuple[bool, int]:
+    """Returns (handled, exit_code). handled=True means a candidate was
+    resumed and run_wizard should return exit_code immediately without
+    falling through to the ordinary question flow."""
+    from wpfreeze.cli import run_acquire
+
+    if not candidates:
+        return False, 0
+
+    if len(candidates) == 1:
+        path, config = candidates[0]
+        summary = _describe_manifest(config.output_dir)
+        resume = _ask_yes_no(
+            f"Found an existing run: {path.name} ({config.base_url}) -- {summary}. Resume it?",
+            True,
+            ask,
+        )
+        if not resume:
+            return False, 0
+        chosen_path, chosen_config = path, config
+    else:
+        tell("Found existing runs that could be resumed:")
+        for i, (path, config) in enumerate(candidates, start=1):
+            summary = _describe_manifest(config.output_dir)
+            tell(f"  {i}) {path.name} ({config.base_url}) -- {summary}")
+        skip_choice = str(len(candidates) + 1)
+        tell(f"  {skip_choice}) None of these -- start a new one")
+        choice = _ask("Choose", skip_choice, ask)
+        try:
+            index = int(choice) - 1
+        except ValueError:
+            index = len(candidates)
+        if not (0 <= index < len(candidates)):
+            return False, 0
+        chosen_path, chosen_config = candidates[index]
+
+    tell(f"Resuming {chosen_path}...")
+    exit_code = run_acquire(chosen_config, resume=True, dry_run=False)
+    tell(f"Acquisition finished (exit code {exit_code}). See {chosen_config.output_dir}/report.html")
+    return True, exit_code
+
+
 def build_config_dict(
     ask: Callable[[str], str] = input,
     tell: Callable[[str], None] = print,
@@ -142,6 +230,10 @@ def run_wizard(
     tell: Callable[[str], None] = print,
 ) -> int:
     from wpfreeze.cli import load_config, run_acquire  # deferred: cli imports this module
+
+    handled, exit_code = _offer_resume(find_resumable_configs(), ask, tell)
+    if handled:
+        return exit_code
 
     config_dict, suggested_path = build_config_dict(ask=ask, tell=tell)
 

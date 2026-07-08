@@ -77,7 +77,13 @@ pytest
 
 ## Quickstart
 
-Run `wpfreeze` with no arguments and answer the questions:
+If the current directory has a site config with an existing, resumable
+run (a `manifest.json` already at its `output_dir`), `wpfreeze` offers to
+pick that back up before anything else — say no, or there's nothing to
+resume, and it falls through to the questions below. With more than one
+resumable config around, you get a numbered list to pick from instead.
+
+Otherwise, run `wpfreeze` with no arguments and answer the questions:
 
 ```
 $ wpfreeze

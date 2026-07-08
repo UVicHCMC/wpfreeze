@@ -4,6 +4,7 @@ import yaml
 
 from wpfreeze.wizard import (
     build_config_dict,
+    find_resumable_configs,
     run_wizard,
     slugify_domain,
 )
@@ -86,6 +87,11 @@ def test_build_config_dict_with_xml_backup():
 def test_run_wizard_writes_config_and_offers_dry_run(tmp_path, monkeypatch):
     from wpfreeze.cli import SiteConfig
 
+    # find_resumable_configs scans the current directory by default -- pin it
+    # to an empty tmp_path so this test is immune to whatever real *.yaml
+    # files happen to sit in the repo's actual working directory.
+    monkeypatch.chdir(tmp_path)
+
     fake_config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
     monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
 
@@ -125,6 +131,8 @@ def test_run_wizard_auto_resumes_real_run_after_a_preceding_dry_run(tmp_path, mo
     separate prior runs, not the wizard's own just-completed dry-run."""
     from wpfreeze.cli import SiteConfig
 
+    monkeypatch.chdir(tmp_path)
+
     fake_config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
     monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
 
@@ -159,6 +167,8 @@ def test_run_wizard_reports_full_resume_command_on_manifest_collision(tmp_path, 
     command to fix it, not just point at a report that was never written."""
     from wpfreeze.cli import SiteConfig
 
+    monkeypatch.chdir(tmp_path)
+
     fake_config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
     monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
     monkeypatch.setattr("wpfreeze.cli.run_acquire", lambda config, resume, dry_run: 2)
@@ -180,3 +190,205 @@ def test_run_wizard_reports_full_resume_command_on_manifest_collision(tmp_path, 
 
     assert exit_code == 2
     assert any(f"wpfreeze acquire --config {config_path} --resume" in m for m in messages)
+
+
+# ---------------------------------------------------------------------------
+# find_resumable_configs: scanning a directory for configs with a prior run
+# ---------------------------------------------------------------------------
+
+
+def _write_site_yaml(path: Path, base_url: str, output_dir: Path) -> Path:
+    path.write_text(
+        yaml.safe_dump({"base_url": base_url, "output_dir": str(output_dir)}), encoding="utf-8"
+    )
+    return path
+
+
+def _write_fake_manifest(output_dir: Path) -> None:
+    from wpfreeze.manifest import Manifest
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="sitemap")
+    manifest.save(output_dir / "manifest.json")
+
+
+def test_find_resumable_configs_finds_config_with_existing_manifest(tmp_path):
+    site_yaml = _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+    _write_fake_manifest(tmp_path / "out")
+
+    candidates = find_resumable_configs(tmp_path)
+
+    assert len(candidates) == 1
+    path, config = candidates[0]
+    assert path == site_yaml
+    assert config.base_url == "https://example.com/"
+
+
+def test_find_resumable_configs_skips_config_without_manifest(tmp_path):
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+    # no manifest.json written -- nothing to resume
+
+    assert find_resumable_configs(tmp_path) == []
+
+
+def test_find_resumable_configs_skips_unparseable_yaml(tmp_path):
+    (tmp_path / "not-a-config.yaml").write_text("- just\n- a\n- list\n", encoding="utf-8")
+    (tmp_path / "also-bad.yaml").write_text("no_base_url: true\n", encoding="utf-8")
+
+    assert find_resumable_configs(tmp_path) == []
+
+
+def test_find_resumable_configs_empty_directory_returns_empty(tmp_path):
+    assert find_resumable_configs(tmp_path) == []
+
+
+def test_find_resumable_configs_multiple_candidates(tmp_path):
+    _write_site_yaml(tmp_path / "a.yaml", "https://a.example.com/", tmp_path / "a-out")
+    _write_fake_manifest(tmp_path / "a-out")
+    _write_site_yaml(tmp_path / "b.yaml", "https://b.example.com/", tmp_path / "b-out")
+    _write_fake_manifest(tmp_path / "b-out")
+
+    candidates = find_resumable_configs(tmp_path)
+
+    assert {path.name for path, _ in candidates} == {"a.yaml", "b.yaml"}
+
+
+# ---------------------------------------------------------------------------
+# run_wizard: offering to resume an existing run before the question flow
+# ---------------------------------------------------------------------------
+
+
+def test_run_wizard_offers_resume_and_skips_the_question_flow_on_yes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+    _write_fake_manifest(tmp_path / "out")
+
+    acquire_calls = []
+    monkeypatch.setattr(
+        "wpfreeze.cli.run_acquire",
+        lambda config, resume, dry_run: acquire_calls.append((resume, dry_run)) or 0,
+    )
+
+    ask = _answers("y")  # yes, resume it -- no further question should be asked
+    messages = []
+    exit_code = run_wizard(ask=ask, tell=messages.append)
+
+    assert exit_code == 0
+    assert acquire_calls == [(True, False)]
+    assert any("Resuming" in m for m in messages)
+
+
+def test_run_wizard_multiple_candidates_lets_user_pick_one(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_site_yaml(tmp_path / "a.yaml", "https://a.example.com/", tmp_path / "a-out")
+    _write_fake_manifest(tmp_path / "a-out")
+    _write_site_yaml(tmp_path / "b.yaml", "https://b.example.com/", tmp_path / "b-out")
+    _write_fake_manifest(tmp_path / "b-out")
+
+    acquire_calls = []
+    monkeypatch.setattr(
+        "wpfreeze.cli.run_acquire",
+        lambda config, resume, dry_run: acquire_calls.append((config.base_url, resume, dry_run)) or 0,
+    )
+
+    ask = _answers("2")  # pick the second listed candidate
+    messages = []
+    exit_code = run_wizard(ask=ask, tell=messages.append)
+
+    assert exit_code == 0
+    assert len(acquire_calls) == 1
+    base_url, resume, dry_run = acquire_calls[0]
+    assert base_url == "https://b.example.com/"
+    assert resume is True
+    assert dry_run is False
+
+
+def test_run_wizard_multiple_candidates_none_of_these_falls_through(tmp_path, monkeypatch):
+    from wpfreeze.cli import SiteConfig
+
+    monkeypatch.chdir(tmp_path)
+    _write_site_yaml(tmp_path / "a.yaml", "https://a.example.com/", tmp_path / "a-out")
+    _write_fake_manifest(tmp_path / "a-out")
+    _write_site_yaml(tmp_path / "b.yaml", "https://b.example.com/", tmp_path / "b-out")
+    _write_fake_manifest(tmp_path / "b-out")
+
+    fake_config = SiteConfig(base_url="https://new-site.example.com/", output_dir=tmp_path / "new-out")
+    monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
+    monkeypatch.setattr("wpfreeze.cli.run_acquire", lambda config, resume, dry_run: 0)
+
+    config_path = tmp_path / "new-site.yaml"
+    ask = _answers(
+        "3",  # neither a nor b -- "None of these" is the 3rd option with 2 candidates
+        "https://new-site.example.com",
+        "",
+        "",
+        "n",  # wayback: no
+        "n",  # xml_backup: no
+        str(config_path),
+        "n",
+        "n",
+    )
+    exit_code = run_wizard(ask=ask, tell=lambda m: None)
+
+    assert exit_code == 0
+    assert config_path.exists()
+
+
+def test_run_wizard_falls_through_to_full_flow_when_resume_declined(tmp_path, monkeypatch):
+    from wpfreeze.cli import SiteConfig
+
+    monkeypatch.chdir(tmp_path)
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+    _write_fake_manifest(tmp_path / "out")
+
+    fake_config = SiteConfig(base_url="https://new-site.example.com/", output_dir=tmp_path / "new-out")
+    monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
+    acquire_calls = []
+    monkeypatch.setattr(
+        "wpfreeze.cli.run_acquire",
+        lambda config, resume, dry_run: acquire_calls.append((resume, dry_run)) or 0,
+    )
+
+    config_path = tmp_path / "new-site.yaml"
+    ask = _answers(
+        "n",  # decline the resume offer
+        "https://new-site.example.com",  # base_url
+        "",  # output_dir
+        "",  # rate preset
+        "n",  # wayback: no
+        "n",  # xml_backup: no
+        str(config_path),  # save-as path
+        "n",  # dry run now
+        "n",  # real run now
+    )
+    exit_code = run_wizard(ask=ask, tell=lambda m: None)
+
+    assert exit_code == 0
+    assert config_path.exists()  # the normal wizard flow actually ran
+
+
+def test_run_wizard_no_candidates_goes_straight_to_question_flow(tmp_path, monkeypatch):
+    from wpfreeze.cli import SiteConfig
+
+    monkeypatch.chdir(tmp_path)  # empty directory -- nothing to offer
+
+    fake_config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
+    monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
+    monkeypatch.setattr("wpfreeze.cli.run_acquire", lambda config, resume, dry_run: 0)
+
+    config_path = tmp_path / "example-com.yaml"
+    ask = _answers(
+        "https://example.com",  # base_url
+        "",  # output_dir
+        "",  # rate preset
+        "n",  # wayback: no (skips the follow-up snapshot-date question)
+        "n",  # xml_backup: no
+        str(config_path),  # save-as path
+        "n",  # dry run now
+        "n",  # real run now
+    )
+    exit_code = run_wizard(ask=ask, tell=lambda m: None)
+
+    assert exit_code == 0
+    assert config_path.exists()
