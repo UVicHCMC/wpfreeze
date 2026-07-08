@@ -26,6 +26,17 @@ SUCCESS = "success"
 WAYBACK_CANDIDATE = "wayback_candidate"
 
 _TRANSIENT_STATUSES = {429}
+_LOCKOUT_STATUSES = {401, 403}
+
+# A run of this many consecutive 401/403 responses from the same host is
+# treated as a likely site-side lockout (e.g. a security plugin banning
+# this IP after too many rapid requests) rather than a handful of
+# individually private pages -- ordinary auth-gated content doesn't
+# usually cluster into a long unbroken run against a crawler that's
+# hitting many different URLs. See RateLimiter.note_response.
+DEFAULT_LOCKOUT_THRESHOLD = 5
+DEFAULT_LOCKOUT_COOLDOWN = 60.0
+DEFAULT_LOCKOUT_COOLDOWN_MAX = 1800.0
 
 
 @dataclass(frozen=True)
@@ -64,12 +75,34 @@ class RateLimiter:
     enforced across *all* callers regardless of how many workers are
     concurrently fetching -- concurrency parallelizes across hosts, not
     within one.
+
+    Also tracks consecutive 401/403 responses per host via note_response.
+    A run reaching `lockout_threshold` pushes that host's next-allowed
+    time forward by a cooldown (doubling on each further lockout episode
+    for the same host, capped at `lockout_cooldown_max`) -- backing the
+    *host* off, not just the one fetch that tripped it, since concurrent
+    workers on the same host would otherwise keep hammering it for the
+    duration of the cooldown regardless. This reuses `wait`'s existing
+    per-host `_next_allowed` bookkeeping rather than a separate blocking
+    mechanism, so every future `wait(host)` call -- from any worker --
+    naturally respects it.
     """
 
-    def __init__(self, rate_limit: float) -> None:
+    def __init__(
+        self,
+        rate_limit: float,
+        lockout_threshold: int = DEFAULT_LOCKOUT_THRESHOLD,
+        lockout_cooldown: float = DEFAULT_LOCKOUT_COOLDOWN,
+        lockout_cooldown_max: float = DEFAULT_LOCKOUT_COOLDOWN_MAX,
+    ) -> None:
         self._rate_limit = rate_limit
         self._lock = threading.Lock()
         self._next_allowed: dict[str, float] = {}
+        self._lockout_threshold = lockout_threshold
+        self._lockout_cooldown = lockout_cooldown
+        self._lockout_cooldown_max = lockout_cooldown_max
+        self._consecutive_denied: dict[str, int] = {}
+        self._lockout_strikes: dict[str, int] = {}
 
     def wait(self, host: str) -> None:
         with self._lock:
@@ -79,6 +112,34 @@ class RateLimiter:
             self._next_allowed[host] = max(now, next_allowed) + self._rate_limit
         if sleep_for > 0:
             time.sleep(sleep_for)
+
+    def note_response(self, host: str, status: int) -> None:
+        """Record a terminal HTTP status for `host`. Anything other than
+        401/403 resets the consecutive-denial count; a run reaching
+        `lockout_threshold` backs the whole host off (see class
+        docstring) and logs a warning -- this is user-visible on the
+        console via the standard "wpfreeze" logger, deliberately loud
+        (WARNING, not INFO/DEBUG) since it changes the pace of the run."""
+        with self._lock:
+            if status not in _LOCKOUT_STATUSES:
+                self._consecutive_denied[host] = 0
+                return
+            count = self._consecutive_denied.get(host, 0) + 1
+            self._consecutive_denied[host] = count
+            if count < self._lockout_threshold:
+                return
+            self._consecutive_denied[host] = 0
+            strikes = self._lockout_strikes.get(host, 0)
+            self._lockout_strikes[host] = strikes + 1
+            cooldown = min(self._lockout_cooldown * (2**strikes), self._lockout_cooldown_max)
+            now = time.monotonic()
+            self._next_allowed[host] = max(self._next_allowed.get(host, now), now) + cooldown
+        logger.warning(
+            "%d consecutive 401/403 responses from %s -- this looks like a site-side "
+            "lockout (e.g. a security plugin blocking this IP), not individually "
+            "private pages. Backing off %.1fs before %s is fetched again.",
+            count, host, cooldown, host,
+        )
 
 
 def _is_transient(status_code: int) -> bool:
@@ -139,6 +200,7 @@ def fetch_with_retries(
 
     assert response is not None  # error is None => a response was received
     status = response.status_code
+    rate_limiter.note_response(host, status)
 
     if 200 <= status < 300:
         result = FetchResult(

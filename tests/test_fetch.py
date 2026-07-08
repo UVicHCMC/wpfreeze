@@ -189,3 +189,88 @@ def test_rate_limiter_independent_per_host():
     elapsed = time.monotonic() - start
     # Different hosts shouldn't serialize against each other.
     assert elapsed < 0.5
+
+
+# ---------------------------------------------------------------------------
+# Lockout detection: a run of 401/403s backs the whole host off
+# ---------------------------------------------------------------------------
+
+
+def test_note_response_resets_streak_on_non_lockout_status():
+    limiter = RateLimiter(0.0, lockout_threshold=3, lockout_cooldown=10.0)
+    limiter.note_response("example.com", 403)
+    limiter.note_response("example.com", 403)
+    limiter.note_response("example.com", 200)  # breaks the streak
+    limiter.note_response("example.com", 403)
+    # Only 1 consecutive denial since the reset -- nowhere near the
+    # threshold of 3, so no cooldown should have been applied.
+    start = time.monotonic()
+    limiter.wait("example.com")
+    assert time.monotonic() - start < 0.1
+
+
+def test_note_response_backs_off_whole_host_on_lockout_threshold(caplog):
+    limiter = RateLimiter(0.0, lockout_threshold=3, lockout_cooldown=0.3)
+    with caplog.at_level("WARNING", logger="wpfreeze.fetch"):
+        limiter.note_response("example.com", 403)
+        limiter.note_response("example.com", 401)
+        limiter.note_response("example.com", 403)  # 3rd consecutive -- crosses threshold
+
+    assert any("lockout" in r.message.lower() for r in caplog.records)
+    assert any("example.com" in r.message for r in caplog.records)
+
+    # A worker calling wait() right after -- even a different one than
+    # whichever fetch tripped the threshold -- must be held back by the
+    # cooldown, not just the fetch that happened to trip it.
+    start = time.monotonic()
+    limiter.wait("example.com")
+    assert time.monotonic() - start >= 0.25
+
+
+def test_note_response_does_not_affect_other_hosts():
+    limiter = RateLimiter(0.0, lockout_threshold=2, lockout_cooldown=5.0)
+    limiter.note_response("locked-out.example.com", 403)
+    limiter.note_response("locked-out.example.com", 403)  # trips lockout for this host only
+    start = time.monotonic()
+    limiter.wait("other.example.com")
+    assert time.monotonic() - start < 0.1
+
+
+def test_note_response_escalates_cooldown_on_repeated_lockouts():
+    limiter = RateLimiter(0.0, lockout_threshold=2, lockout_cooldown=0.2)
+    limiter.note_response("example.com", 403)
+    limiter.note_response("example.com", 403)  # 1st lockout episode, cooldown ~0.2s
+
+    start = time.monotonic()
+    limiter.wait("example.com")
+    first_cooldown = time.monotonic() - start
+    assert first_cooldown >= 0.15
+
+    limiter.note_response("example.com", 403)
+    limiter.note_response("example.com", 403)  # 2nd episode for this host -- should double
+
+    start = time.monotonic()
+    limiter.wait("example.com")
+    second_cooldown = time.monotonic() - start
+    assert second_cooldown >= first_cooldown * 1.5
+
+
+def test_fetch_with_retries_reports_lockout_after_consecutive_auth_gated(caplog):
+    handler = _make_handler(scripts={"/a": [403], "/b": [403], "/c": [403]})
+    # A generous cooldown relative to the real network round-trips this
+    # test makes -- the cooldown clock starts ticking inside note_response
+    # during the /c fetch, not when this test later measures elapsed time,
+    # so it needs enough margin to survive that gap plus test overhead.
+    limiter = RateLimiter(0.0, lockout_threshold=3, lockout_cooldown=1.0)
+    with run_server(handler) as base:
+        with caplog.at_level("WARNING", logger="wpfreeze.fetch"):
+            fetch_with_retries(base + "/a", requests.Session(), limiter, FAST_CONFIG)
+            fetch_with_retries(base + "/b", requests.Session(), limiter, FAST_CONFIG)
+            fetch_with_retries(base + "/c", requests.Session(), limiter, FAST_CONFIG)
+
+    assert any("lockout" in r.message.lower() for r in caplog.records)
+    # The next fetch to this host -- a different URL again -- is held
+    # back by the cooldown before its request is even sent.
+    start = time.monotonic()
+    fetch_with_retries(f"{base}/d", requests.Session(), limiter, FAST_CONFIG)
+    assert time.monotonic() - start >= 0.5
