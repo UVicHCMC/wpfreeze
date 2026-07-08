@@ -9,7 +9,6 @@ import yaml
 
 from wpfreeze.cli import (
     ConfigError,
-    DB_MISSING_MESSAGE,
     load_config,
     main,
     probe_site,
@@ -33,42 +32,19 @@ def _write_yaml(path: Path, data: dict) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_load_config_missing_db_key_refuses(tmp_path: Path):
+def test_load_config_xml_backup_absent_proceeds(tmp_path: Path):
     path = _write_yaml(tmp_path / "site.yaml", {"base_url": "https://example.com/", "output_dir": "out"})
-    with pytest.raises(ConfigError) as exc_info:
-        load_config(path)
-    assert str(exc_info.value) == DB_MISSING_MESSAGE
+    config = load_config(path)
+    assert config.xml_backup is None
 
 
-def test_load_config_db_none_proceeds(tmp_path: Path):
+def test_load_config_xml_backup_path_resolves(tmp_path: Path):
     path = _write_yaml(
         tmp_path / "site.yaml",
-        {"base_url": "https://example.com/", "output_dir": "out", "db": "none"},
+        {"base_url": "https://example.com/", "output_dir": "out", "xml_backup": "some/export.xml"},
     )
     config = load_config(path)
-    assert config.db is None
-
-
-def test_load_config_db_block_with_password_env(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("TEST_DB_PASSWORD", "hunter2")
-    path = _write_yaml(
-        tmp_path / "site.yaml",
-        {
-            "base_url": "https://example.com/",
-            "output_dir": "out",
-            "db": {
-                "host": "localhost",
-                "name": "wpdb",
-                "user": "wpuser",
-                "password_env": "TEST_DB_PASSWORD",
-                "table_prefix": "wp_",
-            },
-        },
-    )
-    config = load_config(path)
-    assert config.db is not None
-    assert config.db.password == "hunter2"
-    assert config.db.host == "localhost"
+    assert config.xml_backup == Path("some/export.xml")
 
 
 def test_load_config_defaults():
@@ -78,7 +54,7 @@ def test_load_config_defaults():
 def test_load_config_rejects_concurrency_below_one(tmp_path: Path):
     path = _write_yaml(
         tmp_path / "site.yaml",
-        {"base_url": "https://example.com/", "output_dir": "out", "db": "none", "concurrency": 0},
+        {"base_url": "https://example.com/", "output_dir": "out", "concurrency": 0},
     )
     with pytest.raises(ConfigError):
         load_config(path)
@@ -87,7 +63,7 @@ def test_load_config_rejects_concurrency_below_one(tmp_path: Path):
 def test_load_config_concurrency_plumbs_through(tmp_path: Path):
     path = _write_yaml(
         tmp_path / "site.yaml",
-        {"base_url": "https://example.com/", "output_dir": "out", "db": "none", "concurrency": 5},
+        {"base_url": "https://example.com/", "output_dir": "out", "concurrency": 5},
     )
     config = load_config(path)
     assert config.concurrency == 5
@@ -96,7 +72,7 @@ def test_load_config_concurrency_plumbs_through(tmp_path: Path):
 def test_load_config_applies_defaults(tmp_path: Path):
     path = _write_yaml(
         tmp_path / "site.yaml",
-        {"base_url": "https://example.com", "output_dir": "out", "db": "none"},
+        {"base_url": "https://example.com", "output_dir": "out"},
     )
     config = load_config(path)
     assert config.base_url == "https://example.com/"
@@ -113,7 +89,6 @@ def test_load_config_wayback_settings(tmp_path: Path):
         {
             "base_url": "https://example.com/",
             "output_dir": "out",
-            "db": "none",
             "wayback": {"enabled": False, "prefer_snapshots_near": "2022-06-15"},
         },
     )
@@ -127,8 +102,7 @@ def test_load_config_wayback_settings(tmp_path: Path):
 def test_example_site_yaml_parses():
     repo_root = Path(__file__).resolve().parent.parent
     config = load_config(repo_root / "example-site.yaml")
-    assert config.db is not None
-    assert config.db.table_prefix == "wp_"
+    assert config.xml_backup is None
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +132,6 @@ def _config_for(site: FixtureSite, output_dir: Path):
         wayback_rate_limit=0.0,
         exclusions=[],
         wayback=WaybackSettings(enabled=False),  # no real Wayback in tests
-        db=None,
     )
 
 
@@ -225,7 +198,7 @@ def test_run_report_regenerates_without_refetching(tmp_path: Path):
 def test_run_report_missing_manifest_returns_error(tmp_path: Path):
     from wpfreeze.cli import SiteConfig
 
-    config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "nope", db=None)
+    config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "nope")
     assert run_report(config, html_only=False, json_only=False) == 2
 
 
@@ -240,7 +213,6 @@ def test_main_creates_logs_directory_with_content(tmp_path: Path):
                 "rate_limit": 0.0,
                 "wayback_rate_limit": 0.0,
                 "wayback": {"enabled": False},
-                "db": "none",
             },
         )
         exit_code = main(["acquire", "--config", str(config_path)])
@@ -264,7 +236,7 @@ def test_run_status_reports_counts(tmp_path: Path, capsys):
 
 
 # ---------------------------------------------------------------------------
-# main() dispatch: no subcommand -> wizard, "setup-db" -> dbsetup
+# main() dispatch: no subcommand -> wizard
 # ---------------------------------------------------------------------------
 
 
@@ -273,15 +245,3 @@ def test_main_with_no_args_launches_wizard(monkeypatch):
     monkeypatch.setattr("wpfreeze.wizard.run_wizard", lambda: calls.append("wizard") or 0)
     assert main([]) == 0
     assert calls == ["wizard"]
-
-
-def test_main_setup_db_dispatches_with_remaining_args(monkeypatch):
-    captured = {}
-
-    def fake_interactive_main(argv):
-        captured["argv"] = argv
-        return 0
-
-    monkeypatch.setattr("wpfreeze.dbsetup.interactive_main", fake_interactive_main)
-    assert main(["setup-db", "--dump", "/tmp/x.sql", "--yes"]) == 0
-    assert captured["argv"] == ["--dump", "/tmp/x.sql", "--yes"]

@@ -358,12 +358,6 @@ class DbConfig:
     table_prefix: str = "wp_"
 
 
-@dataclass(frozen=True)
-class DbInventoryItem:
-    url: str
-    discovered_via: str = "database"
-
-
 def run_mysql_query(db_config: DbConfig, sql: str, binary: str = "mysql") -> str:
     """Execute `sql` via the mysql/mariadb client and return its raw
     --batch --raw tab-separated output.
@@ -401,75 +395,6 @@ def run_mysql_query(db_config: DbConfig, sql: str, binary: str = "mysql") -> str
         return result.stdout
     finally:
         tmp_path.unlink(missing_ok=True)
-
-
-def parse_batch_output(raw: str) -> list[list[str]]:
-    """Parse `mysql --batch --raw` tab-separated output into rows,
-    skipping the header line."""
-    lines = raw.splitlines()
-    if not lines:
-        return []
-    return [line.split("\t") for line in lines[1:] if line]
-
-
-def build_post_urls(base_url: str, rows: list[list[str]]) -> list[DbInventoryItem]:
-    """rows: [(id, post_type)] for published posts/pages/attachments.
-    Attachments get ?attachment_id=, everything else gets ?p=."""
-    base_url = base_url.rstrip("/")
-    items = []
-    for row in rows:
-        post_id, post_type = row[0], row[1]
-        if post_type == "attachment":
-            items.append(DbInventoryItem(f"{base_url}/?attachment_id={post_id}"))
-        else:
-            items.append(DbInventoryItem(f"{base_url}/?p={post_id}"))
-    return items
-
-
-def build_term_urls(base_url: str, rows: list[list[str]]) -> list[DbInventoryItem]:
-    """rows: [(term_id, slug, taxonomy)]."""
-    base_url = base_url.rstrip("/")
-    items = []
-    for row in rows:
-        term_id, slug, taxonomy = row[0], row[1], row[2]
-        if taxonomy == "category":
-            items.append(DbInventoryItem(f"{base_url}/?cat={term_id}"))
-        elif taxonomy == "post_tag":
-            items.append(DbInventoryItem(f"{base_url}/?tag={quote(slug)}"))
-        else:
-            items.append(
-                DbInventoryItem(f"{base_url}/?taxonomy={quote(taxonomy)}&term={quote(slug)}")
-            )
-    return items
-
-
-def build_author_urls(base_url: str, rows: list[list[str]]) -> list[DbInventoryItem]:
-    """rows: [(user_id,)] for authors with published posts."""
-    base_url = base_url.rstrip("/")
-    return [DbInventoryItem(f"{base_url}/?author={row[0]}") for row in rows]
-
-
-POSTS_SQL_TEMPLATE = (
-    "SELECT ID, post_type FROM {prefix}posts WHERE post_status = 'publish';"
-)
-TERMS_SQL_TEMPLATE = (
-    "SELECT t.term_id, t.slug, tt.taxonomy FROM {prefix}terms t "
-    "JOIN {prefix}term_taxonomy tt ON tt.term_id = t.term_id "
-    "WHERE tt.count > 0;"
-)
-AUTHORS_SQL_TEMPLATE = (
-    "SELECT DISTINCT u.ID FROM {prefix}users u "
-    "JOIN {prefix}posts p ON p.post_author = u.ID "
-    "WHERE p.post_status = 'publish';"
-)
-
-
-def build_inventory_queries(table_prefix: str) -> dict[str, str]:
-    return {
-        "posts": POSTS_SQL_TEMPLATE.format(prefix=table_prefix),
-        "terms": TERMS_SQL_TEMPLATE.format(prefix=table_prefix),
-        "authors": AUTHORS_SQL_TEMPLATE.format(prefix=table_prefix),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -558,30 +483,10 @@ def discover_rest_api(
     return found_any
 
 
-def discover_database(manifest: Manifest, base_url: str, db_config: DbConfig) -> None:
-    """Seed `manifest` from the database inventory: published posts/pages/
-    attachments, non-empty terms, and authors with published posts --
-    entered as their query-string permalink fallback (see
-    CLAUDE-acquire.md Stage 1) for redirect-following to resolve."""
-    queries = build_inventory_queries(db_config.table_prefix)
-
-    posts_raw = run_mysql_query(db_config, queries["posts"])
-    for item in build_post_urls(base_url, parse_batch_output(posts_raw)):
-        manifest.get_or_create(item.url, discovered_via=item.discovered_via)
-
-    terms_raw = run_mysql_query(db_config, queries["terms"])
-    for item in build_term_urls(base_url, parse_batch_output(terms_raw)):
-        manifest.get_or_create(item.url, discovered_via=item.discovered_via)
-
-    authors_raw = run_mysql_query(db_config, queries["authors"])
-    for item in build_author_urls(base_url, parse_batch_output(authors_raw)):
-        manifest.get_or_create(item.url, discovered_via=item.discovered_via)
-
-
 def discover_inventory(
     manifest: Manifest,
     base_url: str,
-    db_config: DbConfig | None,
+    xml_backup: Path | None,
     session: requests.Session,
     rate_limiter: RateLimiter,
     fetch_config: FetchConfig,
@@ -590,6 +495,5 @@ def discover_inventory(
     source. Returns which sources were reachable, for the report."""
     sitemap_ok = discover_sitemaps(manifest, base_url, session, rate_limiter, fetch_config)
     rest_ok = discover_rest_api(manifest, base_url, session, rate_limiter, fetch_config)
-    if db_config is not None:
-        discover_database(manifest, base_url, db_config)
-    return {"sitemap": sitemap_ok, "rest_api": rest_ok, "database": db_config is not None}
+    xml_ok = discover_wxr(manifest, base_url, xml_backup) if xml_backup is not None else False
+    return {"sitemap": sitemap_ok, "rest_api": rest_ok, "xml_backup": xml_ok}

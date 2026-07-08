@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import re
 import sys
 from collections import Counter
@@ -30,7 +29,7 @@ from wpfreeze.analyse import (
 )
 from wpfreeze.crawl import compile_exclusions, crawl_fixpoint
 from wpfreeze.fetch import DEFAULT_USER_AGENT, FetchConfig, RateLimiter
-from wpfreeze.inventory import DbConfig, discover_inventory
+from wpfreeze.inventory import discover_inventory
 from wpfreeze.manifest import Manifest, Status, utc_now
 from wpfreeze.outputs import compute_output_paths, generate_redirects_htaccess
 from wpfreeze.report import write_report_html, write_report_json
@@ -38,11 +37,6 @@ from wpfreeze.urlnorm import SiteProfile
 from wpfreeze.wayback import recover_via_wayback
 
 logger = logging.getLogger(__name__)
-
-DB_MISSING_MESSAGE = (
-    "Do you have database access for this site? If yes, add a `db:` block "
-    "(see example-site.yaml); if no, set `db: none`."
-)
 
 _IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
@@ -68,7 +62,7 @@ class SiteConfig:
     extra_hosts: list[str] = field(default_factory=list)
     user_agent: str = DEFAULT_USER_AGENT
     wayback: WaybackSettings = field(default_factory=WaybackSettings)
-    db: DbConfig | None = None  # None means the config said `db: none`
+    xml_backup: Path | None = None  # optional: a WordPress XML export (WXR) to augment inventory
 
 
 def _parse_date(value) -> date:
@@ -80,16 +74,14 @@ def _parse_date(value) -> date:
 def load_config(path: Path) -> SiteConfig:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
 
-    if "db" not in raw:
-        raise ConfigError(DB_MISSING_MESSAGE)
-
-    db_config = _parse_db_config(raw["db"])
     wayback_raw = raw.get("wayback") or {}
     prefer_near_raw = wayback_raw.get("prefer_snapshots_near")
 
     concurrency = int(raw.get("concurrency", 2))
     if concurrency < 1:
         raise ConfigError(f"concurrency must be >= 1, got {concurrency}")
+
+    xml_backup_raw = raw.get("xml_backup")
 
     return SiteConfig(
         base_url=raw["base_url"].rstrip("/") + "/",
@@ -104,24 +96,7 @@ def load_config(path: Path) -> SiteConfig:
             enabled=bool(wayback_raw.get("enabled", True)),
             prefer_snapshots_near=_parse_date(prefer_near_raw) if prefer_near_raw else date.today(),
         ),
-        db=db_config,
-    )
-
-
-def _parse_db_config(db_raw) -> DbConfig | None:
-    if db_raw is None or db_raw == "none":
-        return None
-    password = db_raw.get("password")
-    if password is None and db_raw.get("password_env"):
-        password = os.environ.get(db_raw["password_env"])
-    return DbConfig(
-        host=db_raw.get("host"),
-        socket=db_raw.get("socket"),
-        port=db_raw.get("port"),
-        name=db_raw.get("name", ""),
-        user=db_raw.get("user", ""),
-        password=password,
-        table_prefix=db_raw.get("table_prefix", "wp_"),
+        xml_backup=Path(xml_backup_raw) if xml_backup_raw else None,
     )
 
 
@@ -255,7 +230,7 @@ def run_acquire(config: SiteConfig, resume: bool, dry_run: bool) -> int:
     profile = probe_site(config.base_url, session, config.user_agent, config.extra_hosts)
 
     manifest.get_or_create(config.base_url, discovered_via="base_url")
-    discover_inventory(manifest, config.base_url, config.db, session, rate_limiter, fetch_config)
+    discover_inventory(manifest, config.base_url, config.xml_backup, session, rate_limiter, fetch_config)
     manifest.save(manifest_path)
 
     if dry_run:
@@ -340,14 +315,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     status_p = subparsers.add_parser("status", help="print a one-screen manifest summary")
     status_p.add_argument("--config", required=True, type=Path)
 
-    # Own argparse parser (wpfreeze.dbsetup.build_arg_parser); registered
-    # here with REMAINDER only so `wpfreeze --help` lists it -- main()
-    # intercepts "setup-db" before this parser ever sees its flags.
-    setup_db_p = subparsers.add_parser(
-        "setup-db", help="interactively import a SQL dump into a local scoped database"
-    )
-    setup_db_p.add_argument("rest", nargs=argparse.REMAINDER)
-
     return parser
 
 
@@ -392,11 +359,6 @@ def main(argv: list[str] | None = None) -> int:
         from wpfreeze.wizard import run_wizard
 
         return run_wizard()
-
-    if raw_argv[0] == "setup-db":
-        from wpfreeze.dbsetup import interactive_main
-
-        return interactive_main(raw_argv[1:])
 
     args = build_arg_parser().parse_args(raw_argv)
 

@@ -120,7 +120,7 @@ def test_build_config_dict_dump_file_delegates_to_dbsetup(monkeypatch):
 def test_run_wizard_writes_config_and_offers_dry_run(tmp_path, monkeypatch):
     from wpfreeze.cli import SiteConfig
 
-    fake_config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out", db=None)
+    fake_config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
     monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
 
     acquire_calls = []

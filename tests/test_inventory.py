@@ -8,13 +8,8 @@ from wpfreeze.inventory import (
     DbConfig,
     WxrDocument,
     WxrItem,
-    build_author_urls,
-    build_inventory_queries,
-    build_post_urls,
-    build_term_urls,
     discover_wxr,
     extract_links_from_rest_items,
-    parse_batch_output,
     parse_rest_total_pages,
     parse_robots_sitemaps,
     parse_sitemap_xml,
@@ -273,68 +268,11 @@ def test_parse_wxr_xml_handles_real_world_export():
 
 
 # ---------------------------------------------------------------------------
-# Database inventory: batch-output parsing and query-string URL building
-# ---------------------------------------------------------------------------
-
-
-def test_parse_batch_output_skips_header():
-    raw = "ID\tpost_type\n1\tpost\n2\tpage\n3\tattachment\n"
-    assert parse_batch_output(raw) == [["1", "post"], ["2", "page"], ["3", "attachment"]]
-
-
-def test_parse_batch_output_empty():
-    assert parse_batch_output("") == []
-    assert parse_batch_output("ID\tpost_type\n") == []
-
-
-def test_build_post_urls_distinguishes_attachments():
-    rows = [["1", "post"], ["2", "page"], ["3", "attachment"], ["4", "custom_type"]]
-    items = build_post_urls("https://example.com", rows)
-    assert [i.url for i in items] == [
-        "https://example.com/?p=1",
-        "https://example.com/?p=2",
-        "https://example.com/?attachment_id=3",
-        "https://example.com/?p=4",
-    ]
-    assert all(i.discovered_via == "database" for i in items)
-
-
-def test_build_term_urls_categories_tags_and_custom_taxonomy():
-    rows = [
-        ["5", "news", "category"],
-        ["6", "opinion", "post_tag"],
-        ["7", "team a", "custom_tax"],
-    ]
-    items = build_term_urls("https://example.com", rows)
-    assert [i.url for i in items] == [
-        "https://example.com/?cat=5",
-        "https://example.com/?tag=opinion",
-        "https://example.com/?taxonomy=custom_tax&term=team%20a",
-    ]
-
-
-def test_build_author_urls():
-    items = build_author_urls("https://example.com/", [["9"], ["10"]])
-    assert [i.url for i in items] == [
-        "https://example.com/?author=9",
-        "https://example.com/?author=10",
-    ]
-
-
-def test_build_inventory_queries_uses_table_prefix():
-    queries = build_inventory_queries("wp_")
-    assert "wp_posts" in queries["posts"]
-    assert "wp_terms" in queries["terms"] and "wp_term_taxonomy" in queries["terms"]
-    assert "wp_users" in queries["authors"] and "wp_posts" in queries["authors"]
-
-
-def test_build_inventory_queries_custom_prefix():
-    queries = build_inventory_queries("custom_")
-    assert "custom_posts" in queries["posts"]
-
-
-# ---------------------------------------------------------------------------
 # run_mysql_query: subprocess seam -- credentials never on the command line
+#
+# DbConfig/run_mysql_query are retained here only because wpfreeze.dbsetup
+# still imports them; both they and this test section are deleted together
+# with dbsetup.py (see the WXR-pivot plan's Order-of-implementation step 5).
 # ---------------------------------------------------------------------------
 
 
