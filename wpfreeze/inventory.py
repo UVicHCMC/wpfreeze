@@ -1,18 +1,16 @@
 """Inventory stage: assemble the authoritative URL set before crawling.
 
 See CLAUDE-acquire.md, "Stage 1 -- Inventory". Parsing logic here is pure
-and network-free by design (the doc's test strategy requires the SQL seam
-and the sitemap/REST parsing to be unit-testable against fixtures); the
-network-orchestrating functions call out to wpfreeze.fetch for the actual
-HTTP requests.
+and network-free by design (the doc's test strategy requires the WXR
+parsing and the sitemap/REST parsing to be unit-testable against
+fixtures); the network-orchestrating functions call out to wpfreeze.fetch
+for the actual HTTP requests.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
-import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
@@ -340,61 +338,6 @@ def discover_wxr(manifest: Manifest, base_url: str, xml_backup_path: Path) -> bo
     for item in wxr_author_urls(base_url, document):
         manifest.get_or_create(item.url, discovered_via=item.discovered_via)
     return True
-
-
-# ---------------------------------------------------------------------------
-# Database inventory
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class DbConfig:
-    host: str | None = None
-    socket: str | None = None
-    port: int | None = None
-    name: str = ""
-    user: str = ""
-    password: str | None = None
-    table_prefix: str = "wp_"
-
-
-def run_mysql_query(db_config: DbConfig, sql: str, binary: str = "mysql") -> str:
-    """Execute `sql` via the mysql/mariadb client and return its raw
-    --batch --raw tab-separated output.
-
-    This is the sole subprocess seam -- kept tiny and isolated so tests can
-    exercise the parsing/query-building logic against fixtured output
-    without a live database. Credentials never touch the command line: a
-    temporary defaults file is written (mode 0600) and passed via
-    --defaults-extra-file, then removed.
-    """
-    defaults_lines = ["[client]"]
-    if db_config.user:
-        defaults_lines.append(f"user={db_config.user}")
-    if db_config.password is not None:
-        defaults_lines.append(f"password={db_config.password}")
-    if db_config.host:
-        defaults_lines.append(f"host={db_config.host}")
-    if db_config.socket:
-        defaults_lines.append(f"socket={db_config.socket}")
-    if db_config.port:
-        defaults_lines.append(f"port={db_config.port}")
-
-    fd, tmp_name = tempfile.mkstemp(prefix="wpfreeze-db-", suffix=".cnf")
-    tmp_path = Path(tmp_name)
-    try:
-        tmp_path.chmod(0o600)
-        tmp_path.write_text("\n".join(defaults_lines) + "\n", encoding="utf-8")
-        result = subprocess.run(
-            [binary, f"--defaults-extra-file={tmp_path}", "--batch", "--raw", db_config.name],
-            input=sql,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return result.stdout
-    finally:
-        tmp_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

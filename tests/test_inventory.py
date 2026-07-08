@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from wpfreeze.inventory import (
-    DbConfig,
     WxrDocument,
     WxrItem,
     discover_wxr,
@@ -15,7 +14,6 @@ from wpfreeze.inventory import (
     parse_sitemap_xml,
     parse_wxr_xml,
     rest_collection_url,
-    run_mysql_query,
     wxr_author_urls,
     wxr_post_urls,
     wxr_term_urls,
@@ -265,58 +263,3 @@ def test_parse_wxr_xml_handles_real_world_export():
         "wp_global_styles", "nav_menu_item",
     }
     assert not any(_is_kept_published(item) for item in document.items if item.post_type in junk_types)
-
-
-# ---------------------------------------------------------------------------
-# run_mysql_query: subprocess seam -- credentials never on the command line
-#
-# DbConfig/run_mysql_query are retained here only because wpfreeze.dbsetup
-# still imports them; both they and this test section are deleted together
-# with dbsetup.py (see the WXR-pivot plan's Order-of-implementation step 5).
-# ---------------------------------------------------------------------------
-
-
-def test_run_mysql_query_never_puts_credentials_on_command_line(monkeypatch):
-    captured = {}
-
-    def fake_run(args, input, capture_output, text, check):
-        captured["args"] = args
-        captured["input"] = input
-        # The defaults file must exist and be read while the fake command runs.
-        defaults_arg = next(a for a in args if a.startswith("--defaults-extra-file="))
-        defaults_path = Path(defaults_arg.split("=", 1)[1])
-        captured["defaults_file_contents"] = defaults_path.read_text()
-
-        class Result:
-            stdout = "ID\tpost_type\n1\tpost\n"
-
-        return Result()
-
-    monkeypatch.setattr("subprocess.run", fake_run)
-
-    db_config = DbConfig(host="localhost", name="wpdb", user="wpuser", password="hunter2")
-    output = run_mysql_query(db_config, "SELECT 1;")
-
-    assert output == "ID\tpost_type\n1\tpost\n"
-    assert not any("hunter2" in a for a in captured["args"])
-    assert "password=hunter2" in captured["defaults_file_contents"]
-    assert "user=wpuser" in captured["defaults_file_contents"]
-    assert captured["input"] == "SELECT 1;"
-
-
-def test_run_mysql_query_cleans_up_temp_defaults_file(monkeypatch):
-    seen_path = {}
-
-    def fake_run(args, input, capture_output, text, check):
-        defaults_arg = next(a for a in args if a.startswith("--defaults-extra-file="))
-        seen_path["path"] = Path(defaults_arg.split("=", 1)[1])
-        assert seen_path["path"].exists()
-
-        class Result:
-            stdout = ""
-
-        return Result()
-
-    monkeypatch.setattr("subprocess.run", fake_run)
-    run_mysql_query(DbConfig(name="wpdb", user="u"), "SELECT 1;")
-    assert not seen_path["path"].exists()
