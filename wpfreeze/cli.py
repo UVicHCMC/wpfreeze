@@ -22,10 +22,10 @@ from wpfreeze.analyse import (
     apply_canonical_cascade,
     flag_ambiguous_canonical,
     flag_attachment_pages,
-    flag_db_unresolved,
     flag_forms_and_plugin_markup,
     flag_hash_duplicates,
     flag_orphans_and_unlisted,
+    flag_xml_unresolved,
 )
 from wpfreeze.crawl import compile_exclusions, crawl_fixpoint
 from wpfreeze.fetch import DEFAULT_USER_AGENT, FetchConfig, RateLimiter
@@ -245,7 +245,7 @@ def run_acquire(config: SiteConfig, resume: bool, dry_run: bool) -> int:
     flag_orphans_and_unlisted(manifest)
     flag_forms_and_plugin_markup(manifest, raw_dir)
     flag_attachment_pages(manifest, raw_dir)
-    flag_db_unresolved(manifest)
+    flag_xml_unresolved(manifest)
     canonical_map = flag_hash_duplicates(manifest)
     flag_ambiguous_canonical(manifest, canonical_map)
     compute_output_paths(manifest, profile, canonical_map)

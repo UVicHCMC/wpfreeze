@@ -47,7 +47,7 @@ FLAG_HASH_DUPLICATE = "hash_duplicate"
 FLAG_AMBIGUOUS_CANONICAL = "ambiguous_canonical"
 FLAG_AUTH_GATED = "auth_gated"
 FLAG_ODD_RESPONSE = "odd_response"
-FLAG_DB_UNRESOLVED = "db_unresolved"
+FLAG_XML_UNRESOLVED = "xml_unresolved"
 FLAG_RETRY_EXHAUSTED = "retry_exhausted"
 
 # Flags that indicate the archive is genuinely incomplete (drive the CLI's
@@ -58,7 +58,7 @@ GAP_FLAGS = frozenset(
         FLAG_AMBIGUOUS_CANONICAL,
         FLAG_AUTH_GATED,
         FLAG_ODD_RESPONSE,
-        FLAG_DB_UNRESOLVED,
+        FLAG_XML_UNRESOLVED,
     }
 )
 

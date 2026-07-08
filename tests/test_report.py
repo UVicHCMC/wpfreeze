@@ -32,13 +32,13 @@ def _record(url, **kwargs) -> ManifestRecord:
 def test_infer_inventory_sources_used():
     manifest = Manifest()
     manifest.get_or_create("https://example.com/a/", discovered_via="sitemap")
-    manifest.get_or_create("https://example.com/b/", discovered_via="database")
+    manifest.get_or_create("https://example.com/b/", discovered_via="xml_backup")
     manifest.get_or_create("https://example.com/c/", discovered_via="crawl:https://example.com/a/")
     sources = infer_inventory_sources_used(manifest)
     assert sources == {
         "sitemap": True,
         "rest_api": False,
-        "database": True,
+        "xml_backup": True,
         "crawl": True,
         "wayback": False,
     }

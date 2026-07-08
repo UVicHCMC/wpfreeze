@@ -37,12 +37,12 @@ ACTION_REQUIRED_CATEGORIES = (
         "missing",
         "Missing (no live or Wayback copy)",
         lambda m: m.by_status(Status.MISSING.value),
-        "This URL was expected to exist (from the sitemap, REST API, database, or a link "
-        "found while crawling), but its content couldn't be recovered live or from the "
-        "Wayback Machine.",
+        "This URL was expected to exist (from the sitemap, REST API, or XML backup, or a "
+        "link found while crawling), but its content couldn't be recovered live or from "
+        "the Wayback Machine.",
         "Check the URL directly in a browser -- it may have been deliberately deleted, "
         "moved, or renamed. If it's important, look for another backup source (a staging "
-        "site, database export, or the site administrator) before this content is gone "
+        "site, XML export, or the site administrator) before this content is gone "
         "for good.",
     ),
     (
@@ -100,7 +100,7 @@ ACTION_REQUIRED_CATEGORIES = (
         "orphan",
         "Orphans (in inventory, never crawled)",
         lambda m: _by_flag(m, FLAG_ORPHAN),
-        "The site's own inventory (sitemap, REST API, or database) says this URL "
+        "The site's own inventory (sitemap, REST API, or XML backup) says this URL "
         "exists, but nothing else on the site links to it, so the crawler never "
         "reached it independently.",
         "Usually harmless -- often an old or deliberately unlinked page. Worth a quick "
@@ -112,7 +112,7 @@ ACTION_REQUIRED_CATEGORIES = (
         "Unlisted (crawled, absent from inventory)",
         lambda m: _by_flag(m, FLAG_UNLISTED),
         "The crawler found and fetched this URL by following a link on the site, but "
-        "it doesn't appear in the sitemap, REST API, or database inventory.",
+        "it doesn't appear in the sitemap, REST API, or XML backup inventory.",
         "Usually fine -- many internal assets (images, scripts) were never meant to be "
         "in a content inventory. Worth a second look only if the URL looks like real "
         "content that should have been listed.",
@@ -162,7 +162,7 @@ def infer_inventory_sources_used(manifest: Manifest) -> dict[str, bool]:
     return {
         "sitemap": "sitemap" in provenance,
         "rest_api": "rest_api" in provenance,
-        "database": "database" in provenance,
+        "xml_backup": "xml_backup" in provenance,
         "crawl": any(p.startswith("crawl:") for p in provenance),
         "wayback": any(p.startswith("wayback:") for p in provenance),
     }

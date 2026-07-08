@@ -17,11 +17,11 @@ from wpfreeze.manifest import (
     FLAG_AMBIGUOUS_CANONICAL,
     FLAG_ATTACHMENT_PAGE,
     FLAG_CONTAINS_FORM,
-    FLAG_DB_UNRESOLVED,
     FLAG_HASH_DUPLICATE,
     FLAG_ORPHAN,
     FLAG_PLUGIN_MARKUP,
     FLAG_UNLISTED,
+    FLAG_XML_UNRESOLVED,
     Manifest,
     ManifestRecord,
     Status,
@@ -72,12 +72,12 @@ def find_canonical_link(html: str) -> str | None:
 
 
 def flag_orphans_and_unlisted(manifest: Manifest) -> None:
-    """orphan: known from inventory (sitemap/rest_api/database), never
+    """orphan: known from inventory (sitemap/rest_api/xml_backup), never
     reached by crawl. unlisted: reached by crawl, absent from every
     inventory source."""
     for record in manifest.all():
         sources = record.discovered_via
-        from_inventory = any(s in ("sitemap", "rest_api", "database") for s in sources)
+        from_inventory = any(s in ("sitemap", "rest_api", "xml_backup") for s in sources)
         from_crawl = any(s.startswith("crawl:") or s.startswith("wayback:") for s in sources)
         if from_inventory and not from_crawl:
             record.add_flag(FLAG_ORPHAN)
@@ -85,13 +85,13 @@ def flag_orphans_and_unlisted(manifest: Manifest) -> None:
             record.add_flag(FLAG_UNLISTED)
 
 
-def flag_db_unresolved(manifest: Manifest) -> None:
-    """A database-inventory URL that never resolved to a servable page:
-    stronger signal than a plain `missing` since the database, not just a
-    sitemap or crawl, asserts this content should exist."""
+def flag_xml_unresolved(manifest: Manifest) -> None:
+    """An XML-backup-inventory URL that never resolved to a servable page:
+    stronger signal than a plain `missing` since the XML export, not just
+    a sitemap or crawl, asserts this content should exist."""
     for record in manifest.all():
-        if record.status == Status.MISSING.value and "database" in record.discovered_via:
-            record.add_flag(FLAG_DB_UNRESOLVED)
+        if record.status == Status.MISSING.value and "xml_backup" in record.discovered_via:
+            record.add_flag(FLAG_XML_UNRESOLVED)
 
 
 def flag_forms_and_plugin_markup(manifest: Manifest, raw_dir: Path) -> None:

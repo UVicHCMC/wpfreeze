@@ -12,6 +12,7 @@ from wpfreeze.analyse import (
     flag_forms_and_plugin_markup,
     flag_hash_duplicates,
     flag_orphans_and_unlisted,
+    flag_xml_unresolved,
 )
 from wpfreeze.manifest import (
     FLAG_AMBIGUOUS_CANONICAL,
@@ -21,6 +22,7 @@ from wpfreeze.manifest import (
     FLAG_ORPHAN,
     FLAG_PLUGIN_MARKUP,
     FLAG_UNLISTED,
+    FLAG_XML_UNRESOLVED,
     Manifest,
     ManifestRecord,
     Status,
@@ -82,6 +84,35 @@ def test_neither_flagged_when_both_sitemap_and_crawl():
     flag_orphans_and_unlisted(manifest)
     assert FLAG_ORPHAN not in record.flags
     assert FLAG_UNLISTED not in record.flags
+
+
+# ---------------------------------------------------------------------------
+# xml_unresolved
+# ---------------------------------------------------------------------------
+
+
+def test_xml_unresolved_flagged_for_missing_xml_backup_url():
+    manifest = Manifest()
+    record = manifest.get_or_create("https://example.com/gone/", discovered_via="xml_backup")
+    record.status = Status.MISSING.value
+    flag_xml_unresolved(manifest)
+    assert FLAG_XML_UNRESOLVED in record.flags
+
+
+def test_xml_unresolved_not_flagged_for_missing_url_without_xml_backup_provenance():
+    manifest = Manifest()
+    record = manifest.get_or_create("https://example.com/gone/", discovered_via="sitemap")
+    record.status = Status.MISSING.value
+    flag_xml_unresolved(manifest)
+    assert FLAG_XML_UNRESOLVED not in record.flags
+
+
+def test_xml_unresolved_not_flagged_when_not_missing():
+    manifest = Manifest()
+    record = manifest.get_or_create("https://example.com/fine/", discovered_via="xml_backup")
+    record.status = Status.FETCHED.value
+    flag_xml_unresolved(manifest)
+    assert FLAG_XML_UNRESOLVED not in record.flags
 
 
 # ---------------------------------------------------------------------------

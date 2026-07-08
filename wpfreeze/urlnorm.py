@@ -16,7 +16,7 @@ _UNRESERVED = set(string.ascii_letters + string.digits + "-._~")
 
 # Query-string keys that encode a WordPress permalink fallback and are
 # worth keeping until a pretty permalink is known for the content they
-# point at (see CLAUDE-acquire.md, URL normalization / database inventory).
+# point at (see CLAUDE-acquire.md, URL normalization / XML backup inventory).
 PERMALINK_QUERY_KEYS = frozenset({"p", "page_id", "attachment_id"})
 
 _DEFAULT_PORTS = {"http": "80", "https": "443"}
