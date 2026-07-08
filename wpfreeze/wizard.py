@@ -1,8 +1,8 @@
 """No-args wizard mode: `wpfreeze` with no subcommand walks through building
 a site config interactively -- base URL, output directory, politeness,
-Wayback recovery, and database situation (none / live connection / "I have
-a dump" via wpfreeze.dbsetup) -- then writes a normal site YAML and offers
-to dry-run and run it immediately.
+Wayback recovery, and an optional WordPress XML export (WXR) to augment
+inventory completeness -- then writes a normal site YAML and offers to
+dry-run and run it immediately.
 
 Every question here maps onto the same SiteConfig/YAML shape load_config()
 already reads (see wpfreeze.cli) -- the file this writes is a completely
@@ -16,8 +16,6 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 import yaml
-
-from wpfreeze import dbsetup
 
 # Mirrors example-site.yaml's default exclusions -- kept in sync manually,
 # see that file's comments for what each pattern covers.
@@ -68,36 +66,16 @@ def slugify_domain(base_url: str) -> str:
     return host.replace(".", "-")
 
 
-def _build_db_dict(ask: Callable[[str], str], tell: Callable[[str], None]) -> dict | str:
-    tell("Do you have database access for this site?")
-    tell("  1) No")
-    tell("  2) Yes, I can connect directly")
-    tell("  3) I have a dump file")
-    choice = _ask("Choose", "1", ask)
-
-    if choice == "2":
-        host = _ask("DB host (blank to use a socket instead)", "", ask)
-        db_dict: dict = {
-            "name": _ask_required("DB name", ask),
-            "user": _ask_required("DB user", ask),
-            "password_env": _ask(
-                "Environment variable holding the DB password", "WPFREEZE_DB_PASSWORD", ask
-            ),
-            "table_prefix": _ask("Table prefix", "wp_", ask),
-        }
-        if host:
-            db_dict["host"] = host
-        else:
-            db_dict["socket"] = _ask("DB socket path", "/var/run/mysqld/mysqld.sock", ask)
-        return db_dict
-
-    if choice == "3":
-        dump_path = Path(_ask_required("Path to your .sql or .sql.gz dump file", ask))
-        tell("Setting up a local database from your dump...")
-        plan = dbsetup.run_setup(dump_path=dump_path, ask=ask, tell=tell)
-        return dbsetup.to_db_dict(plan)
-
-    return "none"
+def _ask_xml_backup(ask: Callable[[str], str], tell: Callable[[str], None]) -> str | None:
+    has_export = _ask_yes_no(
+        "Do you have a WordPress XML export (WXR) for this site? "
+        "(wp-admin: Tools -> Export -> All content)",
+        False,
+        ask,
+    )
+    if not has_export:
+        return None
+    return _ask_required("Path to the WXR export file", ask)
 
 
 def build_config_dict(
@@ -129,7 +107,7 @@ def build_config_dict(
         if prefer_snapshots_near:
             wayback_dict["prefer_snapshots_near"] = prefer_snapshots_near
 
-    db_dict = _build_db_dict(ask, tell)
+    xml_backup_path = _ask_xml_backup(ask, tell)
 
     config_dict: dict = {
         "base_url": base_url,
@@ -139,8 +117,9 @@ def build_config_dict(
         "exclusions": DEFAULT_EXCLUSIONS,
         "extra_hosts": [],
         "wayback": wayback_dict,
-        "db": db_dict,
     }
+    if xml_backup_path:
+        config_dict["xml_backup"] = xml_backup_path
 
     tell(
         "(Exclusions, extra_hosts, and user_agent were left at their "
