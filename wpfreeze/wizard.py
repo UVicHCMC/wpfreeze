@@ -145,13 +145,30 @@ def run_wizard(
 
     config = load_config(config_path)
 
+    # A dry-run already writes manifest.json (it seeds and saves the
+    # inventory even though it fetches nothing) -- if the user immediately
+    # says yes to the real run next, that manifest already exists and
+    # run_acquire's collision guard would refuse unless told to resume.
+    # This isn't "resuming someone else's prior run"; it's the same
+    # session's own dry-run, so auto-resuming here is correct -- the guard
+    # still applies normally to a config whose output_dir already had an
+    # unrelated manifest before the wizard ever touched it.
+    dry_run_performed = False
     if _ask_yes_no("Run a dry-run now? (discovers URLs, fetches nothing)", True, ask):
         exit_code = run_acquire(config, resume=False, dry_run=True)
         tell(f"Dry run finished (exit code {exit_code}). See {config.output_dir}/report.html")
+        dry_run_performed = True
 
     if _ask_yes_no("Run the real acquisition now?", False, ask):
-        exit_code = run_acquire(config, resume=False, dry_run=False)
-        tell(f"Acquisition finished (exit code {exit_code}). See {config.output_dir}/report.html")
+        exit_code = run_acquire(config, resume=dry_run_performed, dry_run=False)
+        if exit_code == 2:
+            tell(
+                f"Acquisition finished (exit code {exit_code}). Run "
+                f"`wpfreeze acquire --config {config_path} --resume` to continue it, or "
+                f"remove {config.output_dir} first to start fresh."
+            )
+        else:
+            tell(f"Acquisition finished (exit code {exit_code}). See {config.output_dir}/report.html")
         return exit_code
 
     tell(f"When you're ready: wpfreeze acquire --config {config_path}")

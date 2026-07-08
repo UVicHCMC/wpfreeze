@@ -98,3 +98,67 @@ def test_run_wizard_writes_config_and_offers_dry_run(tmp_path, monkeypatch):
     assert written["base_url"] == "https://example.com"
     assert acquire_calls == [(False, True)]  # only the dry run happened
     assert any("Wrote" in m for m in messages)
+
+
+def test_run_wizard_auto_resumes_real_run_after_a_preceding_dry_run(tmp_path, monkeypatch):
+    """A dry-run already writes manifest.json; saying yes to the real run
+    right after must not trip run_acquire's "manifest already exists,
+    pass --resume" collision guard -- that guard exists for genuinely
+    separate prior runs, not the wizard's own just-completed dry-run."""
+    from wpfreeze.cli import SiteConfig
+
+    fake_config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
+    monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
+
+    acquire_calls = []
+    monkeypatch.setattr(
+        "wpfreeze.cli.run_acquire",
+        lambda config, resume, dry_run: acquire_calls.append((resume, dry_run)) or 0,
+    )
+
+    config_path = tmp_path / "example-com.yaml"
+    ask = _answers(
+        "https://example.com",
+        "",
+        "",
+        "",
+        "",
+        "n",  # xml_backup: no
+        str(config_path),
+        "y",  # dry run now
+        "y",  # real run now
+    )
+    exit_code = run_wizard(ask=ask, tell=lambda m: None)
+
+    assert exit_code == 0
+    assert acquire_calls == [(False, True), (True, False)]  # real run resumed the dry-run's manifest
+
+
+def test_run_wizard_reports_full_resume_command_on_manifest_collision(tmp_path, monkeypatch):
+    """If a manifest already existed at this output_dir independently of
+    this wizard session (no dry-run just ran), run_acquire's guard still
+    refuses (exit code 2) -- the wizard's message must give the exact
+    command to fix it, not just point at a report that was never written."""
+    from wpfreeze.cli import SiteConfig
+
+    fake_config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
+    monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
+    monkeypatch.setattr("wpfreeze.cli.run_acquire", lambda config, resume, dry_run: 2)
+
+    config_path = tmp_path / "example-com.yaml"
+    ask = _answers(
+        "https://example.com",
+        "",
+        "",
+        "",
+        "",
+        "n",  # xml_backup: no
+        str(config_path),
+        "n",  # dry run now: no
+        "y",  # real run now
+    )
+    messages = []
+    exit_code = run_wizard(ask=ask, tell=messages.append)
+
+    assert exit_code == 2
+    assert any(f"wpfreeze acquire --config {config_path} --resume" in m for m in messages)
