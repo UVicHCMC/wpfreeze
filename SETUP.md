@@ -13,7 +13,7 @@ Where should the output go? [./output/www-example-com]:
 How nice are we being to the server?
   1) Gentle (2s between requests)
   2) Normal (1s between requests) [default]
-  3) Aggressive (0.3s between requests)
+  3) Aggressive (no delay between requests)
 Choose [2]:
 Use Wayback Machine recovery for missing pages? [Y/n]:
 Prefer Wayback snapshots nearest to which date? (YYYY-MM-DD, blank = today):

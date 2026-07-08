@@ -36,8 +36,14 @@ DEFAULT_EXCLUSIONS = [
 RATE_PRESETS: dict[str, tuple[str, float]] = {
     "1": ("Gentle", 2.0),
     "2": ("Normal", 1.0),
-    "3": ("Aggressive", 0.3),
+    "3": ("Aggressive", 0.0),
 }
+
+# Wayback is a separate, shared, third-party service that bans impolite
+# clients regardless of how aggressively you archive your own site -- so
+# wayback_rate_limit always gets at least this floor, even when the
+# Aggressive preset's own rate_limit is 0.
+_MIN_WAYBACK_RATE_LIMIT = 3.0
 
 
 def _ask(prompt_text: str, default: str, ask: Callable[[str], str]) -> str:
@@ -94,7 +100,7 @@ def build_config_dict(
     tell("How nice are we being to the server?")
     tell("  1) Gentle (2s between requests)")
     tell("  2) Normal (1s between requests) [default]")
-    tell("  3) Aggressive (0.3s between requests)")
+    tell("  3) Aggressive (no delay between requests)")
     choice = _ask("Choose", "2", ask)
     _, rate_limit = RATE_PRESETS.get(choice, RATE_PRESETS["2"])
 
@@ -113,7 +119,7 @@ def build_config_dict(
         "base_url": base_url,
         "output_dir": output_dir,
         "rate_limit": rate_limit,
-        "wayback_rate_limit": round(rate_limit * 3, 2),
+        "wayback_rate_limit": max(_MIN_WAYBACK_RATE_LIMIT, round(rate_limit * 3, 2)),
         "exclusions": DEFAULT_EXCLUSIONS,
         "extra_hosts": [],
         "wayback": wayback_dict,

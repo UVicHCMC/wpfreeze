@@ -49,6 +49,24 @@ def test_build_config_dict_adds_https_prefix_when_missing():
     assert "xml_backup" not in config_dict
 
 
+def test_build_config_dict_aggressive_preset_has_no_delay_but_wayback_stays_throttled():
+    ask = _answers(
+        "https://example.com",
+        "",
+        "3",  # aggressive preset
+        "",  # wayback default yes
+        "",  # snapshot date blank
+        "n",  # xml_backup: no
+    )
+    config_dict, _ = build_config_dict(ask=ask, tell=lambda m: None)
+
+    assert config_dict["rate_limit"] == 0.0
+    # Wayback is a separate, shared, third-party service that bans
+    # impolite clients regardless of how fast we go against our own site
+    # -- it must never inherit the 0 from an aggressive rate_limit.
+    assert config_dict["wayback_rate_limit"] == 3.0
+
+
 def test_build_config_dict_with_xml_backup():
     ask = _answers(
         "https://example.com",
