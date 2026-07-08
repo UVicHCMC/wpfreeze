@@ -69,24 +69,10 @@ wayback:
   # Wayback recovery. Defaults to today (most recent available) if unset.
   prefer_snapshots_near: "2026-01-01"
 
-# REQUIRED: no default, on purpose -- forces a conscious decision every
-# time, since the database inventory is the strongest completeness check
-# available (immune to plugins that hide content from the sitemap/REST
-# API) and it's easy to forget it exists.
-#
-# Either declare explicitly that no database access is available:
-#   db: none
-#
-# ...or provide a connection block. Prefer `password_env` (naming an
-# environment variable) over a literal `password` so credentials never
-# live in this file. If the site's own database isn't reachable (typical
-# on commercial/managed hosting) but you have a .sql/.sql.gz export, see
-# SETUP.md -- `wpfreeze setup-db` imports it into a local database and
-# prints a ready-to-paste block for this section:
-db:
-  host: "localhost"       # or use `socket:` instead for a Unix socket
-  port: 3306
-  name: "wordpress"
-  user: "wpfreeze_readonly"
-  password_env: "WPFREEZE_DB_PASSWORD"
-  table_prefix: "wp_"
+# Optional. Path to a WordPress XML export (Tools > Export > All content
+# in wp-admin, or `wp export` via WP-CLI -- a "WXR" file) for this site.
+# If you have one, it augments the sitemap and REST API inventory with a
+# ground-truth source immune to plugins that hide content from both -- but
+# it's a normal optional key like wayback/extra_hosts above: omit it
+# entirely if you don't have one, nothing forces a decision either way.
+# xml_backup: "./site-export.WordPress.xml"
