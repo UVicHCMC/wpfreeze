@@ -2,12 +2,24 @@
 name = "wpfreeze"
 version = "0.1.0"
 description = "Acquires a complete, verified local copy of a WordPress site's pages and assets, with Wayback Machine recovery for missing content."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [{ name = "Greg Newton" }]
 requires-python = ">=3.12"
 dependencies = [
     "requests",
     "beautifulsoup4",
     "lxml",
     "PyYAML",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP :: Site Management",
 ]
 
 [project.scripts]
