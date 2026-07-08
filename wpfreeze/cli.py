@@ -353,6 +353,25 @@ def _configure_logging(output_dir: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Top-level entry point (see pyproject.toml's console_scripts).
+
+    Wraps _dispatch in a KeyboardInterrupt handler so a Ctrl-C anywhere
+    downstream -- mid-crawl, mid-wizard-prompt, anywhere -- prints one
+    short line instead of a raw traceback. 130 is the conventional
+    128+SIGINT exit code for an interrupted process.
+    """
+    try:
+        return _dispatch(argv)
+    except KeyboardInterrupt:
+        print(
+            "\nInterrupted. The manifest is saved incrementally during a "
+            "crawl, so an `acquire` run can usually pick back up with "
+            "--resume rather than starting over."
+        )
+        return 130
+
+
+def _dispatch(argv: list[str] | None) -> int:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
 
     if not raw_argv:

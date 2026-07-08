@@ -245,3 +245,15 @@ def test_main_with_no_args_launches_wizard(monkeypatch):
     monkeypatch.setattr("wpfreeze.wizard.run_wizard", lambda: calls.append("wizard") or 0)
     assert main([]) == 0
     assert calls == ["wizard"]
+
+
+def test_main_reports_keyboard_interrupt_instead_of_a_traceback(monkeypatch, capsys):
+    def raise_interrupt(argv):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("wpfreeze.cli._dispatch", raise_interrupt)
+    exit_code = main(["acquire", "--config", "unused.yaml"])
+    assert exit_code == 130
+    captured = capsys.readouterr()
+    assert "Interrupted" in captured.out
+    assert "--resume" in captured.out
