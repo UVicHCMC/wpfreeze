@@ -152,7 +152,17 @@ def _recover_one(
         _mark_unrecoverable(record, profile)
         return
 
-    snapshots = parse_cdx_response(cdx_outcome.result.content.decode("utf-8", errors="replace"))
+    try:
+        snapshots = parse_cdx_response(cdx_outcome.result.content.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        # Seen in practice: the CDX API returns HTTP 200 with a non-JSON
+        # (often empty) body when it's rate-limiting or otherwise unhappy,
+        # rather than a retriable error status -- so fetch_with_retries
+        # reports SUCCESS and this is the first point that can detect it.
+        logger.info("CDX response was not valid JSON for %s", record.url)
+        _mark_unrecoverable(record, profile)
+        return
+
     chosen = choose_snapshot(snapshots, prefer_snapshots_near)
     if chosen is None:
         logger.info("no usable Wayback snapshot for %s", record.url)

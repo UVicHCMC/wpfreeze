@@ -222,11 +222,20 @@ def extract_from_html(html: str, base_url: str) -> list[ExtractedLink]:
                     add(url, RENDER, "script:regex")
 
         # data-* attributes: URL-shaped values only (this is where gallery
-        # plugins hide their lazy-loaded images).
+        # and lazy-load plugins hide their images). A data-*srcset*
+        # attribute (data-srcset, data-lazy-srcset, ...) holds the same
+        # comma-separated "url descriptor" list as the real srcset
+        # attribute, not a single URL -- must go through the same
+        # splitter, or the whole blob (commas, width descriptors, and
+        # all its candidate URLs concatenated) gets queued as one
+        # "URL" and mangled further by normalize_url's slash collapsing.
         for attr_name, attr_value in tag.attrs.items():
             if not attr_name.startswith("data-") or not isinstance(attr_value, str):
                 continue
-            if _is_url_shaped(attr_value):
+            if "srcset" in attr_name.lower():
+                for url in _parse_srcset(attr_value):
+                    add(url, RENDER, f"{name}[{attr_name}]")
+            elif _is_url_shaped(attr_value):
                 add(attr_value.strip(), RENDER, f"{name}[{attr_name}]")
             else:
                 for url in _find_url_shaped_strings(attr_value):
