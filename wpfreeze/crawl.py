@@ -133,7 +133,18 @@ def _record_success(
 ) -> ManifestRecord:
     """Populate the correct record (following redirects to their target)
     with a successful fetch's data, and fold every redirect hop into it as
-    a redirect_from/alias. Returns the record that now holds the content."""
+    a redirect_from/alias. Returns the record that now holds the content.
+
+    If the redirect target already holds content from its own earlier
+    fetch, that content is left alone -- first successful write wins, not
+    last. Without this, two genuinely distinct pages whose URLs collide
+    onto the same normalized identity (a URL-normalization gap, or the
+    site itself redirecting an unrelated page to the same target)
+    silently overwrite each other depending on unpredictable
+    fetch-scheduling order. Seen on a real crawl: an orphaned WordPress
+    attachment page that the live site redirects to the site root
+    clobbered the actual homepage's already-fetched content this way.
+    """
     if final_url != record.url:
         hops = [record.url] + [normalize_url(h, profile) for h in result.redirect_chain]
         for hop in dict.fromkeys(hops):
@@ -141,6 +152,8 @@ def _record_success(
                 manifest.resolve_redirect(hop, final_url)
         target = manifest.get(final_url)
         assert target is not None
+        if target.status in (Status.FETCHED.value, Status.FETCHED_WAYBACK.value):
+            return target
     else:
         target = record
 

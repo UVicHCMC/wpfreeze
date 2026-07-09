@@ -17,7 +17,17 @@ _UNRESERVED = set(string.ascii_letters + string.digits + "-._~")
 # Query-string keys that encode a WordPress permalink fallback and are
 # worth keeping until a pretty permalink is known for the content they
 # point at (see CLAUDE-acquire.md, URL normalization / XML backup inventory).
-PERMALINK_QUERY_KEYS = frozenset({"p", "page_id", "attachment_id"})
+# author/cat/tag/taxonomy/term are WordPress's own core fallback query
+# vars for archive pages (the same ones the WXR inventory's
+# wxr_author_urls/wxr_term_urls build, e.g. "?author=6", "?cat=5",
+# "?taxonomy=foo&term=bar") -- stripping them collapses a real, distinct
+# archive page down to the bare site root, colliding its identity with
+# the homepage. Seen on a real crawl: a dozen author/category/tag
+# archives all merged into "the homepage" this way, and the last one
+# processed silently overwrote the real homepage's fetched content.
+PERMALINK_QUERY_KEYS = frozenset(
+    {"p", "page_id", "attachment_id", "author", "cat", "tag", "taxonomy", "term"}
+)
 
 _DEFAULT_PORTS = {"http": "80", "https": "443"}
 
