@@ -199,6 +199,7 @@ def _run_to_settled(manifest, profile, config, session, rate_limiter, wayback_ra
 
 
 def run_acquire(config: SiteConfig, resume: bool, dry_run: bool) -> int:
+    _configure_logging(config.output_dir)
     output_dir = config.output_dir
     raw_dir = output_dir / "raw"
     manifest_path = output_dir / "manifest.json"

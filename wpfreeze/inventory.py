@@ -328,7 +328,7 @@ def discover_wxr(manifest: Manifest, base_url: str, xml_backup_path: Path) -> bo
         return False
     try:
         document = parse_wxr_xml(xml_bytes)
-    except etree.XMLSyntaxError:
+    except (etree.XMLSyntaxError, StopIteration):
         logger.warning("failed to parse xml_backup as WXR: %s", xml_backup_path)
         return False
     for item in wxr_post_urls(document):
