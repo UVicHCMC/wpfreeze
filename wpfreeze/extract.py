@@ -89,6 +89,21 @@ def _is_url_shaped(value: str) -> bool:
 
 
 def _find_url_shaped_strings(text: str) -> list[str]:
+    """Best-effort URL scan over text that isn't valid JSON on its own
+    (a non-JSON <script> body, or a data-* attribute holding a JS object
+    literal -- Elementor's inline config is the common source of both).
+
+    JSON string escaping writes "/" as "\\/" -- always valid JSON, and in
+    a JS string literal it's merely a superfluous escaped "/", so
+    unescaping it first is safe either way. Skipping this step breaks
+    the regexes below: their character class excludes backslash, so each
+    "\\/" mid-path is a hard stop and the match re-anchors at the next
+    "/", silently dropping everything before it (e.g. a real
+    ".../wp-content/uploads/2023/09/photo.jpg" collapses to just
+    "/photo.jpg", which then resolves against the page URL as a
+    domain-root URL that never existed).
+    """
+    text = text.replace("\\/", "/")
     found: list[str] = []
     for pattern in _URL_SHAPED_PATTERNS:
         found.extend(m.group(0) for m in pattern.finditer(text))
