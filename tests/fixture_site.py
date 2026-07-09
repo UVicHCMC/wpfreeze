@@ -18,6 +18,14 @@ class _FixtureHandler(http.server.BaseHTTPRequestHandler):
     request_log: list[str] = []
 
     def do_GET(self):  # noqa: N802
+        self._handle(write_body=True)
+
+    def do_HEAD(self):  # noqa: N802
+        # A real server (Apache/Nginx/WordPress) answers HEAD like GET
+        # minus the body -- probe_site's HEAD probes rely on that.
+        self._handle(write_body=False)
+
+    def _handle(self, write_body: bool) -> None:
         self.request_log.append(self.path)
         if self.path in self.redirects:
             self.send_response(302)
@@ -31,14 +39,16 @@ class _FixtureHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            if write_body:
+                self.wfile.write(body)
             return
         status, content_type, body = entry
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if write_body:
+            self.wfile.write(body)
 
     def log_message(self, format, *args):  # silence default stderr logging
         pass

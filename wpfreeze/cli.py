@@ -110,8 +110,15 @@ def _looks_like_ip_or_bare_host(host: str) -> bool:
 
 
 def _probe_https(host: str, port_suffix: str, session: requests.Session, headers: dict, timeout: float) -> bool:
+    # HEAD, not GET: only the status code is used, and this is the same
+    # URL the real crawl fetches (and tracks) moments later -- a GET here
+    # is a full, silent, untracked re-fetch of the homepage that never
+    # shows up in the logs. Seen in practice against a site running a
+    # full-page cache plugin: hitting "/" twice in quick succession this
+    # way is the only thing that made the homepage's URL different from
+    # every other URL in the crawl, and its cached content ended up wrong.
     try:
-        resp = session.get(f"https://{host}{port_suffix}/", headers=headers, timeout=timeout, allow_redirects=True)
+        resp = session.head(f"https://{host}{port_suffix}/", headers=headers, timeout=timeout, allow_redirects=True)
         return resp.status_code < 500
     except requests.RequestException:
         return False
@@ -126,7 +133,8 @@ def _probe_www(
     scheme = "https" if use_https else "http"
     alternate = host[4:] if host.startswith("www.") else f"www.{host}"
     try:
-        resp = session.get(f"{scheme}://{alternate}{port_suffix}/", headers=headers, timeout=timeout, allow_redirects=True)
+        # HEAD: only resp.url (the final host after any redirect) is used.
+        resp = session.head(f"{scheme}://{alternate}{port_suffix}/", headers=headers, timeout=timeout, allow_redirects=True)
         final_host = urlsplit(resp.url).hostname or host
         return final_host, alternate
     except requests.RequestException:
@@ -140,7 +148,8 @@ def _probe_trailing_slash(base_url: str, session: requests.Session, headers: dic
         return True  # nothing informative to probe against the bare root; WP's common default
     probe_url = f"{parsed.scheme}://{parsed.netloc}{path.rstrip('/')}"
     try:
-        resp = session.get(probe_url, headers=headers, timeout=timeout, allow_redirects=True)
+        # HEAD: only resp.url (whether a trailing slash got added) is used.
+        resp = session.head(probe_url, headers=headers, timeout=timeout, allow_redirects=True)
         return urlsplit(resp.url).path.endswith("/")
     except requests.RequestException:
         return True
