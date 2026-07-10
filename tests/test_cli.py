@@ -236,6 +236,86 @@ def test_run_status_reports_counts(tmp_path: Path, capsys):
 
 
 # ---------------------------------------------------------------------------
+# run_diagnose / diagnostics.json
+# ---------------------------------------------------------------------------
+
+
+def test_run_diagnose_writes_report_and_prints_summary(tmp_path: Path, capsys):
+    from wpfreeze.diagnostics import build_diagnostics
+    from wpfreeze.cli import run_diagnose
+
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        run_acquire(config, resume=False, dry_run=False)
+
+        exit_code = run_diagnose(config)
+
+        assert exit_code == 0
+        diagnostics_path = config.output_dir / "diagnostics.json"
+        assert diagnostics_path.exists()
+        captured = capsys.readouterr()
+        assert "Diagnostics:" in captured.out
+        assert str(diagnostics_path) in captured.out
+
+        import json
+
+        saved = json.loads(diagnostics_path.read_text())
+        assert saved["homepage"]["found"] is True
+        assert saved["duplicate_local_paths"] == []
+        assert saved["disk_hash_mismatches"] == []
+
+
+def test_latest_log_path_skips_empty_stub_logs(tmp_path: Path):
+    """Every wpfreeze invocation creates its own log file (even a bare
+    `status`/`diagnose` call), almost always empty -- picking the most
+    recently modified file would nearly always return a trivial stub
+    rather than the substantive acquire-run log."""
+    from wpfreeze.cli import _latest_log_path
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "20260710T100000.log").write_text("real acquire run content\n")
+    (logs_dir / "20260710T110000.log").write_text("")  # e.g. a later `status` call
+
+    assert _latest_log_path(tmp_path) == logs_dir / "20260710T100000.log"
+
+
+def test_latest_log_path_returns_none_when_all_logs_empty(tmp_path: Path):
+    from wpfreeze.cli import _latest_log_path
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "20260710T100000.log").write_text("")
+
+    assert _latest_log_path(tmp_path) is None
+
+
+def test_run_diagnose_missing_manifest_returns_error(tmp_path: Path):
+    from wpfreeze.cli import SiteConfig, run_diagnose
+
+    config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "nope")
+    assert run_diagnose(config) == 2
+
+
+def test_run_acquire_does_not_prompt_when_not_a_tty(tmp_path: Path, monkeypatch):
+    """acquire is routinely launched unattended/backgrounded -- the
+    end-of-run diagnostics offer must never block on input() outside a
+    real interactive terminal (pytest's stdin already isn't a tty, this
+    just makes the guarantee explicit and future-proof)."""
+    import sys
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("input() must not be called when stdin is not a tty")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        run_acquire(config, resume=False, dry_run=False)  # must not raise/hang
+
+
+# ---------------------------------------------------------------------------
 # main() dispatch: no subcommand -> wizard
 # ---------------------------------------------------------------------------
 

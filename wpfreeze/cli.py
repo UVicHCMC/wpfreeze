@@ -28,6 +28,7 @@ from wpfreeze.analyse import (
     flag_xml_unresolved,
 )
 from wpfreeze.crawl import compile_exclusions, crawl_fixpoint
+from wpfreeze.diagnostics import build_diagnostics, format_diagnostics_summary, write_diagnostics
 from wpfreeze.fetch import DEFAULT_USER_AGENT, FetchConfig, RateLimiter
 from wpfreeze.inventory import discover_inventory
 from wpfreeze.manifest import Manifest, Status, utc_now
@@ -266,7 +267,55 @@ def run_acquire(config: SiteConfig, resume: bool, dry_run: bool) -> int:
     write_report_html(manifest, output_dir, output_dir / "report.html", run_started, run_finished)
     (output_dir / "redirects.htaccess").write_text(generate_redirects_htaccess(manifest), encoding="utf-8")
 
+    _maybe_offer_diagnostics(manifest, output_dir, config.base_url)
+
     return 1 if manifest.has_gaps() else 0
+
+
+def _latest_log_path(output_dir: Path) -> Path | None:
+    """Every wpfreeze invocation -- including `status`/`report`/`diagnose`
+    itself -- calls _configure_logging and so creates its own log file,
+    almost always empty. The most recently *modified* file is therefore
+    usually a trivial stub from whatever command ran last, not the actual
+    acquire run; skip empty files to find the real one."""
+    log_files = sorted((output_dir / "logs").glob("*.log"))
+    for path in reversed(log_files):
+        if path.stat().st_size > 0:
+            return path
+    return None
+
+
+def _maybe_offer_diagnostics(manifest: Manifest, output_dir: Path, base_url: str) -> None:
+    """Only prompts in a real interactive terminal -- this runs at the end
+    of `acquire`, which is routinely launched unattended/backgrounded, and
+    a blocking input() there would hang a run that already finished."""
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return
+    try:
+        answer = input("Generate a diagnostics report for this run? [Y/n] ").strip().lower()
+    except EOFError:
+        return
+    if answer not in ("", "y", "yes"):
+        return
+    run_diagnose_for(manifest, output_dir, base_url)
+
+
+def run_diagnose_for(manifest: Manifest, output_dir: Path, base_url: str) -> Path:
+    diagnostics = build_diagnostics(manifest, output_dir, base_url, _latest_log_path(output_dir))
+    path = write_diagnostics(diagnostics, output_dir)
+    print(format_diagnostics_summary(diagnostics))
+    print(f"Full detail: {path}")
+    return path
+
+
+def run_diagnose(config: SiteConfig) -> int:
+    manifest_path = config.output_dir / "manifest.json"
+    if not manifest_path.exists():
+        print(f"No manifest found at {manifest_path}; run `wpfreeze acquire` first.")
+        return 2
+    manifest = Manifest.load(manifest_path)
+    run_diagnose_for(manifest, config.output_dir, config.base_url)
+    return 0
 
 
 def run_report(config: SiteConfig, html_only: bool, json_only: bool) -> int:
@@ -325,6 +374,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     status_p = subparsers.add_parser("status", help="print a one-screen manifest summary")
     status_p.add_argument("--config", required=True, type=Path)
 
+    diagnose_p = subparsers.add_parser(
+        "diagnose", help="write a compact debugging summary (diagnostics.json) from the existing manifest"
+    )
+    diagnose_p.add_argument("--config", required=True, type=Path)
+
     return parser
 
 
@@ -369,6 +423,12 @@ def main(argv: list[str] | None = None) -> int:
     downstream -- mid-crawl, mid-wizard-prompt, anywhere -- prints one
     short line instead of a raw traceback. 130 is the conventional
     128+SIGINT exit code for an interrupted process.
+
+    Any other uncaught exception is logged (not just printed to stderr)
+    before re-raising -- a long unattended run's stderr is easy to lose
+    (backgrounded, piped, terminal closed), and without this the crawl's
+    own log file, which is otherwise the durable record of what happened,
+    would have no trace at all of why it died.
     """
     try:
         return _dispatch(argv)
@@ -379,6 +439,9 @@ def main(argv: list[str] | None = None) -> int:
             "--resume rather than starting over."
         )
         return 130
+    except Exception:
+        logging.getLogger("wpfreeze").critical("acquire crashed with an unhandled exception", exc_info=True)
+        raise
 
 
 def _dispatch(argv: list[str] | None) -> int:
@@ -408,6 +471,8 @@ def _dispatch(argv: list[str] | None) -> int:
         return run_report(config, html_only=args.html_only, json_only=args.json_only)
     if args.command == "status":
         return run_status(config)
+    if args.command == "diagnose":
+        return run_diagnose(config)
 
     return 2
 
