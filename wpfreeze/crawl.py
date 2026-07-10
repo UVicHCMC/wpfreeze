@@ -37,8 +37,24 @@ def local_path_for(url: str, raw_dir: Path, profile: SiteProfile) -> Path:
     """Where fetched bytes for `url` are stored on disk.
 
     The site's own host mirrors its path structure directly under
-    raw_dir; any other host is namespaced raw_dir/_external/<host>/<path>
-    so two different hosts sharing a path shape can never collide.
+    raw_dir; any other host is namespaced raw_dir/_external/<scheme>_<host>/
+    <path> so two different hosts sharing a path shape can never collide.
+    The scheme is folded into that namespace too, not just the host:
+    normalize_url upgrades http -> https for the site's *own* host when it
+    serves https, but never touches an external host's scheme, so
+    "https://fonts.googleapis.com/css" and "http://fonts.googleapis.com/css"
+    are genuinely distinct manifest records (found colliding on disk on a
+    real run's very first diagnose pass).
+
+    normalize_url (urlnorm.py) deliberately keeps a handful of WordPress
+    identity query params (p=/page_id=/attachment_id=/author=/cat=/tag=/
+    taxonomy=/term=) that a pretty-permalink-less page still needs -- so
+    e.g. "/?attachment_id=1029" and "/?attachment_id=4353" are genuinely
+    distinct manifest records with distinct content, both sharing the
+    literal path "/". Any surviving query string is fed into the filename
+    so those records never collide on disk (a real run had 36 such
+    attachment URLs plus the true homepage all silently overwriting one
+    shared raw/index.html, last write invisibly winning).
     """
     parsed = urlsplit(url)
     host = (parsed.hostname or "").lower()
@@ -46,9 +62,13 @@ def local_path_for(url: str, raw_dir: Path, profile: SiteProfile) -> Path:
     if path == "" or path.endswith("/"):
         path += "index.html"
     path = path.lstrip("/")
+    if parsed.query:
+        query_hash = hashlib.sha256(parsed.query.encode()).hexdigest()[:10]
+        as_path = Path(path)
+        path = str(as_path.with_name(f"{as_path.stem}__q-{query_hash}{as_path.suffix}"))
     if profile.owns_host(host):
         return raw_dir / path
-    return raw_dir / "_external" / host / path
+    return raw_dir / "_external" / f"{parsed.scheme.lower()}_{host}" / path
 
 
 def content_kind(content_type: str | None, url: str) -> str | None:

@@ -102,8 +102,8 @@ def test_crawl_discovers_and_fetches_everything(tmp_path: Path):
         # External CDN asset: fetched, stored under a host-namespaced path.
         logo_record = next(r for r in manifest.all() if "logo.png" in r.url)
         assert logo_record.status == Status.FETCHED.value
-        assert logo_record.local_path == "raw/_external/127.0.0.2/logo.png"
-        assert (raw_dir / "_external" / "127.0.0.2" / "logo.png").read_bytes() == b"CDN-LOGO-BYTES"
+        assert logo_record.local_path == "raw/_external/http_127.0.0.2/logo.png"
+        assert (raw_dir / "_external" / "http_127.0.0.2" / "logo.png").read_bytes() == b"CDN-LOGO-BYTES"
 
         # Internal assets stored mirroring their path under raw/.
         assert by_path["/wp-content/uploads/2024/bg.png"].local_path == (
@@ -375,6 +375,62 @@ def test_store_bytes_no_collision_stores_at_literal_path(tmp_path: Path):
     local_path = store_bytes(url, b"jpeg bytes", raw_dir, profile, manifest)
     assert local_path == "raw/wp-content/uploads/photo.jpg"
     assert (raw_dir.parent / local_path).read_bytes() == b"jpeg bytes"
+
+
+def test_store_bytes_distinct_query_strings_on_root_path_do_not_collide(tmp_path: Path):
+    """A real run had 36 WordPress `?attachment_id=N` permalinks plus the
+    true homepage all sharing the literal path "/" -- normalize_url keeps
+    attachment_id (and similar) for identity, but local_path_for used to
+    ignore the query entirely, so every fetch silently overwrote the same
+    raw/index.html and the manifest's own content_hash for the homepage
+    record drifted out of sync with what was actually on disk."""
+    from wpfreeze.crawl import store_bytes
+
+    raw_dir = tmp_path / "raw"
+    profile = SiteProfile(canonical_host="example.com", site_hosts=frozenset({"example.com"}))
+    manifest = Manifest()
+
+    home_record = manifest.get_or_create("https://example.com/")
+    home_record.local_path = store_bytes(
+        "https://example.com/", b"real homepage", raw_dir, profile, manifest
+    )
+
+    attachment_record = manifest.get_or_create("https://example.com/?attachment_id=4353")
+    attachment_record.local_path = store_bytes(
+        "https://example.com/?attachment_id=4353", b"orphaned attachment page", raw_dir, profile, manifest
+    )
+
+    assert home_record.local_path != attachment_record.local_path
+    assert (raw_dir.parent / home_record.local_path).read_bytes() == b"real homepage"
+    assert (raw_dir.parent / attachment_record.local_path).read_bytes() == b"orphaned attachment page"
+
+
+def test_store_bytes_external_host_http_and_https_do_not_collide(tmp_path: Path):
+    """normalize_url upgrades http -> https for the site's *own* host, but
+    never touches an external host's scheme -- so http://fonts.googleapis.com/css
+    and https://fonts.googleapis.com/css are genuinely distinct manifest
+    records. Found colliding on disk (same raw/_external/<host>/<path>,
+    last write silently winning) via the new `diagnose` command's very
+    first real-world run."""
+    from wpfreeze.crawl import store_bytes
+
+    raw_dir = tmp_path / "raw"
+    profile = SiteProfile(canonical_host="example.com", site_hosts=frozenset({"example.com"}))
+    manifest = Manifest()
+
+    https_record = manifest.get_or_create("https://fonts.googleapis.com/css")
+    https_record.local_path = store_bytes(
+        "https://fonts.googleapis.com/css", b"https version", raw_dir, profile, manifest
+    )
+
+    http_record = manifest.get_or_create("http://fonts.googleapis.com/css")
+    http_record.local_path = store_bytes(
+        "http://fonts.googleapis.com/css", b"http version", raw_dir, profile, manifest
+    )
+
+    assert https_record.local_path != http_record.local_path
+    assert (raw_dir.parent / https_record.local_path).read_bytes() == b"https version"
+    assert (raw_dir.parent / http_record.local_path).read_bytes() == b"http version"
 
 
 # ---------------------------------------------------------------------------
