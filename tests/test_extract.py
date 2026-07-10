@@ -243,6 +243,32 @@ def test_script_regex_ignores_cache_exclusion_glob_patterns():
     assert not any("*" in url for url in urls)
 
 
+def test_bare_directory_reference_ignored_in_script_regex_json_and_data_attr():
+    """A plugin's JS "base path" config value -- a directory reference with
+    no filename at all, meant to have filenames concatenated onto it at
+    runtime (a webpack publicPath, a CDN assetsUrl, Jetpack's per-feature
+    settings, WordPress.com's `_static` concatenator) -- looks identical
+    to a real URL to a heuristic scanner, but a real fetchable resource
+    always has a filename+extension. On a real WordPress.com-hosted site,
+    one sitewide Jetpack settings blob alone produced 9 of these across
+    both the script:regex and script:json paths (~70% of that run's
+    reported "missing" count), each one a 403/404 on a bare directory,
+    not a real gap."""
+    html = """
+    <script>
+    var JETPACK_MU_WPCOM_SETTINGS = {"assetsUrl":"https://s1.wp.com/wp-content/mu-plugins/jetpack-mu-wpcom-plugin/moon/src/build/"};
+    </script>
+    <script type="application/json">
+    {"baseUrl": "https://s0.wp.com/wp-content/mu-plugins/wpcom-smileys/twemoji/2/72x72/", "real": "https://example.com/wp-content/uploads/1.jpg"}
+    </script>
+    <div data-background-folder="/wp-content/uploads/backgrounds/"></div>
+    """
+    links = extract_from_html(html, BASE)
+    urls = {l.url for l in links}
+    assert not any(url.endswith("/") for url in urls)
+    assert "https://example.com/wp-content/uploads/1.jpg" in urls
+
+
 def test_skipped_schemes_are_not_extracted():
     html = (
         '<a href="mailto:someone@example.com">mail</a>'

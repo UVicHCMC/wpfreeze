@@ -88,6 +88,28 @@ def _is_url_shaped(value: str) -> bool:
     return value.startswith(("http://", "https://", "//", "/"))
 
 
+def _is_bare_directory_reference(url: str) -> bool:
+    """True for a URL-shaped string with no filename at all -- just a
+    trailing slash (e.g. "https://s1.wp.com/wp-content/mu-plugins/.../src/build/").
+
+    Heuristic scans of JS/JSON blobs (as opposed to a real href/src
+    attribute) routinely pick these up, but they're virtually always a
+    base-path config value some plugin's JS concatenates filenames onto
+    at runtime (a webpack publicPath, a CDN assetsUrl/baseUrl, Jetpack's
+    per-feature-flag settings, WordPress.com's `_static` asset
+    concatenator), not a real fetchable resource -- a real asset always
+    has a filename+extension. Seen on a real site where one sitewide
+    Jetpack settings blob alone produced nine such false positives
+    (~70% of that run's "missing" count) across both the non-JSON
+    <script> regex fallback and a valid-JSON <script type="application/
+    json"> block. Dropping these risks missing a genuine directory-index
+    *page* only when nothing else on the site links to it and it's
+    outside the sitemap/REST/WXR inventory too -- an edge case already
+    accepted for the same reason by the cache-plugin glob-wildcard fix.
+    """
+    return url.rstrip().endswith("/")
+
+
 def _find_url_shaped_strings(text: str) -> list[str]:
     """Best-effort URL scan over text that isn't valid JSON on its own
     (a non-JSON <script> body, or a data-* attribute holding a JS object
@@ -107,13 +129,13 @@ def _find_url_shaped_strings(text: str) -> list[str]:
     found: list[str] = []
     for pattern in _URL_SHAPED_PATTERNS:
         found.extend(m.group(0) for m in pattern.finditer(text))
-    return found
+    return [url for url in found if not _is_bare_directory_reference(url)]
 
 
 def _walk_json_for_urls(obj) -> list[str]:
     urls: list[str] = []
     if isinstance(obj, str):
-        if _is_url_shaped(obj):
+        if _is_url_shaped(obj) and not _is_bare_directory_reference(obj):
             urls.append(obj)
     elif isinstance(obj, dict):
         for value in obj.values():
@@ -250,7 +272,7 @@ def extract_from_html(html: str, base_url: str) -> list[ExtractedLink]:
             if "srcset" in attr_name.lower():
                 for url in _parse_srcset(attr_value):
                     add(url, RENDER, f"{name}[{attr_name}]")
-            elif _is_url_shaped(attr_value):
+            elif _is_url_shaped(attr_value) and not _is_bare_directory_reference(attr_value):
                 add(attr_value.strip(), RENDER, f"{name}[{attr_name}]")
             else:
                 for url in _find_url_shaped_strings(attr_value):
