@@ -27,7 +27,12 @@ from wpfreeze.analyse import (
     flag_orphans_and_unlisted,
     flag_xml_unresolved,
 )
-from wpfreeze.build import build_site, format_build_summary
+from wpfreeze.build import (
+    build_site,
+    format_build_summary,
+    format_verify_summary,
+    verify_site,
+)
 from wpfreeze.crawl import compile_exclusions, crawl_fixpoint
 from wpfreeze.diagnostics import build_diagnostics, format_diagnostics_summary, write_diagnostics
 from wpfreeze.fetch import DEFAULT_USER_AGENT, FetchConfig, RateLimiter
@@ -355,7 +360,7 @@ def run_status(config: SiteConfig) -> int:
 # ---------------------------------------------------------------------------
 
 
-def run_build(config: SiteConfig, site_dir: Path | None) -> int:
+def run_build(config: SiteConfig, site_dir: Path | None, verify: bool) -> int:
     """Emit the rewritten, servable site from an existing capture.
 
     Reads only; writes only into the site directory. Never touches raw/,
@@ -370,9 +375,17 @@ def run_build(config: SiteConfig, site_dir: Path | None) -> int:
     stats = build_site(manifest, config.output_dir, target)
     print(format_build_summary(stats))
     print(f"Site written to {target}")
-    # Unresolved references are a real (if partial) failure to finish the
-    # job, and mirror acquire's "complete with gaps" exit code.
-    return 1 if stats.unresolved else 0
+
+    broken = 0
+    if verify:
+        report = verify_site(target)
+        print(format_verify_summary(report))
+        broken = len(report.broken)
+
+    # Unresolved references and broken local links are both real (if
+    # partial) failures to finish the job, and mirror acquire's "complete
+    # with gaps" exit code.
+    return 1 if (stats.unresolved or broken) else 0
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -401,6 +414,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     build_p.add_argument("--config", required=True, type=Path)
     build_p.add_argument(
         "--site-dir", type=Path, default=None, help="output directory (default: <output_dir>/site)"
+    )
+    build_p.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="skip the post-build check that every local reference resolves on disk",
     )
 
     diagnose_p = subparsers.add_parser(
@@ -501,7 +519,7 @@ def _dispatch(argv: list[str] | None) -> int:
     if args.command == "status":
         return run_status(config)
     if args.command == "build":
-        return run_build(config, args.site_dir)
+        return run_build(config, args.site_dir, verify=not args.no_verify)
     if args.command == "diagnose":
         return run_diagnose(config)
 

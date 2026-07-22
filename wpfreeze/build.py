@@ -317,6 +317,139 @@ def build_site(manifest: Manifest, output_dir: Path, site_dir: Path) -> BuildSta
     return stats
 
 
+# ---------------------------------------------------------------------------
+# Verification
+# ---------------------------------------------------------------------------
+#
+# Deliberately independent of everything above: it re-reads the emitted tree
+# from disk and resolves references against real files, knowing nothing about
+# the manifest, the lookup, or which rewrite rule produced a given path. A
+# check that shares its assumptions with the code it checks will agree with a
+# bug rather than catch it.
+
+
+@dataclass(frozen=True)
+class BrokenReference:
+    source: str  # site-relative path of the document holding the reference
+    reference: str  # the attribute value as written
+    target: str  # where it resolved to, site-relative
+    reason: str
+
+
+@dataclass
+class VerifyReport:
+    checked: int = 0
+    external: int = 0
+    skipped: int = 0
+    documents: int = 0
+    broken: list[BrokenReference] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.broken
+
+
+def _iter_document_references(text: str, is_css: bool):
+    """Yield every reference in one document, as written."""
+    if is_css:
+        for match in _CSS_URL_RE.finditer(text):
+            yield match.group(2)
+        return
+
+    soup = BeautifulSoup(text, "lxml")
+    for tag_name, attrs in _URL_ATTRS.items():
+        for tag in soup.find_all(tag_name):
+            for attr in attrs:
+                value = tag.get(attr)
+                if value:
+                    yield value
+    for tag_name in _SRCSET_TAGS:
+        for tag in soup.find_all(tag_name):
+            for entry in (tag.get("srcset") or "").split(","):
+                entry = entry.strip()
+                if entry:
+                    yield entry.split()[0]
+    for tag in soup.find_all(style=True):
+        for match in _CSS_URL_RE.finditer(tag["style"]):
+            yield match.group(2)
+    for tag in soup.find_all("style"):
+        if tag.string:
+            for match in _CSS_URL_RE.finditer(tag.string):
+                yield match.group(2)
+
+
+def verify_site(site_dir: Path) -> VerifyReport:
+    """Resolve every local reference in the emitted tree against disk.
+
+    A reference is checked as a static server would serve it: query strings
+    and fragments are ignored (a file either exists at that path or does
+    not), and percent-encoding is decoded first.
+    """
+    from posixpath import normpath
+    from urllib.parse import unquote
+
+    report = VerifyReport()
+
+    for document in sorted(site_dir.rglob("*")):
+        if not document.is_file() or document.suffix.lower() not in (".html", ".htm", ".css"):
+            continue
+        report.documents += 1
+        relative_dir = document.parent.relative_to(site_dir).as_posix()
+        text = document.read_text(encoding="utf-8", errors="replace")
+
+        for reference in _iter_document_references(text, document.suffix.lower() == ".css"):
+            value = reference.strip()
+            if not value or value.lower().startswith(_SKIP_PREFIXES):
+                report.skipped += 1
+                continue
+            if urlsplit(value).scheme or value.startswith("//"):
+                report.external += 1
+                continue
+
+            report.checked += 1
+            path = unquote(urlsplit(value).path)
+            if not path:
+                continue  # a bare query or fragment: same document
+            base = "" if relative_dir == "." else relative_dir
+            resolved = normpath(f"{base}/{path}" if base else path.lstrip("/"))
+
+            source = document.relative_to(site_dir).as_posix()
+            if resolved.startswith(".."):
+                report.broken.append(
+                    BrokenReference(source, value, resolved, "escapes site root")
+                )
+            elif not (site_dir / resolved).exists():
+                report.broken.append(BrokenReference(source, value, resolved, "missing"))
+
+    return report
+
+
+def format_verify_summary(report: VerifyReport) -> str:
+    import collections
+
+    lines = [
+        "Verification:",
+        f"  {report.documents} document(s), {report.checked} local reference(s) checked",
+        f"  {report.external} external, {report.skipped} skipped (mailto/data/anchors)",
+    ]
+    if report.ok:
+        lines.append("  no broken local references")
+        return "\n".join(lines)
+
+    lines.append(f"  ** {len(report.broken)} BROKEN local reference(s) **")
+    by_reason = collections.Counter(b.reason for b in report.broken)
+    for reason, count in by_reason.most_common():
+        lines.append(f"     {count} {reason}")
+    grouped = collections.Counter(
+        b.target.rsplit(".", 1)[-1][:12] if "." in b.target.rsplit("/", 1)[-1] else "(no extension)"
+        for b in report.broken
+    )
+    lines.append(f"     by target type: {dict(grouped.most_common(6))}")
+    for broken in report.broken[:5]:
+        lines.append(f"       {broken.reference[:70]}  in {broken.source}")
+    return "\n".join(lines)
+
+
 def format_build_summary(stats: BuildStats) -> str:
     considered = stats.considered or 1
     lines = [

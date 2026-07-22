@@ -255,3 +255,92 @@ def test_build_site_never_writes_into_the_capture(tmp_path: Path):
     build_site(manifest, output_dir, site_dir)
 
     assert (output_dir / home.local_path).read_bytes() == original
+
+
+# --- verification ---------------------------------------------------------
+#
+# verify_site knows nothing about the manifest or the rewriter: it re-reads
+# the emitted tree and resolves against real files. A check sharing the
+# assumptions of the code it checks agrees with bugs instead of catching them.
+
+from wpfreeze.build import verify_site  # noqa: E402
+
+
+def _site(tmp_path: Path, files: dict[str, str]) -> Path:
+    site = tmp_path / "site"
+    for name, body in files.items():
+        path = site / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+    return site
+
+
+def test_verify_passes_when_every_local_reference_resolves(tmp_path: Path):
+    site = _site(tmp_path, {
+        "index.html": '<a href="about.html">a</a><link rel="stylesheet" href="css/s.css">',
+        "about.html": '<a href="index.html">home</a><img src="img/x.png">',
+        "css/s.css": "body{background:url('../img/x.png')}",
+        "img/x.png": "PNG",
+    })
+
+    report = verify_site(site)
+
+    assert report.ok
+    assert report.broken == []
+    assert report.checked == 5
+
+
+def test_verify_reports_a_missing_target_with_its_source(tmp_path: Path):
+    site = _site(tmp_path, {"a/page.html": '<img src="../img/gone.png">'})
+
+    report = verify_site(site)
+
+    assert len(report.broken) == 1
+    broken = report.broken[0]
+    assert broken.source == "a/page.html"
+    assert broken.target == "img/gone.png"
+    assert broken.reason == "missing"
+
+
+def test_verify_flags_references_escaping_the_site_root(tmp_path: Path):
+    site = _site(tmp_path, {"page.html": '<img src="../../etc/passwd">'})
+
+    report = verify_site(site)
+
+    assert [b.reason for b in report.broken] == ["escapes site root"]
+
+
+def test_verify_ignores_external_and_non_resource_references(tmp_path: Path):
+    site = _site(tmp_path, {
+        "page.html": '<a href="https://example.org/x">e</a><a href="//cdn.example.org/y">p</a>'
+                     '<a href="mailto:a@b.c">m</a><a href="#top">t</a>',
+    })
+
+    report = verify_site(site)
+
+    assert report.ok
+    assert report.external == 2
+    assert report.skipped == 2
+    assert report.checked == 0
+
+
+def test_verify_treats_query_strings_as_a_static_server_would(tmp_path: Path):
+    """A static server ignores the query: the file either exists or doesn't."""
+    site = _site(tmp_path, {
+        "page.html": '<link rel="stylesheet" href="s.css?ver=2">',
+        "s.css": "body{}",
+    })
+
+    assert verify_site(site).ok
+
+
+def test_verify_checks_srcset_candidates_and_css_files(tmp_path: Path):
+    site = _site(tmp_path, {
+        "page.html": '<img srcset="a.png 480w, missing.png 800w">',
+        "a.png": "PNG",
+        "s.css": "body{background:url(gone.png)}",
+    })
+
+    report = verify_site(site)
+
+    assert {b.target for b in report.broken} == {"missing.png", "gone.png"}
