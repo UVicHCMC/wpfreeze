@@ -213,6 +213,13 @@ touching the capture, so re-running is always safe. In that tree:
   CSS/JS files under `assets/bundles/`.
 - Links to WordPress attachment pages are redirected to the media they wrap.
 - The acquisition-generated redirect map is copied to `site/.htaccess`.
+- **Live-web machinery is stripped** so the archive is genuinely
+  self-contained: analytics and tag managers (third-party *and* the
+  self-hosted analytics plugins WordPress serves from its own domain),
+  `<form>` elements (dead or leaky on a static site), and dead RSS/Atom feed
+  links. All three are on by default and configurable per site — see the
+  `policy:` block in [`example-site.yaml`](example-site.yaml). Counts of what
+  was removed appear in the build summary.
 
 References the capture never got are left pointing at the original site —
 honestly broken rather than silently dead — and counted in the summary. By
@@ -223,6 +230,16 @@ reference against a real file on disk and reporting any that are broken.
 gallery that assembles image paths at runtime, a JS-only nav). Discovery and
 rewriting are markup-based by design — there is no headless browser — so
 those keep pointing at the live site.
+
+**Telemetry stripping is coverage-based**, and coverage has two edges. A
+tracker loaded from a host the blocklist doesn't know, or inline tracking
+code matching none of the known signatures, will survive — widen coverage
+per site with `telemetry_extra_hosts`. And a `<script>` that matches a
+tracking signature is removed whole; if a site ever fused a tracking call
+into a script that also did real work, that script goes too. This isn't seen
+on real WordPress (tracking is injected as its own dedicated blocks), but
+it's the deliberate cost of stripping everything rather than editing script
+internals.
 
 ## Behaviour worth knowing about
 

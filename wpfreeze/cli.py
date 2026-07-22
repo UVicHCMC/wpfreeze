@@ -39,6 +39,7 @@ from wpfreeze.fetch import DEFAULT_USER_AGENT, FetchConfig, RateLimiter
 from wpfreeze.inventory import discover_inventory
 from wpfreeze.manifest import Manifest, Status, utc_now
 from wpfreeze.outputs import compute_output_paths, generate_redirects_htaccess
+from wpfreeze.policy import Policy
 from wpfreeze.report import write_report_html, write_report_json
 from wpfreeze.urlnorm import SiteProfile
 from wpfreeze.wayback import recover_via_wayback
@@ -70,6 +71,7 @@ class SiteConfig:
     user_agent: str = DEFAULT_USER_AGENT
     wayback: WaybackSettings = field(default_factory=WaybackSettings)
     xml_backup: Path | None = None  # optional: a WordPress XML export (WXR) to augment inventory
+    policy: Policy = field(default_factory=Policy)  # content stripping for `build`
 
 
 def _parse_date(value) -> date:
@@ -104,6 +106,7 @@ def load_config(path: Path) -> SiteConfig:
             prefer_snapshots_near=_parse_date(prefer_near_raw) if prefer_near_raw else date.today(),
         ),
         xml_backup=Path(xml_backup_raw) if xml_backup_raw else None,
+        policy=Policy.from_config(raw.get("policy")),
     )
 
 
@@ -372,7 +375,7 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool) -> int:
         return 2
     manifest = Manifest.load(manifest_path)
     target = site_dir or (config.output_dir / "site")
-    stats = build_site(manifest, config.output_dir, target)
+    stats = build_site(manifest, config.output_dir, target, config.policy)
     print(format_build_summary(stats))
     print(f"Site written to {target}")
 

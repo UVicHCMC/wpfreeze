@@ -69,6 +69,44 @@ wayback:
   # Wayback recovery. Defaults to today (most recent available) if unset.
   prefer_snapshots_near: "2026-01-01"
 
+# Content policy for `wpfreeze build` -- what to strip when turning the raw
+# capture into a servable static site. All three default to true: the point
+# of a build is a durable, self-contained archive, and live-web machinery
+# works against that. This whole block is optional; omit it to accept the
+# defaults below.
+policy:
+  # Remove analytics and tag-manager machinery so the archive never phones
+  # home. Covers third-party trackers by host (Google Analytics/Tag Manager,
+  # Meta Pixel, Hotjar, Matomo, WordPress.com/Jetpack stats, and more) AND
+  # the analytics *plugins* self-hosted WordPress serves from its own domain
+  # (MonsterInsights, Site Kit, Analytify, self-hosted Matomo), which a
+  # host-based rule cannot see. External references, tracking pixels, the
+  # <noscript> tag-manager iframe, and dedicated inline tracking <script>
+  # blocks are all removed. Every removal is counted in the build summary.
+  strip_telemetry: true
+
+  # Remove <form> elements. On a static archive none of them submit usefully:
+  # comment and search forms hit endpoints that no longer exist, and mailing-
+  # list forms silently hand a reader's email to a third party while looking
+  # like they work. The form is removed outright, not disabled in place.
+  strip_forms: true
+
+  # Remove feed links -- the <link rel="alternate" type="application/rss+xml">
+  # (and Atom/RDF) pointers in the document head, which reference endpoints
+  # that die with the live site. Visible "Subscribe via RSS" links in page
+  # body content are left alone; those are content, not dead metadata.
+  strip_feeds: true
+
+  # Add site-specific tracker hostnames to the built-in blocklist, for a
+  # tracker this list doesn't already know. Matched as a substring of the
+  # reference's host, so "analytics.example.com" covers its subdomains.
+  telemetry_extra_hosts: []
+  #   - "analytics.example.com"
+
+  # Escape hatch: hostnames to NEVER strip, even if they would otherwise
+  # match. Use if a "tracker" host actually serves something you need kept.
+  telemetry_keep_hosts: []
+
 # Optional. Path to a WordPress XML export (Tools > Export > All content
 # in wp-admin, or `wp export` via WP-CLI -- a "WXR" file) for this site.
 # If you have one, it augments the sitemap and REST API inventory with a

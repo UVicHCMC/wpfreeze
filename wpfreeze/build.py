@@ -38,6 +38,7 @@ from bs4 import BeautifulSoup
 
 from wpfreeze.extract import decode_static_bundle
 from wpfreeze.manifest import FLAG_ATTACHMENT_PAGE, Manifest, ManifestRecord, Status
+from wpfreeze.policy import Policy, PolicyStats, apply_policy
 from wpfreeze.urlnorm import PERMALINK_QUERY_KEYS
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ class BuildStats:
     bundle_components_missing: int = 0
     attachment_links_retargeted: int = 0
     redirects_copied: bool = False
+    policy: PolicyStats = field(default_factory=PolicyStats)
     unresolved_samples: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -432,7 +434,15 @@ class LinkRewriter:
 
     def rewrite_html(self, html: str, page_url: str, page_output: str) -> str:
         soup = BeautifulSoup(html, "lxml")
+        self.rewrite_soup(soup, page_url, page_output)
+        return str(soup)
 
+    def rewrite_soup(self, soup: BeautifulSoup, page_url: str, page_output: str) -> None:
+        """Rewrite every reference in an already-parsed document, in place.
+
+        Split out from rewrite_html so build_site can parse once, rewrite,
+        and then apply content policy to the same tree before serialising --
+        rather than parse-serialise-reparse."""
         for tag_name, attrs in _URL_ATTRS.items():
             for tag in soup.find_all(tag_name):
                 for attr in attrs:
@@ -454,8 +464,6 @@ class LinkRewriter:
             if tag.string:
                 tag.string = self.rewrite_css(tag.string, page_url, page_output)
 
-        return str(soup)
-
 
 def _different_host(absolute: str, page_url: str) -> bool:
     def bare(host: str) -> str:
@@ -465,13 +473,23 @@ def _different_host(absolute: str, page_url: str) -> bool:
     return bool(host) and bare(host) != bare(urlsplit(page_url).netloc)
 
 
-def build_site(manifest: Manifest, output_dir: Path, site_dir: Path) -> BuildStats:
+def build_site(
+    manifest: Manifest,
+    output_dir: Path,
+    site_dir: Path,
+    policy: Policy | None = None,
+) -> BuildStats:
     """Emit the rewritten site under `site_dir`.
 
     Non-destructive with respect to `raw/`: every document is read from the
     capture and written to a separate tree, so a build can be re-run as
     often as needed without ever touching the acquired bytes.
+
+    `policy` controls content stripping (telemetry, forms, feeds); the
+    default strips all three. Pass a Policy with fields disabled, or None to
+    accept the defaults.
     """
+    policy = policy or Policy()
     records = build_record_lookup(manifest)
     lookup = {url: record.output_path for url, record in records.items()}
     attachment_media = build_attachment_media_map(manifest, output_dir, lookup)
@@ -499,10 +517,16 @@ def build_site(manifest: Manifest, output_dir: Path, site_dir: Path) -> BuildSta
         if is_html:
             stats.pages += 1
             text = source.read_text(encoding="utf-8", errors="replace")
-            destination.write_text(
-                rewriter.rewrite_html(text, record.url, record.output_path),
-                encoding="utf-8",
-            )
+            soup = BeautifulSoup(text, "lxml")
+            # Policy runs first, on the original markup: telemetry references
+            # still carry their true host here (e.g. googletagmanager.com),
+            # whereas rewriting localizes them into host-less paths -- a
+            # tracker bucketed to /assets/js/external/fbevents.js has no host
+            # left to match on. Strip, then rewrite what remains.
+            if policy.any_enabled:
+                apply_policy(soup, policy, stats.policy)
+            rewriter.rewrite_soup(soup, record.url, record.output_path)
+            destination.write_text(str(soup), encoding="utf-8")
         elif is_css:
             stats.assets += 1
             text = source.read_text(encoding="utf-8", errors="replace")
@@ -681,4 +705,10 @@ def format_build_summary(stats: BuildStats) -> str:
     ]
     if stats.unresolved:
         lines.append("  (unresolved references are left pointing at the original site)")
+    p = stats.policy
+    if p.telemetry_removed or p.forms_removed or p.feeds_removed:
+        lines.append(
+            f"  stripped: {p.telemetry_removed} telemetry, "
+            f"{p.forms_removed} form(s), {p.feeds_removed} feed link(s)"
+        )
     return "\n".join(lines)
