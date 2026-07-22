@@ -344,3 +344,169 @@ def test_verify_checks_srcset_candidates_and_css_files(tmp_path: Path):
     report = verify_site(site)
 
     assert {b.target for b in report.broken} == {"missing.png", "gone.png"}
+
+
+# --- concat bundle reassembly ---------------------------------------------
+
+import base64  # noqa: E402
+import zlib  # noqa: E402
+
+
+def _bundle(paths: list[str], host: str = BASE) -> str:
+    body = base64.b64encode(zlib.compress(",".join(paths).encode())).decode().rstrip("=")
+    return f"{host}/_static/??-{body}&cssminify=yes"
+
+
+def test_bundle_is_reassembled_in_order_from_captured_components(tmp_path: Path):
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    first = _fetched(manifest, f"{BASE}/wp-content/a.css", "/wp-content/a.css", content_type="text/css")
+    second = _fetched(manifest, f"{BASE}/wp-content/b.css", "/wp-content/b.css", content_type="text/css")
+
+    url = _bundle(["/wp-content/a.css", "/wp-content/b.css"])
+    _write(output_dir, home, f'<link rel="stylesheet" href="{url}">'.encode())
+    _write(output_dir, first, b"body{color:red}")
+    _write(output_dir, second, b"body{color:blue}")
+
+    stats = build_site(manifest, output_dir, site_dir)
+
+    assert stats.bundles_reassembled == 1
+    bundles = list((site_dir / "assets/bundles").glob("*.css"))
+    assert len(bundles) == 1
+    text = bundles[0].read_text()
+    # Cascade order preserved: the later component must win.
+    assert text.index("color:red") < text.index("color:blue")
+    assert "../assets/bundles" not in (site_dir / "index.html").read_text()
+    assert "assets/bundles" in (site_dir / "index.html").read_text()
+
+
+def test_bundle_css_urls_are_rebased_onto_the_bundles_location(tmp_path: Path):
+    """A component's bytes move to /assets/bundles/, so a relative url()
+    inside it resolves from there -- not from where the component lived."""
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    css = _fetched(
+        manifest, f"{BASE}/wp-content/themes/x/style.css",
+        "/wp-content/themes/x/style.css", content_type="text/css",
+    )
+    font = _fetched(
+        manifest, f"{BASE}/wp-content/themes/x/f.woff", "/wp-content/themes/x/f.woff",
+        content_type="font/woff",
+    )
+
+    url = _bundle(["/wp-content/themes/x/style.css"])
+    _write(output_dir, home, f'<link rel="stylesheet" href="{url}">'.encode())
+    _write(output_dir, css, b"@font-face{src:url(f.woff)}")
+    _write(output_dir, font, b"WOFF")
+
+    build_site(manifest, output_dir, site_dir)
+
+    bundle = next((site_dir / "assets/bundles").glob("*.css"))
+    assert "url(../../wp-content/themes/x/f.woff)" in bundle.read_text()
+    assert verify_site(site_dir).ok
+
+
+def test_uncaptured_bundle_components_are_noted_not_silently_dropped(tmp_path: Path):
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    present = _fetched(manifest, f"{BASE}/wp-content/a.css", "/wp-content/a.css", content_type="text/css")
+
+    url = _bundle(["/wp-content/a.css", "/wp-content/never-fetched.css"])
+    _write(output_dir, home, f'<link rel="stylesheet" href="{url}">'.encode())
+    _write(output_dir, present, b"body{color:red}")
+
+    stats = build_site(manifest, output_dir, site_dir)
+
+    assert stats.bundles_reassembled == 1
+    assert stats.bundle_components_missing == 1
+    bundle = next((site_dir / "assets/bundles").glob("*.css"))
+    assert "not captured" in bundle.read_text() and "never-fetched.css" in bundle.read_text()
+
+
+def test_bundle_with_nothing_captured_is_left_alone(tmp_path: Path):
+    """Better an honest broken reference than an empty file pretending to
+    be the site's stylesheet."""
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    url = _bundle(["/wp-content/gone.css"])
+    _write(output_dir, home, f'<link rel="stylesheet" href="{url}">'.encode())
+
+    stats = build_site(manifest, output_dir, site_dir)
+
+    assert stats.bundles_reassembled == 0
+    assert not (site_dir / "assets/bundles").exists()
+    assert "/_static/??" in (site_dir / "index.html").read_text()
+
+
+def test_same_bundle_on_many_pages_is_written_once(tmp_path: Path):
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    url = _bundle(["/wp-content/a.css"])
+    css = _fetched(manifest, f"{BASE}/wp-content/a.css", "/wp-content/a.css", content_type="text/css")
+    _write(output_dir, css, b"body{}")
+    for name in ("", "one/", "two/"):
+        page = _fetched(manifest, f"{BASE}/{name}", f"/{name or 'index'}".rstrip("/") + ".html")
+        _write(output_dir, page, f'<link rel="stylesheet" href="{url}">'.encode())
+
+    stats = build_site(manifest, output_dir, site_dir)
+
+    assert stats.bundles_reassembled == 1
+    assert len(list((site_dir / "assets/bundles").glob("*"))) == 1
+
+
+def test_javascript_bundles_get_a_js_extension(tmp_path: Path):
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    js = _fetched(
+        manifest, f"{BASE}/wp-content/a.js", "/wp-content/a.js",
+        content_type="application/javascript",
+    )
+    url = _bundle(["/wp-content/a.js"])
+    _write(output_dir, home, f'<script src="{url}"></script>'.encode())
+    _write(output_dir, js, b"var a=1;")
+
+    build_site(manifest, output_dir, site_dir)
+
+    assert len(list((site_dir / "assets/bundles").glob("*.js"))) == 1
+
+
+def test_unresolved_css_urls_are_absolutised_when_the_css_is_relocated(tmp_path: Path):
+    """Bundling moves a component's bytes into /assets/bundles/. A relative
+    url() that resolved under the component's own directory would silently
+    start resolving under the bundle directory, so it must be absolutised
+    rather than left alone."""
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    css = _fetched(
+        manifest, f"{BASE}/wp-content/plugins/p/style.css",
+        "/wp-content/plugins/p/style.css", content_type="text/css",
+    )
+    url = _bundle(["/wp-content/plugins/p/style.css"])
+    _write(output_dir, home, f'<link rel="stylesheet" href="{url}">'.encode())
+    # icons/x.svg was never captured, so it cannot be rewritten to a local path
+    _write(output_dir, css, b".a{background:url(icons/x.svg)}")
+
+    build_site(manifest, output_dir, site_dir)
+
+    bundle = next((site_dir / "assets/bundles").glob("*.css")).read_text()
+    assert f"url({BASE}/wp-content/plugins/p/icons/x.svg)" in bundle
+    assert "url(icons/x.svg)" not in bundle
+
+
+def test_unrelocated_css_leaves_unresolved_urls_untouched(tmp_path: Path):
+    """A file staying where it was served from keeps its references as
+    written -- they still point at the live site and still work."""
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/", "/index.html")
+    rewriter, _ = _rewriter(manifest)
+
+    out = rewriter.rewrite_css(
+        ".a{background:url(icons/x.svg)}", f"{BASE}/wp-content/s.css", "/wp-content/s.css"
+    )
+    assert "url(icons/x.svg)" in out

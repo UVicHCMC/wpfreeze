@@ -26,6 +26,7 @@ which is most of the point of a durable offline copy.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -35,7 +36,8 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
-from wpfreeze.manifest import Manifest, Status
+from wpfreeze.extract import decode_static_bundle
+from wpfreeze.manifest import Manifest, ManifestRecord, Status
 from wpfreeze.urlnorm import PERMALINK_QUERY_KEYS
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,8 @@ class BuildStats:
     skipped: int = 0
     pages: int = 0
     assets: int = 0
+    bundles_reassembled: int = 0
+    bundle_components_missing: int = 0
     unresolved_samples: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -142,26 +146,31 @@ def lookup_variants(url: str) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def build_lookup(manifest: Manifest) -> dict[str, str]:
-    """Map every spelling of every fetched resource to its output_path.
+def build_record_lookup(manifest: Manifest) -> dict[str, ManifestRecord]:
+    """Map every spelling of every fetched resource to its manifest record.
 
     Only successfully fetched records are included: a reference to
     something the capture never got should stay visibly broken rather than
     silently point at a file that isn't there.
     """
-    lookup: dict[str, str] = {}
+    lookup: dict[str, ManifestRecord] = {}
 
-    def add(url: str, output_path: str) -> None:
+    def add(url: str, record: ManifestRecord) -> None:
         for variant in lookup_variants(url):
-            lookup.setdefault(variant, output_path)
+            lookup.setdefault(variant, record)
 
     for record in manifest.all():
         if record.status not in _FETCHED_STATUSES or not record.output_path:
             continue
-        add(record.url, record.output_path)
+        add(record.url, record)
         for alias in record.aliases:
-            add(alias, record.output_path)
+            add(alias, record)
     return lookup
+
+
+def build_lookup(manifest: Manifest) -> dict[str, str]:
+    """Map every spelling of every fetched resource to its output_path."""
+    return {url: record.output_path for url, record in build_record_lookup(manifest).items()}
 
 
 def relative_link(from_output_path: str, to_output_path: str) -> str:
@@ -170,13 +179,115 @@ def relative_link(from_output_path: str, to_output_path: str) -> str:
     return posix_relpath(to_output_path.lstrip("/"), from_dir.lstrip("/") or ".")
 
 
+BUNDLE_DIR = "/assets/bundles"
+
+
+class BundleReassembler:
+    """Rebuilds a WordPress.com /_static/?? concat bundle as one local file.
+
+    Acquisition expands these into their component resources (see
+    extract.decode_static_bundle), so by build time the pieces are in the
+    manifest but the bundle URL itself refers to nothing. Reassembling
+    restores what the page actually asked for.
+
+    Concatenated into a single file rather than emitted as N separate
+    <link>s, because WordPress themes routinely depend on later components
+    overriding earlier ones and splitting the bundle would preserve neither
+    that order nor the single-request shape the markup was built around.
+
+    The subtle part is CSS: a component's bytes move from
+    /wp-content/themes/x/style.css to /assets/bundles/<hash>.css, so any
+    relative url() inside it must be re-resolved against the *bundle's*
+    location or every font and background image in it breaks.
+    """
+
+    def __init__(
+        self,
+        records: dict[str, ManifestRecord],
+        output_dir: Path,
+        site_dir: Path,
+        stats: BuildStats,
+    ):
+        self.records = records
+        self.output_dir = output_dir
+        self.site_dir = site_dir
+        self.stats = stats
+        self.rewriter: LinkRewriter | None = None  # set once, avoids a cycle at construction
+        self._cache: dict[str, str | None] = {}
+
+    def _find(self, url: str) -> ManifestRecord | None:
+        for variant in lookup_variants(url):
+            record = self.records.get(variant)
+            if record is not None:
+                return record
+        return None
+
+    def output_path_for(self, url: str) -> str | None:
+        """The site-relative path of the reassembled bundle, or None if
+        `url` isn't a bundle or nothing it names was ever captured."""
+        components = decode_static_bundle(url)
+        if components is None:
+            return None
+        if url in self._cache:
+            return self._cache[url]
+        self._cache[url] = None  # guards against re-entry via a component's own CSS
+        result = self._synthesise(url, components)
+        self._cache[url] = result
+        return result
+
+    def _synthesise(self, url: str, components: list[str]) -> str | None:
+        # Extension first: the output path is needed to rewrite component
+        # CSS, and that path depends on the kind of bundle this is.
+        suffix = ".css" if any(c.split("?")[0].endswith(".css") for c in components) else ".js"
+        name = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16] + suffix
+        output_path = f"{BUNDLE_DIR}/{name}"
+        comment = "/* %s */\n" if suffix == ".css" else "// %s\n"
+
+        chunks: list[str] = []
+        missing = 0
+        for component in components:
+            record = self._find(component)
+            source = (
+                self.output_dir / record.local_path
+                if record is not None and record.local_path
+                else None
+            )
+            if source is None or not source.exists():
+                missing += 1
+                chunks.append(comment % f"wpfreeze: not captured -- {component}")
+                continue
+            text = source.read_text(encoding="utf-8", errors="replace")
+            if suffix == ".css" and self.rewriter is not None:
+                text = self.rewriter.rewrite_css(text, component, output_path, relocated=True)
+            chunks.append(comment % component)
+            chunks.append(text)
+            chunks.append("\n")
+
+        if missing == len(components):
+            return None  # nothing recoverable; leave the reference alone
+
+        destination = self.site_dir / output_path.lstrip("/")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("".join(chunks), encoding="utf-8")
+
+        self.stats.bundles_reassembled += 1
+        self.stats.bundle_components_missing += missing
+        return output_path
+
+
 class LinkRewriter:
     """Rewrites references in one document at a time, against a prebuilt
     lookup. Stateless per document apart from the shared stats counter."""
 
-    def __init__(self, lookup: dict[str, str], stats: BuildStats):
+    def __init__(
+        self,
+        lookup: dict[str, str],
+        stats: BuildStats,
+        bundler: BundleReassembler | None = None,
+    ):
         self.lookup = lookup
         self.stats = stats
+        self.bundler = bundler
 
     def resolve(self, value: str, page_url: str, page_output: str) -> str | None:
         """Return the relative replacement for `value`, or None to leave it
@@ -199,6 +310,14 @@ class LinkRewriter:
         except ValueError:
             self.stats.unresolved += 1
             return None
+
+        # Bundles first: the bundle URL is never in the lookup (acquisition
+        # expands it away), so ordinary resolution would always miss.
+        if self.bundler is not None:
+            bundle_target = self.bundler.output_path_for(absolute)
+            if bundle_target is not None:
+                self.stats.rewritten += 1
+                return relative_link(page_output, bundle_target) + fragment
 
         for candidate in lookup_variants(absolute):
             target = self.lookup.get(candidate)
@@ -226,11 +345,32 @@ class LinkRewriter:
             out.append(url + (" " + parts[1] if len(parts) > 1 else ""))
         return ", ".join(out)
 
-    def rewrite_css(self, text: str, page_url: str, page_output: str) -> str:
+    def rewrite_css(
+        self, text: str, page_url: str, page_output: str, *, relocated: bool = False
+    ) -> str:
+        """Rewrite url() references in CSS.
+
+        `relocated` must be set when the text is being moved to a different
+        directory than the one it was served from -- concat bundles being
+        the case in point. Leaving an unresolved reference untouched is the
+        right call for a file staying put (it keeps pointing at the live
+        site, which works until the site goes), but for relocated text it
+        silently *changes meaning*: a relative "images/x.svg" that used to
+        resolve under the component's own directory would start resolving
+        under /assets/bundles/, pointing at a file that never existed
+        there. Absolutising instead preserves the original target, and a
+        real bundle rebuild caught exactly this -- 37 icon and font
+        references quietly retargeted.
+        """
+
         def substitute(match: re.Match) -> str:
             quote, url = match.group(1), match.group(2)
             replacement = self.resolve(url, page_url, page_output)
-            return f"url({quote}{replacement or url}{quote})"
+            if replacement:
+                return f"url({quote}{replacement}{quote})"
+            if relocated and url.strip() and not url.strip().lower().startswith(_SKIP_PREFIXES):
+                return f"url({quote}{urljoin(page_url, url.strip())}{quote})"
+            return f"url({quote}{url}{quote})"
 
         return _CSS_URL_RE.sub(substitute, text)
 
@@ -276,9 +416,12 @@ def build_site(manifest: Manifest, output_dir: Path, site_dir: Path) -> BuildSta
     capture and written to a separate tree, so a build can be re-run as
     often as needed without ever touching the acquired bytes.
     """
-    lookup = build_lookup(manifest)
+    records = build_record_lookup(manifest)
+    lookup = {url: record.output_path for url, record in records.items()}
     stats = BuildStats()
-    rewriter = LinkRewriter(lookup, stats)
+    bundler = BundleReassembler(records, output_dir, site_dir, stats)
+    rewriter = LinkRewriter(lookup, stats, bundler)
+    bundler.rewriter = rewriter
     logger.info("build: %d lookup keys", len(lookup))
 
     for record in manifest.all():
@@ -455,6 +598,18 @@ def format_build_summary(stats: BuildStats) -> str:
     lines = [
         "Build:",
         f"  {stats.pages} page(s), {stats.assets} asset(s) written",
+        *(
+            [
+                f"  {stats.bundles_reassembled} concat bundle(s) reassembled"
+                + (
+                    f" ({stats.bundle_components_missing} component(s) not captured)"
+                    if stats.bundle_components_missing
+                    else ""
+                )
+            ]
+            if stats.bundles_reassembled
+            else []
+        ),
         f"  references rewritten to local : {stats.rewritten} ({stats.rewritten / considered:.1%})",
         f"  left absolute (external)      : {stats.left_absolute} ({stats.left_absolute / considered:.1%})",
         f"  unresolved                    : {stats.unresolved} ({stats.unresolved / considered:.1%})",
