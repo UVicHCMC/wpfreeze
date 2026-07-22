@@ -19,11 +19,17 @@ web scraper and makes no attempt to be polite to sites it doesn't own.
   snapshots for anything the live site can't serve, and write a
   self-contained `report.html` that tells you exactly what's missing and
   why.
-- **Does not**: rewrite HTML to work as a standalone static site. Fetched
-  files are saved byte-for-byte as retrieved; `manifest.json` records the
-  *intended* output path for each resource, but nothing currently rewrites
-  internal links to point at those paths. Turning the raw capture into a
-  servable static site is a separate job this tool doesn't do (yet).
+- **Also does**: rebuild the raw capture into a servable static site
+  (`wpfreeze build`). Internal links are rewritten to relative local paths,
+  WordPress.com `/_static/` concat bundles are reassembled into local CSS/JS,
+  attachment-page links are redirected to the media they wrap, and the whole
+  tree is verified — every local reference is resolved against a real file on
+  disk before the command returns. See "Building a servable site" below.
+- **Does not**: execute JavaScript. Link discovery and rewriting are
+  markup-based, so anything a script constructs at runtime (a gallery that
+  builds image URLs in JS, a JS-only navigation path) is neither captured nor
+  rewritten. This is a deliberate scope decision — no headless browser — and
+  it's reported in the build's own known-limitations, not silently ignored.
 
 ## Requirements
 
@@ -136,6 +142,7 @@ and omitting it is completely normal, not a degraded mode.
 ```
 wpfreeze                                        # no subcommand: interactive wizard
 wpfreeze acquire --config site.yaml [--resume] [--dry-run]
+wpfreeze build   --config site.yaml [--site-dir DIR] [--no-verify]
 wpfreeze report  --config site.yaml [--html-only | --json-only]
 wpfreeze status  --config site.yaml
 ```
@@ -148,6 +155,11 @@ wpfreeze status  --config site.yaml
 - **`--dry-run`** does inventory discovery and nothing else: no fetching,
   just a report of every URL the site claims to have. Good for sizing up a
   site before committing to a real run.
+- **`build`** rewrites the capture into a servable static site under
+  `<output_dir>/site` (or `--site-dir`). Network-free and non-destructive:
+  it reads `raw/` and `manifest.json` and writes a separate tree, so it is
+  safe to re-run. It self-verifies afterward — every local reference is
+  resolved against a file on disk — unless `--no-verify` is passed.
 - **`report`** regenerates `report.html`/`report.json` from the existing
   manifest without touching the network at all.
 - **`status`** prints a one-screen summary: counts by status, how much is
@@ -155,7 +167,10 @@ wpfreeze status  --config site.yaml
 
 **Exit codes**: `0` = complete, `1` = complete with gaps (see `report.html`'s
 "Action required" section — expected content that couldn't be recovered
-live or via Wayback), `2` = error or refused to run. `Ctrl-C` prints a short
+live or via Wayback), `2` = error or refused to run. For `build`, `1` means
+the site was written but some references could not be resolved to a local
+file (left pointing at the original site) or a local link is broken; the
+build summary and verification report say which. `Ctrl-C` prints a short
 message and exits `130` instead of a raw traceback — the manifest is saved
 incrementally during a crawl, so `--resume` can usually pick back up rather
 than starting over.
@@ -170,10 +185,44 @@ manifest.json   the spine -- one record per canonical resource
 report.html     single self-contained static report (open it in a browser)
 report.json     the manifest plus summary statistics
 logs/           one file per run, full DEBUG-level detail
+site/           servable static site (only after `wpfreeze build`)
 ```
 
 `report.html` has no external dependencies — no CDN scripts, no fonts, no
 tracking — it's one file you can hand to anyone.
+
+## Building a servable site
+
+`wpfreeze build` turns the raw capture into a static site you can host on any
+plain web server or browse straight off disk:
+
+```bash
+wpfreeze build --config site.yaml
+```
+
+It reads `raw/` and `manifest.json` and writes `<output_dir>/site` without
+touching the capture, so re-running is always safe. In that tree:
+
+- Internal links, `src`/`srcset`, CSS `url()`, and inline styles are
+  rewritten to **relative** local paths, so the site works whether it's
+  served from a domain root, hosted under a subdirectory, or opened as a
+  `file://` path.
+- Cache-buster query strings (`?ver=`, `?m=`, `?cssminify=`) are matched to
+  the single canonical file the capture holds, rather than left dangling.
+- WordPress.com `/_static/??…` concat bundles are reassembled into local
+  CSS/JS files under `assets/bundles/`.
+- Links to WordPress attachment pages are redirected to the media they wrap.
+- The acquisition-generated redirect map is copied to `site/.htaccess`.
+
+References the capture never got are left pointing at the original site —
+honestly broken rather than silently dead — and counted in the summary. By
+default `build` then verifies its own output, resolving every local
+reference against a real file on disk and reporting any that are broken.
+
+**Not rewritten**: URLs that only exist inside executed JavaScript (a
+gallery that assembles image paths at runtime, a JS-only nav). Discovery and
+rewriting are markup-based by design — there is no headless browser — so
+those keep pointing at the live site.
 
 ## Behaviour worth knowing about
 
@@ -212,8 +261,9 @@ tracking — it's one file you can hand to anyone.
 ## Known limitations
 
 - Linux only, by design.
-- No markup rewriting — see "What it does and doesn't do" above.
-- No headless browser / JS execution.
+- No headless browser / JS execution — so URLs built at runtime in
+  JavaScript are neither captured nor rewritten (see "Building a servable
+  site").
 - No scheduling or recurring collection — each `acquire` is a single
   (resumable) run against one site config, not a cron-style repeating job.
 
