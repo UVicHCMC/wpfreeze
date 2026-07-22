@@ -7,10 +7,13 @@ if external); href on <a> is a hyperlink (followed only if internal).
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
+import zlib
 from dataclasses import dataclass
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
@@ -110,6 +113,70 @@ def _is_bare_directory_reference(url: str) -> bool:
     return url.rstrip().endswith("/")
 
 
+_STATIC_CONCAT_PATH = "/_static/"
+
+
+def decode_static_bundle(url: str) -> list[str] | None:
+    """Expand a WordPress.com /_static/?? concatenated-asset URL into the
+    individual resource URLs it bundles; None if `url` isn't one.
+
+    WordPress.com serves theme and plugin CSS/JS through an Nginx concat
+    endpoint that encodes its component list *in the query string*:
+
+        /_static/??-<base64(zlib("path,path,..."))>&cssminify=yes
+        /_static/??/wp-content/a.css,/wp-content/b.css
+
+    Expanding these at extraction time is not tidiness, it is correctness.
+    normalize_url discards non-permalink query strings as cache-busters,
+    which here throws away the only thing identifying the resource: every
+    bundle on a host collapses to a bare "https://host/_static/". On a real
+    capture that reduced 25 distinct bundles to 4 records, leaving 52 of 61
+    component assets -- including the entire theme stylesheet -- never
+    fetched, so the rebuilt site rendered completely unstyled. Two of those
+    4 records were then "recovered" from the Wayback Machine, which served
+    one arbitrary archived bundle under a fetched_wayback status: 275 KB of
+    real, plausible CSS standing in for five different bundles, with
+    nothing about the record looking wrong. Expanding here keeps each
+    component's identity in its path, where normalization cannot lose it.
+    """
+    parts = urlsplit(url)
+    # urlsplit assigns everything after the *first* '?' to .query, so the
+    # second '?' of the '??' marker leads the spec.
+    if not parts.path.endswith(_STATIC_CONCAT_PATH) or not parts.query.startswith("?"):
+        return None
+    spec = unquote(parts.query[1:]).split("&")[0]
+    if spec.startswith("-"):
+        body = spec[1:]
+        body += "=" * (-len(body) % 4)  # the endpoint strips base64 padding
+        try:
+            spec = zlib.decompress(base64.b64decode(body)).decode("utf-8")
+        except (ValueError, zlib.error, UnicodeDecodeError):
+            logger.warning("could not decode _static bundle spec: %s", url)
+            return None
+    origin = urlunsplit((parts.scheme, parts.netloc, "/", "", ""))
+    components = []
+    for raw in spec.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        resolved = resolve_url(origin, raw)
+        if resolved is not None:
+            components.append(resolved)
+    return components or None
+
+
+def _as_links(resolved: str, kind: str, context: str) -> list[ExtractedLink]:
+    """One resolved URL yields one link -- unless it is a concat bundle, in
+    which case it yields its components and the bundle URL itself is
+    dropped. Keeping the bundle would re-introduce the collision it causes,
+    and it is unfetchable anyway: the endpoint 404s once normalization has
+    stripped the query that says what to concatenate."""
+    components = decode_static_bundle(resolved)
+    if components is None:
+        return [ExtractedLink(resolved, kind, context)]
+    return [ExtractedLink(c, kind, f"{context}->static-bundle") for c in components]
+
+
 def _find_url_shaped_strings(text: str) -> list[str]:
     """Best-effort URL scan over text that isn't valid JSON on its own
     (a non-JSON <script> body, or a data-* attribute holding a JS object
@@ -169,13 +236,13 @@ def extract_from_css(css_text: str, base_url: str) -> list[ExtractedLink]:
         if raw and not raw.startswith("data:"):
             resolved = resolve_url(base_url, raw)
             if resolved is not None:
-                links.append(ExtractedLink(resolved, RENDER, "css:url()"))
+                links.extend(_as_links(resolved, RENDER, "css:url()"))
     for match in _CSS_IMPORT_PLAIN_RE.finditer(css_text):
         raw = match.group(1).strip()
         if raw:
             resolved = resolve_url(base_url, raw)
             if resolved is not None:
-                links.append(ExtractedLink(resolved, RENDER, "css:@import"))
+                links.extend(_as_links(resolved, RENDER, "css:@import"))
     return links
 
 
@@ -190,7 +257,7 @@ def extract_from_html(html: str, base_url: str) -> list[ExtractedLink]:
         if raw and not raw.startswith(_SKIPPED_SCHEMES):
             resolved = resolve_url(base_url, raw)
             if resolved is not None:
-                links.append(ExtractedLink(resolved, kind, context))
+                links.extend(_as_links(resolved, kind, context))
 
     for tag in soup.find_all(True):
         name = tag.name

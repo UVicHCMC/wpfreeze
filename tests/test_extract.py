@@ -310,3 +310,85 @@ def _link(url, kind, context):
     from wpfreeze.extract import ExtractedLink
 
     return ExtractedLink(url, kind, context)
+
+
+# --- WordPress.com /_static/ concat bundles -------------------------------
+#
+# The bundle URL carries its component list in the query string, which
+# normalize_url discards as a cache-buster -- collapsing every bundle on a
+# host onto a bare "https://host/_static/". Expanding at extraction time is
+# what keeps those components addressable at all.
+
+def _bundle_url(paths: list[str], host: str = "https://example.com") -> str:
+    import base64
+    import zlib
+
+    packed = zlib.compress(",".join(paths).encode("utf-8"))
+    body = base64.b64encode(packed).decode("ascii").rstrip("=")
+    return f"{host}/_static/??-{body}&cssminify=yes"
+
+
+def test_static_bundle_expands_to_components_and_drops_the_bundle_url():
+    from wpfreeze.extract import decode_static_bundle
+
+    paths = ["/wp-content/themes/pub/x/style.css", "/wp-content/mu-plugins/y/widget.css"]
+    url = _bundle_url(paths)
+
+    assert decode_static_bundle(url) == [
+        "https://example.com/wp-content/themes/pub/x/style.css",
+        "https://example.com/wp-content/mu-plugins/y/widget.css",
+    ]
+
+    links = extract_from_html(f'<link rel="stylesheet" href="{url}">', BASE)
+    assert [l.url for l in links] == [
+        "https://example.com/wp-content/themes/pub/x/style.css",
+        "https://example.com/wp-content/mu-plugins/y/widget.css",
+    ]
+    assert all(l.kind == RENDER for l in links)
+    assert all(l.context == "link[rel=stylesheet]->static-bundle" for l in links)
+
+
+def test_static_bundle_components_resolve_against_the_bundles_own_host():
+    """A bundle served from a CDN host bundles that host's assets, not the
+    page's -- resolving against base_url would silently retarget all of them."""
+    from wpfreeze.extract import decode_static_bundle
+
+    url = _bundle_url(["/wp-content/mu-plugins/likes/queuehandler.js"], host="https://s1.wp.com")
+    assert decode_static_bundle(url) == ["https://s1.wp.com/wp-content/mu-plugins/likes/queuehandler.js"]
+
+
+def test_static_bundle_plain_uncompressed_form_is_supported():
+    from wpfreeze.extract import decode_static_bundle
+
+    url = "https://example.com/_static/??/wp-content/a.css,/wp-content/b.css"
+    assert decode_static_bundle(url) == [
+        "https://example.com/wp-content/a.css",
+        "https://example.com/wp-content/b.css",
+    ]
+
+
+def test_static_bundle_components_may_carry_their_own_cache_busters():
+    from wpfreeze.extract import decode_static_bundle
+
+    url = _bundle_url(["/wp-content/mu-plugins/z.css?m=1681832297j"])
+    assert decode_static_bundle(url) == ["https://example.com/wp-content/mu-plugins/z.css?m=1681832297j"]
+
+
+def test_undecodable_static_bundle_is_left_alone_rather_than_dropped():
+    """Better to keep one unfetchable URL (which shows up honestly as a gap)
+    than to silently discard a reference we failed to understand."""
+    from wpfreeze.extract import decode_static_bundle
+
+    url = "https://example.com/_static/??-not-valid-base64-zlib!!"
+    assert decode_static_bundle(url) is None
+
+    links = extract_from_html(f'<link rel="stylesheet" href="{url}">', BASE)
+    assert [l.url for l in links] == [url]
+
+
+def test_ordinary_urls_are_untouched_by_bundle_expansion():
+    from wpfreeze.extract import decode_static_bundle
+
+    assert decode_static_bundle("https://example.com/_static/") is None
+    assert decode_static_bundle("https://example.com/style.css?ver=1") is None
+    assert decode_static_bundle("https://example.com/a/_static/b.css") is None

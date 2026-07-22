@@ -22,6 +22,7 @@ import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from wpfreeze.manifest import GAP_STATUSES, Manifest, ManifestRecord, Status
 
@@ -143,6 +144,44 @@ def _disk_hash_mismatches(manifest: Manifest, output_dir: Path) -> list[dict[str
     return mismatches
 
 
+_HTML_CONTENT_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+
+
+def _content_type_shape_mismatches(manifest: Manifest) -> list[dict[str, Any]]:
+    """A URL whose path ends in "/" has no filename to carry its identity,
+    so a record for one that served CSS, JS or an image is nearly always an
+    identity collision: several distinct resources normalized onto the same
+    bare directory URL and whichever fetched last won.
+
+    This needs checking separately from the gap statuses precisely because
+    the dangerous version of it looks *successful*. WordPress.com's
+    /_static/??<spec> bundles all collapse to a bare "https://host/_static/"
+    once normalization strips the query (see extract.decode_static_bundle);
+    asked for that URL, the Wayback Machine returned a real archived bundle,
+    so the record landed as fetched_wayback carrying 275 KB of entirely
+    plausible CSS that stood in for five different bundles. A gap you can
+    see is recoverable; this is not, because nothing about it looks wrong.
+    Measured over two real captures this flags 0 of 5,839 records on a site
+    without the bug and exactly the 2 corrupted records on the site with it.
+    """
+    mismatches: list[dict[str, Any]] = []
+    for record in manifest.all():
+        content_type = (record.content_type or "").split(";")[0].strip().lower()
+        if not content_type or content_type in _HTML_CONTENT_TYPES:
+            continue
+        if not urlsplit(record.url).path.endswith("/"):
+            continue
+        mismatches.append(
+            {
+                "url": record.url,
+                "status": record.status,
+                "content_type": content_type,
+                "local_path": record.local_path,
+            }
+        )
+    return mismatches
+
+
 def _homepage_check(manifest: Manifest, output_dir: Path, base_url: str) -> dict[str, Any]:
     record = _find_homepage_record(manifest, base_url)
     if record is None:
@@ -193,6 +232,7 @@ def build_diagnostics(
         "log_issues": _collect_log_issues(log_path),
         "gaps": _summarize_gaps(_gap_records(manifest)),
         "duplicate_local_paths": _duplicate_local_paths(manifest),
+        "content_type_shape_mismatches": _content_type_shape_mismatches(manifest),
         "disk_hash_mismatches": _disk_hash_mismatches(manifest, output_dir),
         "homepage": _homepage_check(manifest, output_dir, base_url),
     }
@@ -224,6 +264,12 @@ def format_diagnostics_summary(diagnostics: dict[str, Any]) -> str:
     dup_paths = diagnostics["duplicate_local_paths"]
     if dup_paths:
         lines.append(f"  ** {len(dup_paths)} local_path collision(s) -- files silently overwrote each other **")
+    shape = diagnostics["content_type_shape_mismatches"]
+    if shape:
+        lines.append(
+            f"  ** {len(shape)} directory-like URL(s) serving non-HTML content "
+            "-- likely an identity collision, check even if status looks fetched **"
+        )
     mismatches = diagnostics["disk_hash_mismatches"]
     if mismatches:
         lines.append(f"  ** {len(mismatches)} manifest/disk content_hash mismatch(es) **")

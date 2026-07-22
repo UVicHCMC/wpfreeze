@@ -144,3 +144,43 @@ def test_log_issues_reports_unavailable_when_no_log_path(tmp_path: Path):
     manifest = Manifest()
     diagnostics = build_diagnostics(manifest, tmp_path, "https://example.com/", None)
     assert diagnostics["log_issues"] == {"available": False, "issues": [], "total": 0, "truncated": False}
+
+
+def test_directory_like_url_serving_non_html_is_flagged(tmp_path: Path):
+    """The silent-corruption case: WordPress.com /_static/?? bundles all
+    normalize onto a bare directory URL, Wayback serves *a* real archived
+    bundle for it, and the record looks like a clean success."""
+    manifest = Manifest()
+    _fetched(manifest, "https://example.com/", "raw/index.html", b"home")
+    collided = manifest.get_or_create("https://s1.wp.com/_static/")
+    collided.status = Status.FETCHED_WAYBACK.value
+    collided.http_status = 200
+    collided.local_path = "raw/_external/https_s1.wp.com/_static/index.html"
+    collided.content_type = "text/css;charset=utf-8"
+
+    diagnostics = build_diagnostics(manifest, tmp_path, "https://example.com/", None)
+
+    flagged = diagnostics["content_type_shape_mismatches"]
+    assert [f["url"] for f in flagged] == ["https://s1.wp.com/_static/"]
+    assert flagged[0]["status"] == "fetched_wayback"
+    assert flagged[0]["content_type"] == "text/css"
+
+
+def test_directory_like_html_and_file_like_assets_are_not_flagged(tmp_path: Path):
+    """Directory URLs serving HTML are just pages, and assets with a real
+    filename carry their own identity -- neither can be this collision."""
+    manifest = Manifest()
+    _fetched(manifest, "https://example.com/about/", "raw/about/index.html", b"<html>")
+    _fetched(
+        manifest,
+        "https://example.com/wp-content/style.css",
+        "raw/wp-content/style.css",
+        b"body{}",
+        content_type="text/css",
+    )
+    no_content_type = manifest.get_or_create("https://example.com/gone/")
+    no_content_type.status = Status.MISSING.value
+
+    diagnostics = build_diagnostics(manifest, tmp_path, "https://example.com/", None)
+
+    assert diagnostics["content_type_shape_mismatches"] == []
