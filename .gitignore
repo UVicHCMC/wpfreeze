@@ -7,3 +7,15 @@ venv/
 /dist/
 /build/
 /output/
+
+# Real-site working data: never commit someone's site out of this directory.
+# Backup archives (a full-site zip runs to gigabytes), WordPress XML
+# exports, and per-site configs, which hold real URLs and local paths.
+backup-*/
+backup-*.zip
+*.WordPress.*.xml
+*.yaml
+# ...but the annotated example config is documentation -- the README links
+# to it. Already tracked, so .gitignore would not have untracked it anyway;
+# this negation just keeps that true if it is ever removed and re-added.
+!example-site.yaml
