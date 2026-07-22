@@ -27,6 +27,7 @@ from wpfreeze.analyse import (
     flag_orphans_and_unlisted,
     flag_xml_unresolved,
 )
+from wpfreeze.build import build_site, format_build_summary
 from wpfreeze.crawl import compile_exclusions, crawl_fixpoint
 from wpfreeze.diagnostics import build_diagnostics, format_diagnostics_summary, write_diagnostics
 from wpfreeze.fetch import DEFAULT_USER_AGENT, FetchConfig, RateLimiter
@@ -354,6 +355,26 @@ def run_status(config: SiteConfig) -> int:
 # ---------------------------------------------------------------------------
 
 
+def run_build(config: SiteConfig, site_dir: Path | None) -> int:
+    """Emit the rewritten, servable site from an existing capture.
+
+    Reads only; writes only into the site directory. Never touches raw/,
+    so it is safe to re-run as often as the policy flags change.
+    """
+    manifest_path = config.output_dir / "manifest.json"
+    if not manifest_path.exists():
+        print("No manifest found; run `wpfreeze acquire` first.")
+        return 2
+    manifest = Manifest.load(manifest_path)
+    target = site_dir or (config.output_dir / "site")
+    stats = build_site(manifest, config.output_dir, target)
+    print(format_build_summary(stats))
+    print(f"Site written to {target}")
+    # Unresolved references are a real (if partial) failure to finish the
+    # job, and mirror acquire's "complete with gaps" exit code.
+    return 1 if stats.unresolved else 0
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wpfreeze")
     # Not required: no subcommand at all launches the interactive wizard
@@ -373,6 +394,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     status_p = subparsers.add_parser("status", help="print a one-screen manifest summary")
     status_p.add_argument("--config", required=True, type=Path)
+
+    build_p = subparsers.add_parser(
+        "build", help="rewrite the capture into a servable static site"
+    )
+    build_p.add_argument("--config", required=True, type=Path)
+    build_p.add_argument(
+        "--site-dir", type=Path, default=None, help="output directory (default: <output_dir>/site)"
+    )
 
     diagnose_p = subparsers.add_parser(
         "diagnose", help="write a compact debugging summary (diagnostics.json) from the existing manifest"
@@ -471,6 +500,8 @@ def _dispatch(argv: list[str] | None) -> int:
         return run_report(config, html_only=args.html_only, json_only=args.json_only)
     if args.command == "status":
         return run_status(config)
+    if args.command == "build":
+        return run_build(config, args.site_dir)
     if args.command == "diagnose":
         return run_diagnose(config)
 
