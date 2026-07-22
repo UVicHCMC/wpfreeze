@@ -91,6 +91,9 @@ def _is_url_shaped(value: str) -> bool:
     return value.startswith(("http://", "https://", "//", "/"))
 
 
+_ASSET_TREE_PREFIXES = ("/wp-content/", "/wp-includes/")
+
+
 def _is_bare_directory_reference(url: str) -> bool:
     """True for a URL-shaped string with no filename at all -- just a
     trailing slash (e.g. "https://s1.wp.com/wp-content/mu-plugins/.../src/build/").
@@ -109,8 +112,23 @@ def _is_bare_directory_reference(url: str) -> bool:
     *page* only when nothing else on the site links to it and it's
     outside the sitemap/REST/WXR inventory too -- an edge case already
     accepted for the same reason by the cache-plugin glob-wildcard fix.
+
+    The same base path also gets written *without* the trailing slash
+    (Divi's inline config emits "/wp-content/themes/Divi/images"), so
+    extension-less paths count too -- but only inside the asset trees,
+    where a real resource always has a filename+extension. Outside them an
+    extension-less path is an ordinary pretty permalink ("/about/team") and
+    must be kept: measured over two real captures, 1,739 extension-less
+    URLs outside those trees fetched successfully, while every one inside
+    them failed (3 of 3, all 403).
     """
-    return url.rstrip().endswith("/")
+    url = url.rstrip()
+    if url.endswith("/"):
+        return True
+    path = urlsplit(url).path
+    if not path.startswith(_ASSET_TREE_PREFIXES):
+        return False
+    return "." not in path.rsplit("/", 1)[-1]
 
 
 _STATIC_CONCAT_PATH = "/_static/"

@@ -392,3 +392,38 @@ def test_ordinary_urls_are_untouched_by_bundle_expansion():
     assert decode_static_bundle("https://example.com/_static/") is None
     assert decode_static_bundle("https://example.com/style.css?ver=1") is None
     assert decode_static_bundle("https://example.com/a/_static/b.css") is None
+
+
+# --- extension-less asset-tree base paths ---------------------------------
+
+def test_extensionless_asset_tree_paths_in_script_blobs_are_dropped():
+    """Divi's inline config emits base paths its JS appends filenames to at
+    runtime. They are not resources: fetched, they 403."""
+    html = (
+        '<script>var et = {"images_uri":"/wp-content/themes/Divi/images",'
+        '"builder_uri":"/wp-content/themes/Divi/includes/builder/images"};</script>'
+    )
+    assert extract_from_html(html, BASE) == []
+
+
+def test_extensionless_paths_outside_asset_trees_are_kept():
+    """An extension-less path elsewhere is an ordinary pretty permalink --
+    dropping those would discard real pages."""
+    html = '<script>var cfg = {"next":"https://example.com/about/team"};</script>'
+    urls = [l.url for l in extract_from_html(html, BASE)]
+    assert urls == ["https://example.com/about/team"]
+
+
+def test_real_assets_inside_asset_trees_are_still_extracted():
+    html = '<script>var cfg = {"logo":"/wp-content/uploads/2019/05/logo.png"};</script>'
+    urls = [l.url for l in extract_from_html(html, BASE)]
+    # Both the wp-path and asset-extension scanners match this, so it is
+    # emitted twice; dedup is get_or_create's job, not extraction's.
+    assert set(urls) == {"https://example.com/wp-content/uploads/2019/05/logo.png"}
+
+
+def test_extensionless_asset_tree_path_in_a_real_href_is_unaffected():
+    """The bare-directory heuristic guards the JS/data-* scanners only; a
+    genuine href/src attribute is an explicit reference and always kept."""
+    links = extract_from_html('<a href="/wp-content/themes/Divi/images">x</a>', BASE)
+    assert [l.url for l in links] == ["https://example.com/wp-content/themes/Divi/images"]
