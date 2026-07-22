@@ -510,3 +510,96 @@ def test_unrelocated_css_leaves_unresolved_urls_untouched(tmp_path: Path):
         ".a{background:url(icons/x.svg)}", f"{BASE}/wp-content/s.css", "/wp-content/s.css"
     )
     assert "url(icons/x.svg)" in out
+
+
+# --- attachment page retargeting & redirects ------------------------------
+
+from wpfreeze.manifest import FLAG_ATTACHMENT_PAGE  # noqa: E402
+
+
+def _attachment_page(manifest: Manifest, url: str, media_href: str) -> object:
+    """An attachment wrapper: no output_path, HTML linking the shown image
+    to the full media file."""
+    record = manifest.get_or_create(url)
+    record.status = Status.FETCHED.value
+    record.http_status = 200
+    record.output_path = None
+    record.local_path = "raw/att/" + url.rstrip("/").rsplit("/", 1)[-1] + ".html"
+    record.content_type = "text/html"
+    record.content_hash = ""
+    record.add_flag(FLAG_ATTACHMENT_PAGE)
+    return record
+
+
+def test_links_to_attachment_pages_retarget_to_the_media_file(tmp_path: Path):
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    media = _fetched(
+        manifest, f"{BASE}/wp-content/uploads/2014/spring.jpg",
+        "/wp-content/uploads/2014/spring.jpg", content_type="image/jpeg",
+    )
+    att = _attachment_page(manifest, f"{BASE}/news/story/attachment/spring/", media.url)
+
+    _write(output_dir, home, f'<a href="{BASE}/news/story/attachment/spring/">photo</a>'.encode())
+    _write(output_dir, media, b"JPG")
+    (output_dir / att.local_path).parent.mkdir(parents=True, exist_ok=True)
+    (output_dir / att.local_path).write_text(
+        f'<a href="{media.url}"><img src="{BASE}/wp-content/uploads/2014/spring-300x200.jpg"></a>'
+    )
+
+    stats = build_site(manifest, output_dir, site_dir)
+
+    assert stats.attachment_links_retargeted == 1
+    out = (site_dir / "index.html").read_text()
+    assert 'href="wp-content/uploads/2014/spring.jpg"' in out
+    assert "attachment" not in out
+    # The wrapper page itself is never written.
+    assert not (site_dir / "news").exists()
+
+
+def test_attachment_map_ignores_wrappers_whose_media_was_not_captured(tmp_path: Path):
+    """No confident target means the link stays honestly unresolved rather
+    than pointing at a file that isn't there."""
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    att = _attachment_page(manifest, f"{BASE}/story/attachment/gone/", f"{BASE}/wp-content/uploads/gone.jpg")
+
+    _write(output_dir, home, f'<a href="{BASE}/story/attachment/gone/">x</a>'.encode())
+    (output_dir / att.local_path).parent.mkdir(parents=True, exist_ok=True)
+    (output_dir / att.local_path).write_text(
+        f'<a href="{BASE}/wp-content/uploads/gone.jpg"><img src="x"></a>'
+    )
+
+    stats = build_site(manifest, output_dir, site_dir)
+
+    assert stats.attachment_links_retargeted == 0
+    assert stats.unresolved == 1
+    assert "/story/attachment/gone/" in (site_dir / "index.html").read_text()
+
+
+def test_redirects_htaccess_is_copied_into_the_site_as_dot_htaccess(tmp_path: Path):
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    _write(output_dir, home, b"<html></html>")
+    (output_dir / "redirects.htaccess").write_text("Redirect 301 /old /index.html\n")
+
+    stats = build_site(manifest, output_dir, site_dir)
+
+    assert stats.redirects_copied is True
+    assert (site_dir / ".htaccess").read_text() == "Redirect 301 /old /index.html\n"
+
+
+def test_build_without_a_redirects_file_does_not_fail(tmp_path: Path):
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    _write(output_dir, home, b"<html></html>")
+
+    stats = build_site(manifest, output_dir, site_dir)
+
+    assert stats.redirects_copied is False
+    assert not (site_dir / ".htaccess").exists()
