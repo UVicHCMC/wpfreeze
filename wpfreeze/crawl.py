@@ -242,7 +242,7 @@ def _process_one(
         final_url = normalize_url(result.final_url, profile)
         final_host = urlsplit(final_url).hostname or ""
         kind = content_kind(result.content_type, final_url)
-        if kind is not None and profile.owns_host(final_host):
+        if kind is not None and profile.in_scope(final_url):
             # Only ever parse a fetched resource for further links when the
             # resource itself is on an owned host. Otherwise an external
             # RENDER asset that happens to be HTML/CSS (however it entered
@@ -268,8 +268,17 @@ def _process_one(
                 normalized = normalize_url(link.url, profile)
                 host = urlsplit(normalized).hostname or ""
                 owned = profile.owns_host(host)
-                if link.kind == HYPERLINK and not owned:
-                    continue  # external hyperlink targets do not enter as pending
+                if link.kind == HYPERLINK and not profile.in_scope(normalized):
+                    # External hyperlink targets do not enter as pending --
+                    # and on a multisite subdirectory install, neither do
+                    # links into sibling sites, which share the hostname but
+                    # are not the site being archived. RENDER links below are
+                    # deliberately NOT confined this way: an image a page
+                    # embeds from a sibling site (or from the network-wide
+                    # /wp-content/) is part of how this page looks, so it is
+                    # still fetched and localized under "render even if
+                    # external".
+                    continue
                 if link.context.startswith("script:") and not owned:
                     # Per CLAUDE-acquire.md, "Link extraction": <script>
                     # scanning is scoped to internal hosts/uploads paths --

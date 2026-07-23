@@ -185,17 +185,49 @@ def probe_site(
     trailing_slash = _probe_trailing_slash(base_url, session, headers, timeout)
 
     site_hosts = frozenset({h for h in (host, canonical_host, alternate_host, *extra_hosts) if h})
+    # base_url is "/"-terminated by load_config, so this is too; fall back to
+    # "/" for a bare origin, which makes in_scope() degrade to owns_host().
+    base_path = parsed.path or "/"
+    if not base_path.endswith("/"):
+        base_path += "/"
+    if base_path != "/":
+        logger.info(
+            "site scope: %s under %s (a subdirectory install -- sibling sites on "
+            "this host are out of scope)",
+            canonical_host,
+            base_path,
+        )
     return SiteProfile(
         canonical_host=canonical_host,
         site_hosts=site_hosts,
         use_https=use_https,
         trailing_slash=trailing_slash,
+        base_path=base_path,
     )
 
 
 # ---------------------------------------------------------------------------
 # Pipeline orchestration
 # ---------------------------------------------------------------------------
+
+
+def _describe_inventory_sources(manifest, sources: dict[str, bool]) -> str:
+    """One line naming what each inventory source actually contributed.
+
+    A record can be claimed by several sources at once -- that overlap is the
+    whole point of cross-checking them -- so these counts deliberately sum to
+    more than the manifest total.
+    """
+    labels = {"sitemap": "sitemap", "rest_api": "REST API", "xml_backup": "XML export"}
+    parts = []
+    for key, label in labels.items():
+        if not sources.get(key):
+            continue
+        count = sum(1 for record in manifest.all() if key in record.discovered_via)
+        parts.append(f"{label} {count}")
+    if not parts:
+        return "no inventory source reachable -- homepage only"
+    return ", ".join(parts) + " (sources overlap; a URL can come from several)"
 
 
 def _run_to_settled(manifest, profile, config, session, rate_limiter, wayback_rate_limiter, fetch_config, raw_dir, exclusions, manifest_path) -> None:
@@ -249,17 +281,26 @@ def run_acquire(config: SiteConfig, resume: bool, dry_run: bool) -> int:
     run_started = utc_now()
     profile = probe_site(config.base_url, session, config.user_agent, config.extra_hosts)
 
+    # Compiled before discovery, not after: inventory sources are seeded
+    # through the same filter the crawl uses, so an excluded or out-of-scope
+    # URL never becomes a record at all rather than becoming one and being
+    # marked `excluded` later.
+    exclusions = compile_exclusions(config.exclusions)
+
     manifest.get_or_create(config.base_url, discovered_via="base_url")
-    discover_inventory(manifest, config.base_url, config.xml_backup, session, rate_limiter, fetch_config)
+    sources = discover_inventory(
+        manifest, config.base_url, profile, exclusions, config.xml_backup,
+        session, rate_limiter, fetch_config,
+    )
     manifest.save(manifest_path)
 
     if dry_run:
         write_report_json(manifest, output_dir, output_dir / "report.json", run_started, utc_now())
         write_report_html(manifest, output_dir, output_dir / "report.html", run_started, utc_now())
         print(f"Dry run: {len(manifest)} URL(s) discovered, nothing fetched.")
+        print(f"  by source: {_describe_inventory_sources(manifest, sources)}")
         return 0
 
-    exclusions = compile_exclusions(config.exclusions)
     _run_to_settled(manifest, profile, config, session, rate_limiter, wayback_rate_limiter, fetch_config, raw_dir, exclusions, manifest_path)
 
     flag_orphans_and_unlisted(manifest)

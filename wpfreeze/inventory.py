@@ -18,8 +18,10 @@ from urllib.parse import quote
 import requests
 from lxml import etree
 
+from wpfreeze.crawl import is_excluded
 from wpfreeze.fetch import SUCCESS, FetchConfig, RateLimiter, fetch_with_retries
 from wpfreeze.manifest import Manifest
+from wpfreeze.urlnorm import SiteProfile, normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -345,56 +347,126 @@ def discover_wxr(manifest: Manifest, base_url: str, xml_backup_path: Path) -> bo
 # ---------------------------------------------------------------------------
 
 
+def _seed(
+    manifest: Manifest,
+    urls: list[str],
+    provenance: str,
+    profile: SiteProfile,
+    exclusions: list[re.Pattern],
+) -> tuple[int, int]:
+    """Enter inventory-discovered URLs into the manifest, dropping anything
+    out of scope or excluded. Returns (kept, rejected).
+
+    Inventory sources are assertions by the site, not facts: a multisite
+    network's sitemap cheerfully lists every sibling site on the host, and
+    each one admitted here becomes a crawl root. Normalize before testing --
+    in_scope's prefix check is textual (see SiteProfile.in_scope).
+    """
+    kept = rejected = 0
+    for url in urls:
+        normalized = normalize_url(url, profile)
+        if not profile.in_scope(normalized):
+            logger.debug("inventory URL out of scope: %s", url)
+            rejected += 1
+            continue
+        if is_excluded(normalized, exclusions):
+            logger.debug("inventory URL excluded: %s", url)
+            rejected += 1
+            continue
+        manifest.get_or_create(normalized, discovered_via=provenance)
+        kept += 1
+    return kept, rejected
+
+
 def discover_sitemaps(
     manifest: Manifest,
     base_url: str,
+    profile: SiteProfile,
+    exclusions: list[re.Pattern],
     session: requests.Session,
     rate_limiter: RateLimiter,
     fetch_config: FetchConfig,
 ) -> bool:
     """Seed `manifest` from robots.txt's Sitemap: pointers plus the
-    conventional wp-sitemap.xml/sitemap_index.xml locations, recursing
-    through sitemap indexes to a fixpoint. Returns whether any sitemap was
-    reachable at all (for the report's inventory-source-availability line).
+    conventional sitemap locations, recursing through sitemap indexes to a
+    fixpoint. Returns whether any sitemap was reachable at all (for the
+    report's inventory-source-availability line).
+
+    Three conventional names are probed: wp-sitemap.xml (WordPress core),
+    sitemap_index.xml (Yoast), and sitemap.xml (the generic search-engine
+    convention, and what All in One SEO and Jetpack emit). A site uses one
+    and 404s on the rest, so probing all three costs a couple of extra
+    startup requests to cover the field. Duplicate work from the overlap is
+    absorbed by `visited` below -- keyed on both requested and final URL,
+    since sitemap.xml commonly 301-redirects to one of the others.
+
+    Misses are reported according to how the URL was found. A conventional
+    location is a guess, so a miss there is the expected case and belongs in
+    the log file, not the console. A URL robots.txt advertised, or a child a
+    sitemap index promised, is a broken commitment by the site and is worth
+    a warning.
     """
     base = base_url.rstrip("/")
-    to_visit: list[str] = []
+    # (url, provenance) -- provenance drives how a miss is reported.
+    to_visit: list[tuple[str, str]] = []
 
     robots_outcome = fetch_with_retries(f"{base}/robots.txt", session, rate_limiter, fetch_config)
     if robots_outcome.category == SUCCESS:
         robots_text = robots_outcome.result.content.decode("utf-8", errors="replace")
-        to_visit.extend(parse_robots_sitemaps(robots_text))
-    to_visit.append(f"{base}/wp-sitemap.xml")
-    to_visit.append(f"{base}/sitemap_index.xml")
+        to_visit.extend((url, "robots.txt") for url in parse_robots_sitemaps(robots_text))
+    to_visit.append((f"{base}/wp-sitemap.xml", "conventional location"))
+    to_visit.append((f"{base}/sitemap_index.xml", "conventional location"))
+    to_visit.append((f"{base}/sitemap.xml", "conventional location"))
 
     visited: set[str] = set()
     found_any = False
     while to_visit:
-        sitemap_url = to_visit.pop()
+        sitemap_url, provenance = to_visit.pop()
         if sitemap_url in visited:
             continue
         visited.add(sitemap_url)
         outcome = fetch_with_retries(sitemap_url, session, rate_limiter, fetch_config)
         if outcome.category != SUCCESS:
-            logger.info("sitemap unavailable: %s", sitemap_url)
+            if provenance == "conventional location":
+                logger.debug("no sitemap at conventional location: %s", sitemap_url)
+            else:
+                logger.warning(
+                    "sitemap unavailable: %s (advertised by %s)", sitemap_url, provenance
+                )
             continue
+        # Fold the post-redirect URL into visited too: sitemap.xml often
+        # 301s to sitemap_index.xml, which is also probed. Without this the
+        # same index is fetched and reparsed once per name that reaches it.
+        final_url = outcome.result.final_url
+        if final_url != sitemap_url:
+            if final_url in visited:
+                continue
+            visited.add(final_url)
         try:
             pages, nested = parse_sitemap_xml(outcome.result.content)
         except Exception:
             logger.warning("failed to parse sitemap XML: %s", sitemap_url)
             continue
         found_any = True
-        for page_url in pages:
-            manifest.get_or_create(page_url, discovered_via="sitemap")
+        kept, rejected = _seed(manifest, pages, "sitemap", profile, exclusions)
+        logger.info(
+            "sitemap %s: %d URL(s)%s, %d nested sitemap(s)",
+            sitemap_url,
+            kept,
+            f" ({rejected} out of scope or excluded)" if rejected else "",
+            len(nested),
+        )
         for nested_url in nested:
             if nested_url not in visited:
-                to_visit.append(nested_url)
+                to_visit.append((nested_url, "sitemap index"))
     return found_any
 
 
 def discover_rest_api(
     manifest: Manifest,
     base_url: str,
+    profile: SiteProfile,
+    exclusions: list[re.Pattern],
     session: requests.Session,
     rate_limiter: RateLimiter,
     fetch_config: FetchConfig,
@@ -407,6 +479,9 @@ def discover_rest_api(
     for collection in REST_COLLECTIONS:
         page = 1
         total_pages = 1
+        collection_urls = 0
+        collection_rejected = 0
+        reachable = False
         while page <= total_pages:
             url = rest_collection_url(base_url, collection, page=page)
             outcome = fetch_with_retries(url, session, rate_limiter, fetch_config)
@@ -420,15 +495,29 @@ def discover_rest_api(
                 logger.warning("failed to parse REST API response: %s", url)
                 break
             found_any = True
-            for item_url in extract_links_from_rest_items(items):
-                manifest.get_or_create(item_url, discovered_via="rest_api")
+            reachable = True
+            kept, rejected = _seed(
+                manifest, extract_links_from_rest_items(items), "rest_api", profile, exclusions
+            )
+            collection_urls += kept
+            collection_rejected += rejected
             page += 1
+        if reachable:
+            logger.info(
+                "REST API %s: %d URL(s)%s across %d page(s)",
+                collection,
+                collection_urls,
+                f" ({collection_rejected} out of scope or excluded)" if collection_rejected else "",
+                total_pages,
+            )
     return found_any
 
 
 def discover_inventory(
     manifest: Manifest,
     base_url: str,
+    profile: SiteProfile,
+    exclusions: list[re.Pattern],
     xml_backup: Path | None,
     session: requests.Session,
     rate_limiter: RateLimiter,
@@ -436,7 +525,27 @@ def discover_inventory(
 ) -> dict[str, bool]:
     """Stage 1 top level: seed `manifest` from every configured inventory
     source. Returns which sources were reachable, for the report."""
-    sitemap_ok = discover_sitemaps(manifest, base_url, session, rate_limiter, fetch_config)
-    rest_ok = discover_rest_api(manifest, base_url, session, rate_limiter, fetch_config)
+    sitemap_ok = discover_sitemaps(
+        manifest, base_url, profile, exclusions, session, rate_limiter, fetch_config
+    )
+    rest_ok = discover_rest_api(
+        manifest, base_url, profile, exclusions, session, rate_limiter, fetch_config
+    )
     xml_ok = discover_wxr(manifest, base_url, xml_backup) if xml_backup is not None else False
-    return {"sitemap": sitemap_ok, "rest_api": rest_ok, "xml_backup": xml_ok}
+
+    # Say plainly which sources answered. Without this the console's only
+    # inventory news is what went wrong, which reads as failure even when
+    # every source that matters worked.
+    sources = {"sitemap": sitemap_ok, "rest_api": rest_ok, "xml_backup": xml_ok}
+    logger.info(
+        "inventory sources: sitemap %s, REST API %s, XML export %s",
+        "found" if sitemap_ok else "none found",
+        "found" if rest_ok else "none found",
+        ("found" if xml_ok else "unreadable") if xml_backup is not None else "not configured",
+    )
+    if not any(sources.values()):
+        logger.warning(
+            "no inventory source was reachable -- completeness cannot be verified, "
+            "and the crawl has only the homepage to work from"
+        )
+    return sources

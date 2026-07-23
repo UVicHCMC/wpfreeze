@@ -263,3 +263,231 @@ def test_parse_wxr_xml_handles_real_world_export():
         "wp_global_styles", "nav_menu_item",
     }
     assert not any(_is_kept_published(item) for item in document.items if item.post_type in junk_types)
+
+
+# ---------------------------------------------------------------------------
+# discover_sitemaps: which locations get probed, and how misses are reported
+# ---------------------------------------------------------------------------
+
+
+SITEMAP_INDEX_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://example.com/page-sitemap.xml</loc></sitemap>
+</sitemapindex>"""
+
+PAGE_SITEMAP_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/about/</loc></url>
+  <url><loc>https://example.com/contact/</loc></url>
+</urlset>"""
+
+
+class _FakeFetcher:
+    """Stands in for fetch_with_retries; serves a fixed URL -> body map and
+    records every URL asked for, so a test can assert on probe locations."""
+
+    def __init__(self, responses: dict[str, bytes], redirects: dict[str, str] | None = None):
+        self.responses = responses
+        self.redirects = redirects or {}
+        self.requested: list[str] = []
+
+    def __call__(self, url, session, rate_limiter, fetch_config):
+        from wpfreeze.fetch import SUCCESS, FetchOutcome, FetchResult
+
+        self.requested.append(url)
+        final_url = self.redirects.get(url, url)
+        if final_url not in self.responses:
+            return FetchOutcome(category="wayback_candidate", http_status=404, attempts=1)
+        body = self.responses[final_url]
+        return FetchOutcome(
+            category=SUCCESS,
+            http_status=200,
+            attempts=1,
+            result=FetchResult(
+                status_code=200, content=body, headers={},
+                content_type="application/xml", final_url=final_url,
+            ),
+        )
+
+
+def _profile_for(base_url):
+    from urllib.parse import urlsplit
+
+    from wpfreeze.urlnorm import SiteProfile
+
+    host = urlsplit(base_url).hostname
+    path = urlsplit(base_url).path or "/"
+    if not path.endswith("/"):
+        path += "/"
+    return SiteProfile(
+        canonical_host=host,
+        site_hosts=frozenset({host, "www." + host}),
+        use_https=True,
+        trailing_slash=True,
+        base_path=path,
+    )
+
+
+def _discover(monkeypatch, responses, base_url="https://example.com/", exclusions=(), redirects=None):
+    from wpfreeze import inventory
+
+    fetcher = _FakeFetcher(responses, redirects)
+    monkeypatch.setattr(inventory, "fetch_with_retries", fetcher)
+    manifest = Manifest()
+    ok = inventory.discover_sitemaps(
+        manifest, base_url, _profile_for(base_url), list(exclusions), None, None, None
+    )
+    return ok, manifest, fetcher
+
+
+def test_discover_sitemaps_probes_all_conventional_locations(monkeypatch):
+    _, _, fetcher = _discover(monkeypatch, {})
+    assert "https://example.com/wp-sitemap.xml" in fetcher.requested      # WordPress core
+    assert "https://example.com/sitemap_index.xml" in fetcher.requested   # Yoast
+    assert "https://example.com/sitemap.xml" in fetcher.requested         # AIOSEO / Jetpack / generic
+
+
+def test_discover_sitemaps_finds_generic_sitemap_xml(monkeypatch):
+    """A site (All in One SEO, Jetpack) that serves only sitemap.xml, with
+    no core or Yoast name and nothing in robots.txt, is still found."""
+    ok, manifest, _ = _discover(monkeypatch, {
+        "https://example.com/sitemap.xml": PAGE_SITEMAP_XML,
+    })
+    assert ok is True
+    assert "https://example.com/about/" in manifest
+
+
+def test_discover_sitemaps_dedups_a_name_that_redirects_to_another_probed_name(monkeypatch):
+    """sitemap.xml 301-ing to sitemap_index.xml must not fetch or parse the
+    index twice -- the redirect target is also on the probe list."""
+    _, manifest, fetcher = _discover(
+        monkeypatch,
+        {
+            "https://example.com/sitemap_index.xml": SITEMAP_INDEX_XML,
+            "https://example.com/page-sitemap.xml": PAGE_SITEMAP_XML,
+        },
+        redirects={"https://example.com/sitemap.xml": "https://example.com/sitemap_index.xml"},
+    )
+    # The index's own child sitemap is fetched exactly once, not once per
+    # name that reaches the index.
+    assert fetcher.requested.count("https://example.com/page-sitemap.xml") == 1
+    assert "https://example.com/about/" in manifest
+
+
+def test_discover_sitemaps_finds_yoast_index_when_core_name_is_absent(monkeypatch):
+    ok, manifest, _ = _discover(monkeypatch, {
+        "https://example.com/sitemap_index.xml": SITEMAP_INDEX_XML,
+        "https://example.com/page-sitemap.xml": PAGE_SITEMAP_XML,
+    })
+    assert ok is True
+    assert "https://example.com/about/" in manifest
+    assert "https://example.com/contact/" in manifest
+
+
+def test_discover_sitemaps_reports_success_at_info(monkeypatch, caplog):
+    with caplog.at_level("INFO", logger="wpfreeze.inventory"):
+        _discover(monkeypatch, {
+            "https://example.com/sitemap_index.xml": SITEMAP_INDEX_XML,
+            "https://example.com/page-sitemap.xml": PAGE_SITEMAP_XML,
+        })
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("sitemap https://example.com/page-sitemap.xml: 2 URL(s)" in m for m in messages)
+
+
+def test_discover_sitemaps_keeps_conventional_misses_off_the_console(monkeypatch, caplog):
+    """A 404 on a guessed location is the expected case for every site that
+    uses the other name -- it belongs in the log file, not the console."""
+    with caplog.at_level("INFO", logger="wpfreeze.inventory"):
+        _discover(monkeypatch, {
+            "https://example.com/sitemap_index.xml": SITEMAP_INDEX_XML,
+            "https://example.com/page-sitemap.xml": PAGE_SITEMAP_XML,
+        })
+    console = [r.getMessage() for r in caplog.records if r.levelno >= 20]
+    assert not any("wp-sitemap.xml" in m for m in console)
+
+
+def test_discover_sitemaps_warns_when_an_advertised_sitemap_is_missing(monkeypatch, caplog):
+    """robots.txt promising a sitemap that 404s is a real defect, unlike a
+    missed guess -- it must not be filed under the same quiet message."""
+    robots = b"Sitemap: https://example.com/gone-sitemap.xml\n"
+    with caplog.at_level("DEBUG", logger="wpfreeze.inventory"):
+        _discover(monkeypatch, {"https://example.com/robots.txt": robots})
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= 30]
+    assert any("gone-sitemap.xml" in m and "robots.txt" in m for m in warnings)
+
+
+def test_discover_sitemaps_warns_when_an_index_promises_a_missing_child(monkeypatch, caplog):
+    with caplog.at_level("DEBUG", logger="wpfreeze.inventory"):
+        _discover(monkeypatch, {
+            "https://example.com/sitemap_index.xml": SITEMAP_INDEX_XML,
+        })
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= 30]
+    assert any("page-sitemap.xml" in m and "sitemap index" in m for m in warnings)
+
+
+# ---------------------------------------------------------------------------
+# Scope confinement at seed time (multisite subdirectory installs)
+# ---------------------------------------------------------------------------
+
+
+# A WordPress multisite network sitemap: every sibling site on the shared
+# host, one site on a wholly different host, and the target subsite itself --
+# listed WITHOUT a trailing slash, which is how the real thing does it.
+NETWORK_SITEMAP_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/courses</loc></url>
+  <url><loc>https://example.com/courses/about/</loc></url>
+  <url><loc>https://example.com/siblinglab/</loc></url>
+  <url><loc>https://example.com/otherlab/research/</loc></url>
+  <url><loc>https://elsewhere.example.org/</loc></url>
+</urlset>"""
+
+
+def test_seeding_confines_to_base_path_on_a_multisite_subdirectory(monkeypatch):
+    _, manifest, _ = _discover(
+        monkeypatch,
+        {"https://example.com/courses/sitemap_index.xml": NETWORK_SITEMAP_XML},
+        base_url="https://example.com/courses/",
+    )
+    urls = {r.url for r in manifest.all()}
+    assert urls == {
+        "https://example.com/courses/",
+        "https://example.com/courses/about/",
+    }
+
+
+def test_seeding_normalizes_before_the_prefix_test(monkeypatch):
+    """A network sitemap lists a subsite's own homepage with no trailing
+    slash. A textual prefix test against "/courses/" drops it unless the
+    URL is normalized first -- losing the single most important page."""
+    _, manifest, _ = _discover(
+        monkeypatch,
+        {"https://example.com/courses/sitemap_index.xml": NETWORK_SITEMAP_XML},
+        base_url="https://example.com/courses/",
+    )
+    assert "https://example.com/courses/" in manifest
+
+
+def test_seeding_at_a_domain_root_admits_the_whole_host(monkeypatch):
+    """base_path "/" must leave ordinary single-site runs untouched."""
+    _, manifest, _ = _discover(
+        monkeypatch,
+        {"https://example.com/sitemap_index.xml": NETWORK_SITEMAP_XML},
+    )
+    urls = {r.url for r in manifest.all()}
+    assert "https://example.com/siblinglab/" in urls
+    assert "https://example.com/otherlab/research/" in urls
+    assert "https://elsewhere.example.org/" not in urls  # still host-scoped
+
+
+def test_seeding_applies_exclusions_so_no_record_is_ever_created(monkeypatch):
+    import re
+
+    _, manifest, _ = _discover(
+        monkeypatch,
+        {"https://example.com/sitemap_index.xml": NETWORK_SITEMAP_XML},
+        exclusions=[re.compile(r"/otherlab/")],
+    )
+    urls = {r.url for r in manifest.all()}
+    assert "https://example.com/siblinglab/" in urls
+    assert not any("otherlab" in u for u in urls)

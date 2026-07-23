@@ -45,15 +45,38 @@ class SiteProfile:
     trailing_slash: whether the site prefers a trailing slash on
         directory-like paths (no dot in the final segment). Probed once
         against the site's own redirect behaviour.
+    base_path: the path component of base_url, always "/"-terminated.
+        "/" for an ordinary site at a domain root; "/subsite/" when the
+        target is one site of a WordPress multisite network living in a
+        subdirectory. See in_scope().
     """
 
     canonical_host: str
     site_hosts: frozenset[str] = field(default_factory=frozenset)
     use_https: bool = True
     trailing_slash: bool = True
+    base_path: str = "/"
 
     def owns_host(self, host: str) -> bool:
         return host in self.site_hosts or host == self.canonical_host
+
+    def in_scope(self, url: str) -> bool:
+        """Whether `url` belongs to the site being archived -- right host,
+        and under base_url's path.
+
+        The path half only bites on a multisite subdirectory install, where
+        base_path is something like "/courses/": there, owns_host alone is
+        not containment, because every sibling site on the network shares the
+        hostname. With base_path == "/" this is exactly owns_host.
+
+        Pass a *normalized* URL. The prefix test is textual, so an
+        un-normalized "https://host/courses" (no trailing slash -- how a
+        network sitemap lists a subsite's own homepage) fails against
+        "/courses/" and would drop the site's own front page.
+        """
+        if not self.owns_host(urlsplit(url).hostname or ""):
+            return False
+        return urlsplit(url).path.startswith(self.base_path)
 
 
 def resolve_url(base: str, link: str) -> str | None:

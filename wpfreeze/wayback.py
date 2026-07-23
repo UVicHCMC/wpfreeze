@@ -185,18 +185,18 @@ def _recover_one(
     record.wayback_url = snapshot_url
     logger.info("recovered %s from Wayback snapshot %s", record.url, chosen.timestamp)
 
-    final_host = (urlsplit(record.url).hostname or "").lower()
     kind = content_kind(record.content_type, record.url)
-    if kind is not None and profile.owns_host(final_host):
+    if kind is not None and profile.in_scope(record.url):
         # See crawl.py::_process_one -- only ever parse a fetched resource
-        # for further links when the resource itself is on an owned host,
-        # or an external page/asset recovered from Wayback becomes a crawl
-        # root of its own and cascades into that other site's whole graph.
+        # for further links when the resource is in scope (owned host, and
+        # under base_path on a multisite subdirectory install), or an
+        # external/sibling page recovered from Wayback becomes a crawl root
+        # of its own and cascades into that other site's whole graph.
         for link in discover_links(result.content, record.url, kind):
             normalized = normalize_url(link.url, profile)
             host = (urlsplit(normalized).hostname or "").lower()
             owned = profile.owns_host(host)
-            if link.kind == HYPERLINK and not owned:
+            if link.kind == HYPERLINK and not profile.in_scope(normalized):
                 continue
             if link.context.startswith("script:") and not owned:
                 continue  # see crawl.py::_process_one for why
