@@ -109,6 +109,43 @@ def extract_links_from_rest_items(items: list[dict]) -> list[str]:
     return urls
 
 
+# Collections whose items are WordPress post-type objects (all rows in the
+# wp_posts table), which is what wp_get_shortlink() uses ?p=<id> for
+# uniformly regardless of post type -- posts, pages, and attachments alike.
+_SHORTLINK_COLLECTIONS = frozenset({"posts", "pages", "media"})
+
+
+def register_shortlink_aliases(
+    manifest: Manifest, items: list[dict], base_url: str, profile: SiteProfile
+) -> None:
+    """Register each REST item's `?p=<id>` shortlink as an alias of the
+    record already seeded for its pretty permalink.
+
+    WordPress stamps a `<link rel="shortlink" href=".../?p=<id>">` in every
+    post/page/attachment's own <head> -- but extract.py's crawl-time
+    relevance filter deliberately never follows shortlink/pingback/REST-
+    discovery <link> tags (they're dead metadata, not navigable content),
+    so nothing ever fetches this ugly-permalink spelling as its own crawl
+    target on a REST-only-inventoried site (no WXR export configured).
+    Without a registered alias, a build-time reference to that exact
+    spelling -- the shortlink tag itself, or any other page's raw ?p=
+    link -- stays unresolved even though the content was captured just
+    fine under its pretty permalink. The REST API already hands us `id`
+    and `link` together in the same JSON item, so the alias can be
+    registered directly with no extra live fetch.
+    """
+    for item in items:
+        item_id = item.get("id")
+        link = item.get("link")
+        if not item_id or not link:
+            continue
+        normalized_link = normalize_url(link, profile)
+        if not profile.in_scope(normalized_link):
+            continue
+        shortlink = f"{base_url.rstrip('/')}/?p={item_id}"
+        manifest.get_or_create(normalized_link).add_alias(normalize_url(shortlink, profile))
+
+
 # ---------------------------------------------------------------------------
 # WXR (WordPress eXtended RSS export) inventory
 # ---------------------------------------------------------------------------
@@ -499,6 +536,8 @@ def discover_rest_api(
             kept, rejected = _seed(
                 manifest, extract_links_from_rest_items(items), "rest_api", profile, exclusions
             )
+            if collection in _SHORTLINK_COLLECTIONS:
+                register_shortlink_aliases(manifest, items, base_url, profile)
             collection_urls += kept
             collection_rejected += rejected
             page += 1

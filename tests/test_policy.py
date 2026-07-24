@@ -146,12 +146,48 @@ def test_visible_rss_anchor_in_body_is_left_alone():
     assert "Subscribe via RSS" in out
 
 
+# --- WordPress protocol-discovery links ------------------------------------
+
+
+def test_wp_protocol_discovery_links_are_removed():
+    html = (
+        '<head>'
+        '<link rel="pingback" href="https://s/xmlrpc.php">'
+        '<link rel="EditURI" type="application/rsd+xml" href="https://s/xmlrpc.php?rsd">'
+        '<link rel="https://api.w.org/" href="https://s/wp-json/">'
+        '<link rel="alternate" type="application/json" href="https://s/wp-json/wp/v2/pages/1">'
+        '<link rel="alternate" title="oEmbed (JSON)" type="application/json+oembed" href="https://s/wp-json/oembed/1.0/embed?url=x">'
+        '<link rel="alternate" title="oEmbed (XML)" type="text/xml+oembed" href="https://s/wp-json/oembed/1.0/embed?url=x&format=xml">'
+        "<link rel='shortlink' href='https://s/?p=1'>"
+        '<link rel="canonical" href="https://s/page/">'
+        '<link rel="stylesheet" href="/s.css">'
+        '<link rel="alternate" type="application/rss+xml" href="https://s/feed/">'
+        '</head>'
+    )
+    out, stats = _apply(html)
+    assert stats.wp_meta_links_removed == 7
+    assert "xmlrpc.php" not in out
+    assert "api.w.org" not in out
+    assert "wp-json" not in out
+    assert "shortlink" not in out
+    # untouched: canonical, a real stylesheet, and feeds (own flag/counter)
+    assert 'rel="canonical"' in out and "s.css" in out
+    assert stats.feeds_removed == 1
+
+
+def test_wp_meta_link_stripping_can_be_disabled():
+    html = "<head><link rel='shortlink' href='https://s/?p=1'></head>"
+    out, stats = _apply(html, Policy(strip_wp_meta_links=False))
+    assert stats.wp_meta_links_removed == 0
+    assert "shortlink" in out
+
+
 # --- config ---------------------------------------------------------------
 
 
 def test_policy_defaults_strip_everything():
     p = Policy()
-    assert p.strip_telemetry and p.strip_forms and p.strip_feeds
+    assert p.strip_telemetry and p.strip_forms and p.strip_feeds and p.strip_wp_meta_links
 
 
 def test_policy_from_config_reads_yaml_shaped_dict():
@@ -160,16 +196,17 @@ def test_policy_from_config_reads_yaml_shaped_dict():
             "strip_telemetry": True,
             "strip_forms": False,
             "strip_feeds": True,
+            "strip_wp_meta_links": False,
             "telemetry_extra_hosts": ["t.example.com"],
         }
     )
-    assert p.strip_telemetry and not p.strip_forms and p.strip_feeds
+    assert p.strip_telemetry and not p.strip_forms and p.strip_feeds and not p.strip_wp_meta_links
     assert p.telemetry_extra_hosts == ["t.example.com"]
 
 
 def test_policy_from_empty_config_is_all_on():
     p = Policy.from_config(None)
-    assert p.strip_telemetry and p.strip_forms and p.strip_feeds
+    assert p.strip_telemetry and p.strip_forms and p.strip_feeds and p.strip_wp_meta_links
 
 
 def test_same_host_tracking_plugin_scripts_are_removed_by_path():

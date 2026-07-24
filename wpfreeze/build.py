@@ -337,11 +337,40 @@ class LinkRewriter:
         stats: BuildStats,
         bundler: BundleReassembler | None = None,
         attachment_media: dict[str, str] | None = None,
+        base_url: str | None = None,
     ):
         self.lookup = lookup
         self.stats = stats
         self.bundler = bundler
         self.attachment_media = attachment_media or {}
+
+        # base_url establishes this acquisition's own scope (host + path,
+        # for a multisite subdirectory install) so an out-of-scope
+        # reference -- a sibling subsite that stays live independently of
+        # this one's static replacement -- is correctly classified as
+        # `left_absolute` rather than `unresolved` (a same-site gap this
+        # capture failed to resolve). None (no base_url supplied, e.g. an
+        # older manifest or a test with no site context) falls back to a
+        # plain host comparison against the referring page -- exactly the
+        # pre-multisite-confinement behaviour, still correct for an
+        # ordinary single-site run where there is no sibling-subsite case
+        # to get wrong.
+        self._scope_host: str | None = None
+        self._scope_path: str = "/"
+        if base_url:
+            parts = urlsplit(base_url)
+            self._scope_host = _bare_host(parts.netloc)
+            self._scope_path = parts.path or "/"
+            if not self._scope_path.endswith("/"):
+                self._scope_path += "/"
+
+    def _out_of_scope(self, absolute: str, page_url: str) -> bool:
+        if self._scope_host is None:
+            return _different_host(absolute, page_url)
+        host = urlsplit(absolute).netloc
+        if not host or _bare_host(host) != self._scope_host:
+            return True
+        return not urlsplit(absolute).path.startswith(self._scope_path)
 
     def resolve(self, value: str, page_url: str, page_output: str) -> str | None:
         """Return the relative replacement for `value`, or None to leave it
@@ -390,7 +419,7 @@ class LinkRewriter:
                 self.stats.attachment_links_retargeted += 1
                 return relative_link(page_output, target)
 
-        if _different_host(absolute, page_url):
+        if self._out_of_scope(absolute, page_url):
             self.stats.left_absolute += 1
         else:
             self.stats.unresolved += 1
@@ -472,12 +501,13 @@ class LinkRewriter:
                 tag.string = self.rewrite_css(tag.string, page_url, page_output)
 
 
-def _different_host(absolute: str, page_url: str) -> bool:
-    def bare(host: str) -> str:
-        return host[4:] if host.startswith("www.") else host
+def _bare_host(netloc: str) -> str:
+    return netloc[4:] if netloc.startswith("www.") else netloc
 
+
+def _different_host(absolute: str, page_url: str) -> bool:
     host = urlsplit(absolute).netloc
-    return bool(host) and bare(host) != bare(urlsplit(page_url).netloc)
+    return bool(host) and _bare_host(host) != _bare_host(urlsplit(page_url).netloc)
 
 
 def build_site(
@@ -485,6 +515,7 @@ def build_site(
     output_dir: Path,
     site_dir: Path,
     policy: Policy | None = None,
+    base_url: str | None = None,
 ) -> BuildStats:
     """Emit the rewritten site under `site_dir`.
 
@@ -495,6 +526,11 @@ def build_site(
     `policy` controls content stripping (telemetry, forms, feeds); the
     default strips all three. Pass a Policy with fields disabled, or None to
     accept the defaults.
+
+    `base_url` establishes this acquisition's own scope for classifying
+    unresolved references on a multisite subdirectory install -- see
+    `LinkRewriter.__init__`. Omit it (older manifests) to fall back to a
+    plain host comparison.
     """
     policy = policy or Policy()
     records = build_record_lookup(manifest)
@@ -502,7 +538,7 @@ def build_site(
     attachment_media = build_attachment_media_map(manifest, output_dir, lookup)
     stats = BuildStats()
     bundler = BundleReassembler(records, output_dir, site_dir, stats)
-    rewriter = LinkRewriter(lookup, stats, bundler, attachment_media)
+    rewriter = LinkRewriter(lookup, stats, bundler, attachment_media, base_url)
     bundler.rewriter = rewriter
     logger.info("build: %d lookup keys, %d attachment redirects", len(lookup), len(attachment_media))
 
@@ -713,9 +749,10 @@ def format_build_summary(stats: BuildStats) -> str:
     if stats.unresolved:
         lines.append("  (unresolved references are left pointing at the original site)")
     p = stats.policy
-    if p.telemetry_removed or p.forms_removed or p.feeds_removed:
+    if p.telemetry_removed or p.forms_removed or p.feeds_removed or p.wp_meta_links_removed:
         lines.append(
             f"  stripped: {p.telemetry_removed} telemetry, "
-            f"{p.forms_removed} form(s), {p.feeds_removed} feed link(s)"
+            f"{p.forms_removed} form(s), {p.feeds_removed} feed link(s), "
+            f"{p.wp_meta_links_removed} WP protocol-discovery link(s)"
         )
     return "\n".join(lines)

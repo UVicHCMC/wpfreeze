@@ -179,6 +179,44 @@ def test_unresolved_internal_reference_is_left_alone_and_counted():
     assert stats.unresolved == 1
 
 
+def test_sibling_multisite_subsite_is_left_absolute_not_unresolved():
+    """A multisite subdirectory install's sibling site (same host, different
+    path -- correctly out of scope per the base_url path-confinement fix)
+    stays live independently of this one subsite's static replacement. It
+    must count as left_absolute (correctly external), not unresolved (a
+    same-site gap this capture failed to resolve) -- those two mean very
+    different things when deciding whether a broken-reference count is a
+    real problem."""
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/rocketry/", "/index.html")
+    stats = BuildStats()
+    rewriter = LinkRewriter(
+        build_lookup(manifest), stats, base_url=f"{BASE}/rocketry/"
+    )
+
+    html = f'<a href="{BASE}/gardening/some-post/">sibling</a>'
+    out = rewriter.rewrite_html(html, f"{BASE}/rocketry/", "/index.html")
+
+    assert "gardening" in out
+    assert stats.left_absolute == 1
+    assert stats.unresolved == 0
+
+
+def test_base_url_scope_still_flags_genuine_same_site_gaps_as_unresolved():
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/rocketry/", "/index.html")
+    stats = BuildStats()
+    rewriter = LinkRewriter(
+        build_lookup(manifest), stats, base_url=f"{BASE}/rocketry/"
+    )
+
+    html = f'<a href="{BASE}/rocketry/never-captured/">x</a>'
+    rewriter.rewrite_html(html, f"{BASE}/rocketry/", "/index.html")
+
+    assert stats.unresolved == 1
+    assert stats.left_absolute == 0
+
+
 def test_skipped_schemes_are_untouched():
     manifest = Manifest()
     _fetched(manifest, f"{BASE}/", "/index.html")

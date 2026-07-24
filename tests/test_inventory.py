@@ -13,6 +13,7 @@ from wpfreeze.inventory import (
     parse_robots_sitemaps,
     parse_sitemap_xml,
     parse_wxr_xml,
+    register_shortlink_aliases,
     rest_collection_url,
     wxr_author_urls,
     wxr_post_urls,
@@ -117,6 +118,62 @@ def test_extract_links_from_rest_items():
         "https://example.com/post-1/",
         "https://example.com/post-2/",
     ]
+
+
+def test_register_shortlink_aliases_links_id_to_the_pretty_permalink_record():
+    """WordPress stamps <link rel="shortlink" href=".../?p=<id>"> on every
+    post/page/attachment, but nothing else ever fetches that ugly spelling
+    as its own crawl target on a REST-only-inventoried site (no WXR) --
+    extract.py deliberately never follows shortlink <link> tags. Without
+    this, a build-time reference to that exact spelling stays unresolved
+    even though the content was captured fine under its pretty permalink."""
+    from wpfreeze.urlnorm import SiteProfile
+
+    profile = SiteProfile(
+        canonical_host="example.com",
+        site_hosts=frozenset({"example.com", "www.example.com"}),
+    )
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/rockets/")
+
+    items = [
+        {"id": 1614, "link": "https://example.com/rockets/"},
+        {"id": 9999, "link": "https://elsewhere.example.org/not-ours/"},  # out of scope
+        {"link": "https://example.com/no-id/"},  # missing id, skipped
+        {"id": 42},  # missing link, skipped
+    ]
+    register_shortlink_aliases(manifest, items, "https://example.com/", profile)
+
+    record = manifest.get_or_create("https://example.com/rockets/")
+    assert "https://example.com/?p=1614" in record.aliases
+    assert not any("9999" in a for a in record.aliases)
+
+
+def test_register_shortlink_aliases_resolves_p_link_at_build_time():
+    """End-to-end: once the alias is registered, build.py's lookup table
+    picks it up and a ?p=<id> reference resolves to the same local file as
+    the pretty permalink, instead of staying unresolved."""
+    from wpfreeze.build import build_lookup
+    from wpfreeze.urlnorm import SiteProfile
+
+    profile = SiteProfile(
+        canonical_host="example.com",
+        site_hosts=frozenset({"example.com", "www.example.com"}),
+    )
+    manifest = Manifest()
+    record = manifest.get_or_create("https://example.com/rockets/")
+    record.status = "fetched"
+    record.output_path = "/rockets.html"
+
+    register_shortlink_aliases(
+        manifest,
+        [{"id": 1614, "link": "https://example.com/rockets/"}],
+        "https://example.com/",
+        profile,
+    )
+
+    lookup = build_lookup(manifest)
+    assert lookup["https://example.com/?p=1614"] == "/rockets.html"
 
 
 # ---------------------------------------------------------------------------

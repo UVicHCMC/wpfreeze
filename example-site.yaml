@@ -97,6 +97,14 @@ policy:
   # body content are left alone; those are content, not dead metadata.
   strip_feeds: true
 
+  # Remove WordPress protocol-discovery <link> tags in the document head --
+  # pingback/EditURI (xmlrpc.php), the REST API self-discovery links
+  # (api.w.org, alternate/application+json), oEmbed discovery, and the
+  # ?p=<id> shortlink. None are rendered or used by a browser; all require
+  # a live PHP backend a static archive doesn't have. rel="canonical" is a
+  # genuine self-reference and is left alone.
+  strip_wp_meta_links: true
+
   # Add site-specific tracker hostnames to the built-in blocklist, for a
   # tracker this list doesn't already know. Matched as a substring of the
   # reference's host, so "analytics.example.com" covers its subdomains.

@@ -416,7 +416,7 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool) -> int:
         return 2
     manifest = Manifest.load(manifest_path)
     target = site_dir or (config.output_dir / "site")
-    stats = build_site(manifest, config.output_dir, target, config.policy)
+    stats = build_site(manifest, config.output_dir, target, config.policy, config.base_url)
     print(format_build_summary(stats))
     print(f"Site written to {target}")
 

@@ -12,8 +12,16 @@ them are *broken* in a resolve-against-disk sense:
   reader's email or comment to a third party while looking like they work.
 - **Feeds.** `<link rel="alternate">` pointers to RSS/Atom endpoints that
   cease to exist the moment the site comes down.
+- **WordPress protocol-discovery links.** `<link>` tags advertising
+  machinery that requires a live PHP backend -- `rel="pingback"` and
+  `rel="EditURI"` (both point at `xmlrpc.php`), `rel="https://api.w.org/"`
+  and `rel="alternate" type="application/json"` (the REST API), oEmbed
+  discovery, and `rel="shortlink"` (the page's own `?p=<id>` form). None of
+  these are rendered or used by a browser; all are dead the moment the live
+  site comes down. `rel="canonical"` is left alone -- unlike these, it is a
+  genuine, still-meaningful self-reference, not protocol machinery.
 
-This module removes all three, by default, on the reasoning that the point
+This module removes all four, by default, on the reasoning that the point
 of the exercise is a durable, self-contained copy. Every removal is counted
 and surfaced in the build summary -- nothing is stripped silently.
 
@@ -145,15 +153,30 @@ _FEED_LINK_TYPES: frozenset[str] = frozenset(
     {"application/rss+xml", "application/atom+xml", "application/rdf+xml"}
 )
 
+# --- WordPress protocol-discovery link rels/types --------------------------
+# rel values matched directly (each is its own dedicated protocol marker,
+# not shared with anything legitimate a build should keep).
+_WP_META_LINK_RELS: frozenset[str] = frozenset(
+    {"pingback", "shortlink", "edituri", "https://api.w.org/"}
+)
+# type values matched only alongside rel="alternate" -- application/json is
+# WordPress's own REST self-representation; the other two are oEmbed
+# discovery. Bare rel="alternate" for other types (e.g. feeds, or a
+# stylesheet's alternate) is untouched.
+_WP_META_LINK_ALTERNATE_TYPES: frozenset[str] = frozenset(
+    {"application/json", "application/json+oembed", "text/xml+oembed"}
+)
+
 
 @dataclass
 class Policy:
-    """What to strip from each page. All three default on: the whole point
+    """What to strip from each page. All four default on: the whole point
     of a build is a self-contained archive."""
 
     strip_telemetry: bool = True
     strip_forms: bool = True
     strip_feeds: bool = True
+    strip_wp_meta_links: bool = True
     # Site-specific trackers to add to the built-in host blocklist.
     telemetry_extra_hosts: list[str] = field(default_factory=list)
     # Escape hatch: hostnames never stripped even if otherwise matched.
@@ -161,7 +184,12 @@ class Policy:
 
     @property
     def any_enabled(self) -> bool:
-        return self.strip_telemetry or self.strip_forms or self.strip_feeds
+        return (
+            self.strip_telemetry
+            or self.strip_forms
+            or self.strip_feeds
+            or self.strip_wp_meta_links
+        )
 
     @classmethod
     def from_config(cls, raw: dict | None) -> "Policy":
@@ -170,6 +198,7 @@ class Policy:
             strip_telemetry=bool(raw.get("strip_telemetry", True)),
             strip_forms=bool(raw.get("strip_forms", True)),
             strip_feeds=bool(raw.get("strip_feeds", True)),
+            strip_wp_meta_links=bool(raw.get("strip_wp_meta_links", True)),
             telemetry_extra_hosts=list(raw.get("telemetry_extra_hosts", []) or []),
             telemetry_keep_hosts=list(raw.get("telemetry_keep_hosts", []) or []),
         )
@@ -183,6 +212,7 @@ class PolicyStats:
     telemetry_removed: int = 0
     forms_removed: int = 0
     feeds_removed: int = 0
+    wp_meta_links_removed: int = 0
 
 
 def _is_telemetry_ref(url: str, blocked: frozenset[str], kept: list[str]) -> bool:
@@ -248,6 +278,25 @@ def _strip_feeds(soup: BeautifulSoup, stats: PolicyStats) -> None:
             stats.feeds_removed += 1
 
 
+def _strip_wp_meta_links(soup: BeautifulSoup, stats: PolicyStats) -> None:
+    # Dead self-referential WordPress protocol-discovery <link> tags -- see
+    # the module docstring for what each rel/type points at. None are
+    # rendered or used by a browser; rel="canonical" is a real, still-
+    # meaningful self-reference and is deliberately not matched here.
+    for link in soup.find_all("link"):
+        rel = link.get("rel") or []
+        if isinstance(rel, str):
+            rel = rel.split()
+        rel_lower = {r.lower() for r in rel}
+        link_type = (link.get("type") or "").lower()
+        if rel_lower & _WP_META_LINK_RELS:
+            link.decompose()
+            stats.wp_meta_links_removed += 1
+        elif "alternate" in rel_lower and link_type in _WP_META_LINK_ALTERNATE_TYPES:
+            link.decompose()
+            stats.wp_meta_links_removed += 1
+
+
 def apply_policy(soup: BeautifulSoup, policy: Policy, stats: PolicyStats) -> None:
     """Apply the content policy to a parsed document, in place."""
     if policy.strip_telemetry:
@@ -256,3 +305,5 @@ def apply_policy(soup: BeautifulSoup, policy: Policy, stats: PolicyStats) -> Non
         _strip_forms(soup, stats)
     if policy.strip_feeds:
         _strip_feeds(soup, stats)
+    if policy.strip_wp_meta_links:
+        _strip_wp_meta_links(soup, stats)
