@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import logging
 import re
+import shutil
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -318,6 +319,7 @@ def run_acquire(config: SiteConfig, resume: bool, dry_run: bool) -> int:
     (output_dir / "redirects.htaccess").write_text(generate_redirects_htaccess(manifest), encoding="utf-8")
 
     _maybe_offer_diagnostics(manifest, output_dir, config.base_url)
+    _maybe_offer_build_and_validate(config)
 
     return 1 if manifest.has_gaps() else 0
 
@@ -348,6 +350,41 @@ def _maybe_offer_diagnostics(manifest: Manifest, output_dir: Path, base_url: str
     if answer not in ("", "y", "yes"):
         return
     run_diagnose_for(manifest, output_dir, base_url)
+
+
+def _maybe_offer_build_and_validate(config: SiteConfig) -> None:
+    """Same reasoning as _maybe_offer_diagnostics: only prompts in a real
+    interactive terminal, since `acquire` is routinely launched unattended
+    and a blocking input() here would hang a run that already finished.
+
+    Two separate prompts, not one bundled offer: `build` is disk-only,
+    deterministic, and fast, so there is no real downside to offering it
+    unconditionally. `validate` needs a JVM plus a downloaded vnu.jar --
+    the one of the two that can actually fail in a given environment -- so
+    it is only offered if `java` is on PATH at all, and only after a
+    successful build (nothing to validate otherwise).
+    """
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return
+    try:
+        answer = input("Build the static site from this capture? [Y/n] ").strip().lower()
+    except EOFError:
+        return
+    if answer not in ("", "y", "yes"):
+        return
+    if run_build(config, None, verify=True) == 2:
+        return  # run_build already printed why (e.g. no manifest found)
+
+    if shutil.which("java") is None:
+        print("Java not found on PATH; skipping the offer to validate (VNU needs a JVM).")
+        return
+    try:
+        answer = input("Validate the built site's HTML/CSS with VNU? [Y/n] ").strip().lower()
+    except EOFError:
+        return
+    if answer not in ("", "y", "yes"):
+        return
+    run_validate(config, None)
 
 
 def run_diagnose_for(manifest: Manifest, output_dir: Path, base_url: str) -> Path:

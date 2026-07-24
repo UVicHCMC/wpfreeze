@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import yaml
 
 from wpfreeze.cli import (
     ConfigError,
+    SiteConfig,
     load_config,
     main,
     probe_site,
@@ -313,6 +315,118 @@ def test_run_acquire_does_not_prompt_when_not_a_tty(tmp_path: Path, monkeypatch)
     with FixtureSite() as site:
         config = _config_for(site, tmp_path / "out")
         run_acquire(config, resume=False, dry_run=False)  # must not raise/hang
+
+
+# ---------------------------------------------------------------------------
+# end-of-acquire build+validate offer
+# ---------------------------------------------------------------------------
+
+
+def _tty_config(tmp_path: Path, monkeypatch) -> SiteConfig:
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    return SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
+
+
+def test_build_validate_offer_skipped_when_not_a_tty(tmp_path: Path, monkeypatch):
+    from wpfreeze.cli import _maybe_offer_build_and_validate
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("input() must not be called when stdin is not a tty")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
+
+    _maybe_offer_build_and_validate(config)  # must not raise/hang
+
+
+def test_build_validate_offer_declines_build_skips_validate(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    config = _tty_config(tmp_path, monkeypatch)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    build_called = []
+    validate_called = []
+    monkeypatch.setattr(cli, "run_build", lambda *a, **k: build_called.append(1) or 0)
+    monkeypatch.setattr(cli, "run_validate", lambda *a, **k: validate_called.append(1) or 0)
+
+    cli._maybe_offer_build_and_validate(config)
+
+    assert build_called == []
+    assert validate_called == []
+
+
+def test_build_validate_offer_runs_both_when_accepted_and_java_present(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    config = _tty_config(tmp_path, monkeypatch)
+    answers = iter(["y", "y"])
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/java")
+    build_called = []
+    validate_called = []
+    monkeypatch.setattr(cli, "run_build", lambda *a, **k: build_called.append(1) or 0)
+    monkeypatch.setattr(cli, "run_validate", lambda *a, **k: validate_called.append(1) or 0)
+
+    cli._maybe_offer_build_and_validate(config)
+
+    assert build_called == [1]
+    assert validate_called == [1]
+
+
+def test_build_validate_offer_skips_validate_offer_without_java(tmp_path: Path, monkeypatch, capsys):
+    import wpfreeze.cli as cli
+
+    config = _tty_config(tmp_path, monkeypatch)
+
+    def _fail_on_second_prompt(prompt):
+        raise AssertionError("must not prompt to validate when java is missing")
+
+    prompts = iter(["y"])
+
+    def _input(prompt):
+        try:
+            return next(prompts)
+        except StopIteration:
+            return _fail_on_second_prompt(prompt)
+
+    monkeypatch.setattr("builtins.input", _input)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli, "run_build", lambda *a, **k: 0)
+    validate_called = []
+    monkeypatch.setattr(cli, "run_validate", lambda *a, **k: validate_called.append(1) or 0)
+
+    cli._maybe_offer_build_and_validate(config)
+
+    assert validate_called == []
+    assert "java" in capsys.readouterr().out.lower()
+
+
+def test_build_validate_offer_skips_validate_when_build_hard_fails(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    config = _tty_config(tmp_path, monkeypatch)
+
+    def _fail_if_called(prompt):
+        raise AssertionError("must not prompt to validate when build hard-failed")
+
+    prompts = iter(["y"])
+
+    def _input(prompt):
+        try:
+            return next(prompts)
+        except StopIteration:
+            return _fail_if_called(prompt)
+
+    monkeypatch.setattr("builtins.input", _input)
+    monkeypatch.setattr(cli, "run_build", lambda *a, **k: 2)  # e.g. no manifest found
+    validate_called = []
+    monkeypatch.setattr(cli, "run_validate", lambda *a, **k: validate_called.append(1) or 0)
+
+    cli._maybe_offer_build_and_validate(config)
+
+    assert validate_called == []
 
 
 # ---------------------------------------------------------------------------
