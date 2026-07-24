@@ -137,9 +137,16 @@ def lookup_variants(url: str) -> list[str]:
                 if k in PERMALINK_QUERY_KEYS
             ]
         )
+        # Only ever falls back to the bare (query-less) spelling when kept
+        # is itself empty -- i.e. every param was cache-buster/tracking
+        # noise. If a permalink-identity key (cat=/author=/p=/...) survived
+        # into `kept`, the bare form must NOT be offered: it would resolve
+        # this archive/post to whatever unrelated record happens to already
+        # occupy that bare path (typically the homepage), not merely leave
+        # it unresolved. A real crawl hit this exactly: an author-archive
+        # page's `?author=6` alias was silently claiming the site root's
+        # lookup entry, sending every "Home" nav link to the wrong page.
         queries.append(kept)
-        if kept:
-            queries.append("")
 
     out: list[str] = []
     for query in dict.fromkeys(queries):

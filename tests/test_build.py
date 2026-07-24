@@ -62,15 +62,31 @@ def test_cache_buster_queries_fall_back_to_the_canonical_record():
 
 def test_permalink_query_keys_are_not_collapsed_away():
     """?p=/?cat= identify distinct archive pages -- they must not fall back
-    to the bare path the way a cache-buster does."""
+    to the bare path the way a cache-buster does. Falling back would
+    resolve them to whatever unrelated record already occupies that bare
+    path (e.g. the homepage) instead of merely leaving them unresolved."""
     manifest = Manifest()
     _fetched(manifest, f"{BASE}/", "/index.html")
     lookup = build_lookup(manifest)
 
     variants = lookup_variants(f"{BASE}/?cat=5")
     assert variants[0] == f"{BASE}/?cat=5"
-    # the bare form is still offered, but only after the specific one
-    assert variants.index(f"{BASE}/") > 0
+    assert f"{BASE}/" not in variants
+
+
+def test_identity_query_alias_does_not_hijack_the_bare_path():
+    """Real-world case: an author-archive page's ugly-permalink alias
+    (?author=6) sits at the bare site root path with no path of its own.
+    Its lookup entry must never claim the homepage's own bare-URL spelling
+    -- every "Home" link on the site would otherwise resolve to the author
+    archive instead, regardless of manifest ordering."""
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/author/michael/", "/author/michael.html")
+    manifest.get_or_create(f"{BASE}/author/michael/").add_alias(f"{BASE}/?author=6")
+    _fetched(manifest, f"{BASE}/", "/index.html")
+
+    lookup = build_lookup(manifest)
+    assert lookup[f"{BASE}/"] == "/index.html"
 
 
 def test_scheme_www_and_trailing_slash_spellings_all_resolve():
