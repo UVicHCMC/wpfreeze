@@ -122,3 +122,10 @@ policy:
 # it's a normal optional key like wayback/extra_hosts above: omit it
 # entirely if you don't have one, nothing forces a decision either way.
 # xml_backup: "./site-export.WordPress.xml"
+
+# Optional. Path to a vnu.jar (the Nu Html Checker), used by
+# `wpfreeze validate` to check the built site's HTML/CSS. Omit this key
+# entirely to have `validate` auto-download and cache the latest release
+# itself -- only set it to pin a specific jar (e.g. for reproducibility,
+# or on a machine without network access to GitHub).
+vnu_jar: "./vnu.jar"

@@ -33,7 +33,9 @@ from wpfreeze.build import (
     format_build_summary,
     format_verify_summary,
     verify_site,
+    write_build_report,
 )
+from wpfreeze.cleanup import write_cleanup_todo
 from wpfreeze.crawl import compile_exclusions, crawl_fixpoint
 from wpfreeze.diagnostics import build_diagnostics, format_diagnostics_summary, write_diagnostics
 from wpfreeze.fetch import DEFAULT_USER_AGENT, FetchConfig, RateLimiter
@@ -43,6 +45,13 @@ from wpfreeze.outputs import compute_output_paths, generate_redirects_htaccess
 from wpfreeze.policy import Policy
 from wpfreeze.report import write_report_html, write_report_json
 from wpfreeze.urlnorm import SiteProfile
+from wpfreeze.validate import (
+    VnuUnavailable,
+    ensure_vnu_jar,
+    format_validation_summary,
+    validate_site,
+    write_validation_report,
+)
 from wpfreeze.wayback import recover_via_wayback
 
 logger = logging.getLogger(__name__)
@@ -73,6 +82,7 @@ class SiteConfig:
     wayback: WaybackSettings = field(default_factory=WaybackSettings)
     xml_backup: Path | None = None  # optional: a WordPress XML export (WXR) to augment inventory
     policy: Policy = field(default_factory=Policy)  # content stripping for `build`
+    vnu_jar: Path | None = None  # optional: pin a specific vnu.jar; unset auto-downloads/caches the latest
 
 
 def _parse_date(value) -> date:
@@ -108,6 +118,7 @@ def load_config(path: Path) -> SiteConfig:
         ),
         xml_backup=Path(xml_backup_raw) if xml_backup_raw else None,
         policy=Policy.from_config(raw.get("policy")),
+        vnu_jar=Path(raw["vnu_jar"]) if raw.get("vnu_jar") else None,
     )
 
 
@@ -441,7 +452,7 @@ def run_status(config: SiteConfig) -> int:
 # ---------------------------------------------------------------------------
 
 
-def run_build(config: SiteConfig, site_dir: Path | None, verify: bool) -> int:
+def run_build(config: SiteConfig, site_dir: Path | None, verify: bool, write_todo: bool = True) -> int:
     """Emit the rewritten, servable site from an existing capture.
 
     Reads only; writes only into the site directory. Never touches raw/,
@@ -456,6 +467,7 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool) -> int:
     stats = build_site(manifest, config.output_dir, target, config.policy, config.base_url)
     print(format_build_summary(stats))
     print(f"Site written to {target}")
+    write_build_report(stats, config.output_dir)
 
     broken = 0
     if verify:
@@ -463,10 +475,60 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool) -> int:
         print(format_verify_summary(report))
         broken = len(report.broken)
 
+    if write_todo:
+        _announce_cleanup_todo(config.output_dir)
+
     # Unresolved references and broken local links are both real (if
     # partial) failures to finish the job, and mirror acquire's "complete
     # with gaps" exit code.
     return 1 if (stats.unresolved or broken) else 0
+
+
+def run_validate(config: SiteConfig, site_dir: Path | None, write_todo: bool = True) -> int:
+    """Check the built site's HTML/CSS with VNU.
+
+    No config needed to enable this: unless `vnu_jar` pins a specific jar,
+    a cached copy of the latest release is fetched/refreshed automatically
+    (see validate.ensure_vnu_jar) into a directory shared across configs,
+    since the checker isn't site-specific.
+
+    Informational only: these are markup defects in the site's own
+    theme/plugins, not something wpfreeze's rewriting caused or can fix,
+    so this never fails the build over someone else's markup -- unlike
+    `build`'s own broken-reference check, it always exits 0 once it has
+    successfully run.
+    """
+    target = site_dir or (config.output_dir / "site")
+    if not target.exists():
+        print(f"No built site found at {target}; run `wpfreeze build` first.")
+        return 2
+
+    try:
+        vnu_jar = config.vnu_jar or ensure_vnu_jar()
+        report = validate_site(vnu_jar, target)
+    except VnuUnavailable as exc:
+        print(f"VNU validation could not run: {exc}")
+        return 2
+
+    print(format_validation_summary(report))
+    path = write_validation_report(report, config.output_dir)
+    print(f"Full detail: {path}")
+
+    if write_todo:
+        _announce_cleanup_todo(config.output_dir)
+
+    return 0
+
+
+def _announce_cleanup_todo(output_dir: Path) -> None:
+    """Regenerate the cleanup-todo doc from whatever of
+    build-report.json/vnu-report.json/diagnostics.json exist in
+    `output_dir`, and tell the user where it landed. Always runs (not
+    gated on a tty) -- this is output, not a prompt, and the whole point
+    is that nobody has to remember to go looking for it."""
+    path = write_cleanup_todo(output_dir)
+    if path is not None:
+        print(f"Cleanup checklist: {path}")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -501,11 +563,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip the post-build check that every local reference resolves on disk",
     )
+    build_p.add_argument(
+        "--no-todo",
+        action="store_true",
+        help="skip regenerating cleanup-todo.md, the human-readable punch list synthesized "
+        "from build/validate/diagnose's reports",
+    )
 
     diagnose_p = subparsers.add_parser(
         "diagnose", help="write a compact debugging summary (diagnostics.json) from the existing manifest"
     )
     diagnose_p.add_argument("--config", required=True, type=Path)
+
+    validate_p = subparsers.add_parser(
+        "validate", help="check the built site's HTML/CSS with the Nu Html Checker (VNU)"
+    )
+    validate_p.add_argument("--config", required=True, type=Path)
+    validate_p.add_argument(
+        "--site-dir", type=Path, default=None, help="site directory to check (default: <output_dir>/site)"
+    )
+    validate_p.add_argument(
+        "--no-todo",
+        action="store_true",
+        help="skip regenerating cleanup-todo.md, the human-readable punch list synthesized "
+        "from build/validate/diagnose's reports",
+    )
 
     return parser
 
@@ -600,9 +682,11 @@ def _dispatch(argv: list[str] | None) -> int:
     if args.command == "status":
         return run_status(config)
     if args.command == "build":
-        return run_build(config, args.site_dir, verify=not args.no_verify)
+        return run_build(config, args.site_dir, verify=not args.no_verify, write_todo=not args.no_todo)
     if args.command == "diagnose":
         return run_diagnose(config)
+    if args.command == "validate":
+        return run_validate(config, args.site_dir, write_todo=not args.no_todo)
 
     return 2
 

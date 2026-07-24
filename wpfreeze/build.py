@@ -27,9 +27,10 @@ which is most of the point of a durable offline copy.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from posixpath import relpath as posix_relpath
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -723,6 +724,18 @@ def format_verify_summary(report: VerifyReport) -> str:
     for broken in report.broken[:5]:
         lines.append(f"       {broken.reference[:70]}  in {broken.source}")
     return "\n".join(lines)
+
+
+def write_build_report(stats: BuildStats, output_dir: Path) -> Path:
+    """Persist build stats to build-report.json, mirroring
+    validate.write_validation_report. Makes this run's findings --
+    notably unresolved_samples, the highest-signal field for a later
+    cleanup summary -- available to a step invoked separately in time or
+    process (e.g. `wpfreeze validate` run well after `wpfreeze build`, or
+    the cleanup-todo synthesis reading back whatever is on disk)."""
+    path = output_dir / "build-report.json"
+    path.write_text(json.dumps(asdict(stats), indent=2), encoding="utf-8")
+    return path
 
 
 def format_build_summary(stats: BuildStats) -> str:

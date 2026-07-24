@@ -10,6 +10,7 @@ from wpfreeze.build import (
     build_site,
     lookup_variants,
     relative_link,
+    write_build_report,
 )
 from wpfreeze.manifest import Manifest, Status
 
@@ -309,6 +310,25 @@ def test_build_site_never_writes_into_the_capture(tmp_path: Path):
     build_site(manifest, output_dir, site_dir)
 
     assert (output_dir / home.local_path).read_bytes() == original
+
+
+def test_write_build_report_persists_unresolved_samples(tmp_path: Path):
+    """unresolved_samples is the highest-signal field for the cleanup-todo
+    synthesis (see cleanup.py), which reads this file back from a
+    potentially separate later invocation -- must round-trip through JSON
+    correctly, including the (page, value) tuples."""
+    import json
+
+    stats = BuildStats(unresolved=1, rewritten=3)
+    stats.unresolved_samples.append((f"{BASE}/team/", f"{BASE}/never-captured/"))
+
+    path = write_build_report(stats, tmp_path)
+
+    assert path == tmp_path / "build-report.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["unresolved"] == 1
+    assert data["rewritten"] == 3
+    assert data["unresolved_samples"] == [[f"{BASE}/team/", f"{BASE}/never-captured/"]]
 
 
 # --- verification ---------------------------------------------------------

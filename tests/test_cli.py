@@ -318,6 +318,88 @@ def test_run_acquire_does_not_prompt_when_not_a_tty(tmp_path: Path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# run_build / run_validate: cleanup-todo announcement
+# ---------------------------------------------------------------------------
+
+
+def _minimal_capture(output_dir: Path) -> SiteConfig:
+    manifest = Manifest()
+    record = manifest.get_or_create("https://example.com/")
+    record.status = Status.FETCHED.value
+    record.http_status = 200
+    record.output_path = "/index.html"
+    record.local_path = "raw/index.html"
+    record.content_type = "text/html"
+    (output_dir / "raw").mkdir(parents=True)
+    (output_dir / "raw" / "index.html").write_text("<html><body>hi</body></html>", encoding="utf-8")
+    manifest.save(output_dir / "manifest.json")
+    return SiteConfig(base_url="https://example.com/", output_dir=output_dir)
+
+
+def test_run_build_writes_build_report_and_cleanup_todo(tmp_path: Path, capsys):
+    from wpfreeze.cli import run_build
+
+    output_dir = tmp_path / "out"
+    config = _minimal_capture(output_dir)
+
+    run_build(config, None, verify=False)
+
+    assert (output_dir / "build-report.json").exists()
+    assert (output_dir / "cleanup-todo.md").exists()
+    assert f"Cleanup checklist: {output_dir / 'cleanup-todo.md'}" in capsys.readouterr().out
+
+
+def test_run_build_no_todo_flag_skips_cleanup_todo_but_still_writes_build_report(tmp_path: Path):
+    from wpfreeze.cli import run_build
+
+    output_dir = tmp_path / "out"
+    config = _minimal_capture(output_dir)
+
+    run_build(config, None, verify=False, write_todo=False)
+
+    assert (output_dir / "build-report.json").exists()
+    assert not (output_dir / "cleanup-todo.md").exists()
+
+
+def test_run_validate_writes_cleanup_todo(tmp_path: Path, monkeypatch):
+    from wpfreeze.cli import run_validate
+    from wpfreeze.validate import ValidationReport
+
+    output_dir = tmp_path / "out"
+    (output_dir / "site").mkdir(parents=True)
+    config = SiteConfig(base_url="https://example.com/", output_dir=output_dir)
+
+    monkeypatch.setattr("wpfreeze.cli.ensure_vnu_jar", lambda: Path("/fake/vnu.jar"))
+    monkeypatch.setattr(
+        "wpfreeze.cli.validate_site",
+        lambda jar, target: ValidationReport(documents_checked=1, total_messages=0, issues=[]),
+    )
+
+    run_validate(config, None)
+
+    assert (output_dir / "cleanup-todo.md").exists()
+
+
+def test_run_validate_no_todo_flag_skips_cleanup_todo(tmp_path: Path, monkeypatch):
+    from wpfreeze.cli import run_validate
+    from wpfreeze.validate import ValidationReport
+
+    output_dir = tmp_path / "out"
+    (output_dir / "site").mkdir(parents=True)
+    config = SiteConfig(base_url="https://example.com/", output_dir=output_dir)
+
+    monkeypatch.setattr("wpfreeze.cli.ensure_vnu_jar", lambda: Path("/fake/vnu.jar"))
+    monkeypatch.setattr(
+        "wpfreeze.cli.validate_site",
+        lambda jar, target: ValidationReport(documents_checked=1, total_messages=0, issues=[]),
+    )
+
+    run_validate(config, None, write_todo=False)
+
+    assert not (output_dir / "cleanup-todo.md").exists()
+
+
+# ---------------------------------------------------------------------------
 # end-of-acquire build+validate offer
 # ---------------------------------------------------------------------------
 
