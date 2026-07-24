@@ -269,6 +269,22 @@ def test_bare_directory_reference_ignored_in_script_regex_json_and_data_attr():
     assert "https://example.com/wp-content/uploads/1.jpg" in urls
 
 
+def test_implausibly_long_data_attribute_blob_ignored():
+    """A data-* attribute holding a large base64 blob (e.g. a Figma paste
+    handler's `<!--(figma)...-->`-wrapped clipboard metadata, stamped onto
+    a Divi Toggle module's content when pasted from a Figma frame) is not a
+    URL, but a heuristic scanner has no way to know that other than
+    structurally: base64 data contains "//" by chance often enough that a
+    multi-KB chunk of it gets matched as a protocol-relative URL and queued
+    for a fetch that can only ever fail. Seen on a real site: two ~20-30KB
+    "URLs" like this, both correctly unfetchable but wasted retries and
+    cluttered the gap report."""
+    blob = "A" * 40 + "//" + ("B" * 80 + "/") * 400
+    html = f'<div data-buffer="&lt;!--(figma){blob}--&gt;"></div>'
+    links = extract_from_html(html, BASE)
+    assert links == []
+
+
 def test_skipped_schemes_are_not_extracted():
     html = (
         '<a href="mailto:someone@example.com">mail</a>'

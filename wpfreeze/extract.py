@@ -131,6 +131,35 @@ def _is_bare_directory_reference(url: str) -> bool:
     return "." not in path.rsplit("/", 1)[-1]
 
 
+# Real URLs -- even deeply-nested REST/permalink ones -- stay well under a
+# few hundred characters. This is a generous multiple of the practical
+# length browsers/servers have long treated as the real-world ceiling
+# (historically ~2000, e.g. IE's old 2083-character cap), chosen so no
+# genuine link is ever caught by it.
+_MAX_PLAUSIBLE_URL_LENGTH = 4096
+
+
+def _is_implausibly_long(url: str) -> bool:
+    """True for a "URL" a heuristic scan pulled out of a JS/JSON blob or a
+    data-* attribute that is far longer than any real link could be.
+
+    The heuristic scanners have no other way to reject a base64 (or
+    similar high-entropy) blob that happens to contain "//" by chance.
+    Seen on a real site: a Divi Toggle module's content had been pasted in
+    from Figma, whose paste handler stamps a `data-buffer`/`data-metadata`
+    attribute with a `<!--(figma)...-->`-wrapped scene blob; two ~20-30KB
+    chunks of it were mistaken for a URL and queued for a live+Wayback
+    fetch that could only ever fail.
+    """
+    return len(url) > _MAX_PLAUSIBLE_URL_LENGTH
+
+
+def _is_unlikely_real_url(url: str) -> bool:
+    """Combines the structural checks a heuristic-scan result must pass to
+    be treated as a real, fetchable resource rather than a false positive."""
+    return _is_bare_directory_reference(url) or _is_implausibly_long(url)
+
+
 _STATIC_CONCAT_PATH = "/_static/"
 
 
@@ -214,13 +243,13 @@ def _find_url_shaped_strings(text: str) -> list[str]:
     found: list[str] = []
     for pattern in _URL_SHAPED_PATTERNS:
         found.extend(m.group(0) for m in pattern.finditer(text))
-    return [url for url in found if not _is_bare_directory_reference(url)]
+    return [url for url in found if not _is_unlikely_real_url(url)]
 
 
 def _walk_json_for_urls(obj) -> list[str]:
     urls: list[str] = []
     if isinstance(obj, str):
-        if _is_url_shaped(obj) and not _is_bare_directory_reference(obj):
+        if _is_url_shaped(obj) and not _is_unlikely_real_url(obj):
             urls.append(obj)
     elif isinstance(obj, dict):
         for value in obj.values():
@@ -357,7 +386,7 @@ def extract_from_html(html: str, base_url: str) -> list[ExtractedLink]:
             if "srcset" in attr_name.lower():
                 for url in _parse_srcset(attr_value):
                     add(url, RENDER, f"{name}[{attr_name}]")
-            elif _is_url_shaped(attr_value) and not _is_bare_directory_reference(attr_value):
+            elif _is_url_shaped(attr_value) and not _is_unlikely_real_url(attr_value):
                 add(attr_value.strip(), RENDER, f"{name}[{attr_name}]")
             else:
                 for url in _find_url_shaped_strings(attr_value):
