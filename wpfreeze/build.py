@@ -40,7 +40,7 @@ from bs4 import BeautifulSoup
 from wpfreeze.extract import decode_static_bundle
 from wpfreeze.manifest import FLAG_ATTACHMENT_PAGE, Manifest, ManifestRecord, Status
 from wpfreeze.policy import Policy, PolicyStats, apply_policy
-from wpfreeze.urlnorm import PERMALINK_QUERY_KEYS
+from wpfreeze.urlnorm import PERMALINK_QUERY_KEYS, scope_profile_from_config
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +339,7 @@ class LinkRewriter:
         bundler: BundleReassembler | None = None,
         attachment_media: dict[str, str] | None = None,
         base_url: str | None = None,
+        extra_hosts: tuple[str, ...] | list[str] = (),
     ):
         self.lookup = lookup
         self.stats = stats
@@ -356,22 +357,20 @@ class LinkRewriter:
         # pre-multisite-confinement behaviour, still correct for an
         # ordinary single-site run where there is no sibling-subsite case
         # to get wrong.
-        self._scope_host: str | None = None
-        self._scope_path: str = "/"
-        if base_url:
-            parts = urlsplit(base_url)
-            self._scope_host = _bare_host(parts.netloc)
-            self._scope_path = parts.path or "/"
-            if not self._scope_path.endswith("/"):
-                self._scope_path += "/"
+        #
+        # The scope test itself is SiteProfile.in_scope, not a local
+        # reimplementation. An earlier version open-coded the host/path
+        # comparison here and silently diverged from the crawl-time
+        # predicate on four axes: it never knew about extra_hosts (so a
+        # configured CDN's genuinely-unresolved assets were written off as
+        # `left_absolute`, hiding real gaps), and it compared raw netloc,
+        # so an explicit :443 or an uppercase hostname read as external.
+        self._profile = scope_profile_from_config(base_url, extra_hosts) if base_url else None
 
     def _out_of_scope(self, absolute: str, page_url: str) -> bool:
-        if self._scope_host is None:
+        if self._profile is None:
             return _different_host(absolute, page_url)
-        host = urlsplit(absolute).netloc
-        if not host or _bare_host(host) != self._scope_host:
-            return True
-        return not urlsplit(absolute).path.startswith(self._scope_path)
+        return not self._profile.in_scope(absolute)
 
     def resolve(self, value: str, page_url: str, page_output: str) -> str | None:
         """Return the relative replacement for `value`, or None to leave it
@@ -517,6 +516,7 @@ def build_site(
     site_dir: Path,
     policy: Policy | None = None,
     base_url: str | None = None,
+    extra_hosts: tuple[str, ...] | list[str] = (),
 ) -> BuildStats:
     """Emit the rewritten site under `site_dir`.
 
@@ -539,7 +539,7 @@ def build_site(
     attachment_media = build_attachment_media_map(manifest, output_dir, lookup)
     stats = BuildStats()
     bundler = BundleReassembler(records, output_dir, site_dir, stats)
-    rewriter = LinkRewriter(lookup, stats, bundler, attachment_media, base_url)
+    rewriter = LinkRewriter(lookup, stats, bundler, attachment_media, base_url, extra_hosts)
     bundler.rewriter = rewriter
     logger.info("build: %d lookup keys, %d attachment redirects", len(lookup), len(attachment_media))
 
@@ -726,15 +726,46 @@ def format_verify_summary(report: VerifyReport) -> str:
     return "\n".join(lines)
 
 
-def write_build_report(stats: BuildStats, output_dir: Path) -> Path:
+_MAX_BROKEN_SAMPLES = 50
+
+
+def write_build_report(
+    stats: BuildStats, output_dir: Path, verify: "VerifyReport | None" = None
+) -> Path:
     """Persist build stats to build-report.json, mirroring
     validate.write_validation_report. Makes this run's findings --
     notably unresolved_samples, the highest-signal field for a later
     cleanup summary -- available to a step invoked separately in time or
     process (e.g. `wpfreeze validate` run well after `wpfreeze build`, or
-    the cleanup-todo synthesis reading back whatever is on disk)."""
+    the cleanup-todo synthesis reading back whatever is on disk).
+
+    `verify` carries verify_site's outcome, which has exactly that
+    property and was previously printed to the console and discarded. A
+    build whose references all rewrote cleanly but whose local links do
+    not resolve on disk exits non-zero -- and without this the cleanup
+    checklist, regenerated moments later in the same command, had no way
+    to know and cheerfully reported the capture clean. None means
+    verification did not run (`--no-verify`), which is distinct from
+    running and finding nothing.
+    """
     path = output_dir / "build-report.json"
-    path.write_text(json.dumps(asdict(stats), indent=2), encoding="utf-8")
+    data = asdict(stats)
+    data["verification"] = (
+        None
+        if verify is None
+        else {
+            "documents": verify.documents,
+            "checked": verify.checked,
+            "external": verify.external,
+            "skipped": verify.skipped,
+            "broken": len(verify.broken),
+            "broken_samples": [
+                {"source": b.source, "reference": b.reference, "target": b.target, "reason": b.reason}
+                for b in verify.broken[:_MAX_BROKEN_SAMPLES]
+            ],
+        }
+    )
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return path
 
 

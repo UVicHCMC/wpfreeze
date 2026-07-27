@@ -192,6 +192,34 @@ def discover_links(html_or_css: bytes, final_url: str, kind: str) -> list:
     return extract_from_css(text, final_url)
 
 
+def _should_parse_for_links(
+    kind: str | None, final_url: str, final_host: str, profile: SiteProfile
+) -> bool:
+    """Whether a fetched resource may be parsed for further references.
+
+    HTML is confined to the site being archived. An out-of-scope HTML page
+    admitted here becomes a crawl root of its own, and its hyperlinks
+    cascade into fetching another site's entire graph -- a real run
+    amplified one such external page into 50,000+ pending records across
+    1,000+ unrelated hosts. External HTML is still fetched and stored
+    (satisfying "render even if external, localize it") but stays a leaf.
+
+    CSS is confined only to owned hosts, not to base_path. It cannot
+    cascade the way HTML does: extract_from_css emits nothing but RENDER
+    links, and RENDER links are already deliberately unconfined (see
+    _process_one). Holding CSS to base_path bought no safety and lost
+    real assets -- on a multisite subdirectory install the whole theme
+    lives under the network-wide /wp-content/, so its stylesheets were
+    fetched but never read, and every font and background image they
+    reference went undiscovered.
+    """
+    if kind is None:
+        return False
+    if kind == "css":
+        return profile.owns_host(final_host)
+    return profile.in_scope(final_url)
+
+
 def _process_one(
     record: ManifestRecord,
     manifest: Manifest,
@@ -242,18 +270,8 @@ def _process_one(
         final_url = normalize_url(result.final_url, profile)
         final_host = urlsplit(final_url).hostname or ""
         kind = content_kind(result.content_type, final_url)
-        if kind is not None and profile.in_scope(final_url):
-            # Only ever parse a fetched resource for further links when the
-            # resource itself is on an owned host. Otherwise an external
-            # RENDER asset that happens to be HTML/CSS (however it entered
-            # the manifest -- a false-positive script match, a legitimate
-            # external CDN page, whatever) becomes a crawl root of its own,
-            # and its own outbound references cascade into fetching that
-            # other site's entire graph. A real run against a live WordPress
-            # site amplified one such external HTML page into 50,000+
-            # pending records across 1,000+ unrelated hosts this way.
-            # External resources are fetched and stored (satisfying "render
-            # even if external, localize it") but are always leaves.
+        if _should_parse_for_links(kind, final_url, final_host, profile):
+            # See _should_parse_for_links for why the two kinds differ.
             discovered_links = discover_links(result.content, final_url, kind)
 
     with manifest.lock:

@@ -17,7 +17,7 @@ from urllib.parse import urlencode, urlsplit
 
 import requests
 
-from wpfreeze.crawl import content_kind, discover_links, store_bytes
+from wpfreeze.crawl import _should_parse_for_links, content_kind, discover_links, store_bytes
 from wpfreeze.extract import HYPERLINK
 from wpfreeze.fetch import SUCCESS, FetchConfig, RateLimiter, fetch_with_retries
 from wpfreeze.manifest import Manifest, ManifestRecord, Source, Status
@@ -186,12 +186,12 @@ def _recover_one(
     logger.info("recovered %s from Wayback snapshot %s", record.url, chosen.timestamp)
 
     kind = content_kind(record.content_type, record.url)
-    if kind is not None and profile.in_scope(record.url):
-        # See crawl.py::_process_one -- only ever parse a fetched resource
-        # for further links when the resource is in scope (owned host, and
-        # under base_path on a multisite subdirectory install), or an
-        # external/sibling page recovered from Wayback becomes a crawl root
-        # of its own and cascades into that other site's whole graph.
+    recovered_host = (urlsplit(record.url).hostname or "").lower()
+    if _should_parse_for_links(kind, record.url, recovered_host, profile):
+        # See crawl.py::_should_parse_for_links -- HTML is confined to the
+        # site being archived (or a sibling page recovered from Wayback
+        # becomes a crawl root of its own and cascades into that other
+        # site's whole graph); CSS only has to be on an owned host.
         for link in discover_links(result.content, record.url, kind):
             normalized = normalize_url(link.url, profile)
             host = (urlsplit(normalized).hostname or "").lower()

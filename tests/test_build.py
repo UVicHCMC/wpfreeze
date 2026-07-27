@@ -677,3 +677,74 @@ def test_build_without_a_redirects_file_does_not_fail(tmp_path: Path):
 
     assert stats.redirects_copied is False
     assert not (site_dir / ".htaccess").exists()
+
+
+def test_build_scope_uses_the_shared_predicate_not_a_second_implementation():
+    """LinkRewriter used to open-code the host/path comparison and silently
+    diverged from SiteProfile.in_scope: it never knew about extra_hosts,
+    and it compared raw netloc, so an explicit :443 or an uppercase
+    hostname read as external."""
+    from wpfreeze.build import BuildStats, LinkRewriter
+
+    r = LinkRewriter({}, BuildStats(), None, None, "https://example.com/courses/")
+    page = "https://example.com/courses/a/"
+
+    assert not r._out_of_scope("https://example.com/courses/about/", page)
+    assert not r._out_of_scope("https://example.com/courses", page)          # root, no slash
+    assert not r._out_of_scope("https://www.example.com/courses/x/", page)   # www variant
+    assert not r._out_of_scope("https://EXAMPLE.COM/courses/x/", page)       # uppercase host
+    assert not r._out_of_scope("https://example.com:443/courses/x/", page)   # default port
+
+    assert r._out_of_scope("https://example.com/siblinglab/", page)
+    assert r._out_of_scope("https://unrelated.example.org/x/", page)
+
+
+def test_build_scope_knows_about_configured_extra_hosts():
+    """A configured CDN's assets are the site's own, so a reference to one
+    that failed to resolve is a real gap (`unresolved`), not an external
+    link we chose to leave alone (`left_absolute`)."""
+    from wpfreeze.build import BuildStats, LinkRewriter
+
+    r = LinkRewriter({}, BuildStats(), None, None, "https://example.com/", ["cdn.example.net"])
+    page = "https://example.com/a/"
+    assert not r._out_of_scope("https://cdn.example.net/assets/a.js", page)
+    assert r._out_of_scope("https://cdn.unrelated.net/assets/a.js", page)
+
+
+def test_extra_hosts_are_still_path_confined_on_a_subdirectory_install():
+    """KNOWN LIMITATION, pinned so it changes deliberately rather than by
+    accident. base_path applies uniformly to every host in site_hosts, but
+    a CDN serves this site's assets from its own root and has no sibling-
+    subsite problem -- the path confinement exists only because siblings
+    share the *primary* hostname. Separating primary hosts from extra
+    hosts in SiteProfile would fix it, and would change crawl-time
+    admission too, so it is not a local change to LinkRewriter."""
+    from wpfreeze.build import BuildStats, LinkRewriter
+
+    r = LinkRewriter({}, BuildStats(), None, None, "https://example.com/courses/", ["cdn.example.net"])
+    assert r._out_of_scope("https://cdn.example.net/assets/a.js", "https://example.com/courses/a/")
+
+
+def test_write_build_report_persists_verification_findings(tmp_path: Path):
+    """verify_site's findings used to be printed and discarded, so the
+    cleanup checklist could call a build clean that had just exited 1."""
+    from wpfreeze.build import BrokenReference, BuildStats, VerifyReport, write_build_report
+
+    verify = VerifyReport(checked=10, external=2, skipped=1, documents=3)
+    verify.broken.append(BrokenReference(source="a.html", reference="./x.png", target="x.png", reason="missing"))
+    import json
+
+    path = write_build_report(BuildStats(unresolved=0), tmp_path, verify)
+    data = json.loads(path.read_text())
+
+    assert data["verification"]["broken"] == 1
+    assert data["verification"]["broken_samples"][0]["reference"] == "./x.png"
+
+
+def test_write_build_report_records_that_verification_did_not_run(tmp_path: Path):
+    from wpfreeze.build import BuildStats, write_build_report
+
+    import json
+
+    data = json.loads(write_build_report(BuildStats(), tmp_path).read_text())
+    assert data["verification"] is None

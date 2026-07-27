@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -301,3 +302,68 @@ def test_format_validation_summary_handles_an_issue_with_no_pages(monkeypatch, t
     summary = format_validation_summary(report)  # used to raise IndexError
     assert "no url on this one" in summary
     assert "0 page(s)" in summary
+
+
+def test_an_unreadable_document_fails_the_run_with_an_actionable_message(
+    monkeypatch, tmp_path: Path
+):
+    """Confirmed against VNU 26.7.22: a file it cannot open kills the whole
+    run with an uncaught FileNotFoundException and leaves stdout truncated
+    mid-JSON. The only symptom used to be "could not parse vnu output as
+    JSON", which points the reader at the parser rather than at their own
+    file permissions."""
+    site_dir = _site_with_pages(tmp_path, ["good.html", "locked.html"])
+    (site_dir / "locked.html").chmod(0o000)
+    try:
+        _fake_run(monkeypatch, stdout=json.dumps({"messages": []}))
+        with pytest.raises(VnuUnavailable) as excinfo:
+            validate_site(Path("vnu.jar"), site_dir)
+        assert "locked.html" in str(excinfo.value)
+        assert "cannot be read" in str(excinfo.value)
+    finally:
+        (site_dir / "locked.html").chmod(0o644)
+
+
+def test_truncated_vnu_output_surfaces_what_vnu_said_on_stderr(monkeypatch, tmp_path: Path):
+    site_dir = _site_with_pages(tmp_path, ["a.html"])
+    _fake_run(
+        monkeypatch,
+        stdout='{"messages":[{"type":"error"',
+        stderr="java.io.FileNotFoundException: /x/y.html (Permission denied)",
+    )
+    with pytest.raises(VnuUnavailable) as excinfo:
+        validate_site(Path("vnu.jar"), site_dir)
+    assert "FileNotFoundException" in str(excinfo.value)
+
+
+def test_directories_named_like_documents_are_not_counted(monkeypatch, tmp_path: Path):
+    site_dir = _site_with_pages(tmp_path, ["real.html"])
+    (site_dir / "notadoc.html").mkdir()
+    _fake_run(monkeypatch, stdout=json.dumps({"messages": []}))
+
+    report = validate_site(Path("vnu.jar"), site_dir)
+    assert report.documents_found == 1
+
+
+@pytest.mark.skipif(shutil.which("java") is None, reason="VNU needs a JVM")
+@pytest.mark.skipif(
+    not (Path.home() / ".cache/wpfreeze/vnu.jar").exists(), reason="no cached vnu.jar"
+)
+def test_against_the_real_vnu_jar(tmp_path: Path):
+    """End-to-end against the actual checker: a genuine markup error is
+    found, and an unreadable sibling is reported as unchecked rather than
+    folded into a clean result."""
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "good.html").write_text(
+        "<!DOCTYPE html><html lang=en><head><title>t</title></head><body><p>ok</p></body></html>"
+    )
+    (site / "bad.html").write_text(
+        "<!DOCTYPE html><html lang=en><head><title>t</title></head><body><img src=x.png></body></html>"
+    )
+    report = validate_site(Path.home() / ".cache/wpfreeze/vnu.jar", site)
+
+    assert report.documents_found == 2
+    assert report.documents_checked == 2
+    assert any("alt" in issue.message for issue in report.issues)
+    assert "1 of" not in format_validation_summary(report)

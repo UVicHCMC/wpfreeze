@@ -626,3 +626,48 @@ def test_concurrent_crawl_exception_propagates_and_stays_resumable(tmp_path: Pat
     )
 
     assert all(r.status != Status.PENDING.value for r in reloaded.all())
+
+
+def test_css_outside_base_path_is_still_parsed_for_its_own_references():
+    """On a multisite subdirectory install the whole theme lives under the
+    network-wide /wp-content/, outside base_path. Confining the CSS parse
+    gate to in_scope() fetched those stylesheets but never read them, so
+    every font and background image they reference went undiscovered.
+    CSS cannot cascade the way HTML can -- extract_from_css emits only
+    RENDER links -- so owned-host is the right bar for it."""
+    from wpfreeze.crawl import _should_parse_for_links
+    from wpfreeze.urlnorm import SiteProfile
+
+    profile = SiteProfile(
+        canonical_host="example.com",
+        site_hosts=frozenset({"example.com"}),
+        base_path="/courses/",
+    )
+    shared_css = "https://example.com/wp-content/themes/divi/style.css"
+    assert not profile.in_scope(shared_css)
+    assert _should_parse_for_links("css", shared_css, "example.com", profile)
+
+
+def test_html_outside_base_path_is_never_parsed_for_links():
+    """The cascade guard: an out-of-scope HTML page must stay a leaf, or
+    its hyperlinks pull in another site's whole graph."""
+    from wpfreeze.crawl import _should_parse_for_links
+    from wpfreeze.urlnorm import SiteProfile
+
+    profile = SiteProfile(
+        canonical_host="example.com",
+        site_hosts=frozenset({"example.com"}),
+        base_path="/courses/",
+    )
+    sibling = "https://example.com/siblinglab/index.html"
+    assert not _should_parse_for_links("html", sibling, "example.com", profile)
+    assert _should_parse_for_links("html", "https://example.com/courses/a/", "example.com", profile)
+
+
+def test_css_on_an_unowned_host_is_still_a_leaf():
+    from wpfreeze.crawl import _should_parse_for_links
+    from wpfreeze.urlnorm import SiteProfile
+
+    profile = SiteProfile(canonical_host="example.com", site_hosts=frozenset({"example.com"}))
+    assert not _should_parse_for_links("css", "https://cdn.other.net/x.css", "cdn.other.net", profile)
+    assert not _should_parse_for_links(None, "https://example.com/x.bin", "example.com", profile)

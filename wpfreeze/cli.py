@@ -464,16 +464,22 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool, write_tod
         return 2
     manifest = Manifest.load(manifest_path)
     target = site_dir or (config.output_dir / "site")
-    stats = build_site(manifest, config.output_dir, target, config.policy, config.base_url)
+    stats = build_site(
+        manifest, config.output_dir, target, config.policy, config.base_url, config.extra_hosts
+    )
     print(format_build_summary(stats))
     print(f"Site written to {target}")
-    write_build_report(stats, config.output_dir)
 
+    # Verification runs before the report is written, not after: its
+    # findings belong in build-report.json alongside the rewriting stats,
+    # or the cleanup checklist cannot see them (see write_build_report).
     broken = 0
+    verify_report = None
     if verify:
-        report = verify_site(target)
-        print(format_verify_summary(report))
-        broken = len(report.broken)
+        verify_report = verify_site(target)
+        print(format_verify_summary(verify_report))
+        broken = len(verify_report.broken)
+    write_build_report(stats, config.output_dir, verify_report)
 
     if write_todo:
         _announce_cleanup_todo(config.output_dir)

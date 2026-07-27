@@ -150,10 +150,17 @@ class ValidationReport:
     documents_checked: int
     total_messages: int
     issues: list[ValidationIssue] = field(default_factory=list)
+    documents_unreadable: list[str] = field(default_factory=list)
+
+    @property
+    def documents_found(self) -> int:
+        """HTML documents present in the site directory, whether or not VNU
+        managed to read them."""
+        return self.documents_checked + len(self.documents_unreadable)
 
     @property
     def ok(self) -> bool:
-        return not self.issues
+        return not self.issues and not self.documents_unreadable
 
 
 def _run_vnu(vnu_jar: Path, site_dir: Path) -> list[dict]:
@@ -181,9 +188,51 @@ def _run_vnu(vnu_jar: Path, site_dir: Path) -> list[dict]:
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        raise VnuUnavailable(f"could not parse vnu output as JSON: {exc}") from exc
+        # VNU dies mid-run on some inputs (a file it cannot open throws an
+        # uncaught FileNotFoundException) and leaves its JSON truncated
+        # mid-structure. The reason is only ever on stderr, so include it:
+        # "could not parse vnu output as JSON" alone sends the reader
+        # looking for a bug in the parser rather than at their own file.
+        detail = result.stderr.strip().splitlines()
+        why = f" -- vnu said: {detail[0]}" if detail else ""
+        raise VnuUnavailable(f"could not parse vnu output as JSON: {exc}{why}") from exc
 
     return data.get("messages", [])
+
+
+_HTML_SUFFIXES = (".html", ".htm", ".xhtml", ".xht")
+
+
+def _scan_documents(site_dir: Path) -> tuple[int, list[str]]:
+    """(readable documents, site-relative paths of unreadable ones).
+
+    VNU is never asked which files it checked and its JSON carries no such
+    list -- a clean document produces no messages at all, so the set cannot
+    be reconstructed from the output either. The count therefore comes from
+    the filesystem, which means it has to agree with what VNU will actually
+    manage to open.
+
+    Confirmed against VNU 26.7.22: a file it lacks permission to read kills
+    the whole run with an uncaught java.io.FileNotFoundException, and the
+    JSON on stdout is left truncated mid-structure. So an unreadable
+    document is not a document that goes unchecked -- it is a document that
+    stops every other document from being checked, and it must be caught
+    before the JVM is launched or the only symptom is an unparseable
+    report.
+
+    Also filters to regular files: rglob("*") yields directories too, and a
+    directory named `foo.html` is not a document.
+    """
+    checked = 0
+    unreadable: list[str] = []
+    for path in sorted(site_dir.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in _HTML_SUFFIXES:
+            continue
+        if os.access(path, os.R_OK):
+            checked += 1
+        else:
+            unreadable.append(path.relative_to(site_dir).as_posix())
+    return checked, unreadable
 
 
 def _page_relpath(file_url: str, site_dir: Path) -> str:
@@ -199,10 +248,22 @@ def validate_site(vnu_jar: Path, site_dir: Path) -> ValidationReport:
     resulting errors by distinct message text.
     """
     resolved = site_dir.resolve()
+
+    # Scan before launching the JVM: an unreadable document aborts the
+    # entire VNU run, so finding it first turns "could not parse vnu output
+    # as JSON" into something the reader can act on.
+    documents_checked, documents_unreadable = _scan_documents(resolved)
+    if documents_unreadable:
+        shown = ", ".join(documents_unreadable[:5])
+        more = len(documents_unreadable) - 5
+        raise VnuUnavailable(
+            f"{len(documents_unreadable)} document(s) cannot be read, which aborts the whole "
+            f"VNU run rather than skipping them: {shown}"
+            + (f" (+{more} more)" if more > 0 else "")
+            + ". Fix the permissions and re-run."
+        )
+
     messages = _run_vnu(vnu_jar, resolved)
-    documents_checked = sum(
-        1 for p in resolved.rglob("*") if p.suffix.lower() in (".html", ".htm", ".xhtml", ".xht")
-    )
 
     grouped: dict[str, list[dict]] = defaultdict(list)
     for message in messages:
@@ -225,13 +286,16 @@ def validate_site(vnu_jar: Path, site_dir: Path) -> ValidationReport:
         documents_checked=documents_checked,
         total_messages=sum(len(items) for items in grouped.values()),
         issues=issues,
+        documents_unreadable=documents_unreadable,
     )
 
 
 def write_validation_report(report: ValidationReport, output_dir: Path) -> Path:
     path = output_dir / "vnu-report.json"
     data = {
+        "documents_found": report.documents_found,
         "documents_checked": report.documents_checked,
+        "documents_unreadable": report.documents_unreadable,
         "total_messages": report.total_messages,
         "distinct_issues": len(report.issues),
         "issues": [
@@ -251,10 +315,19 @@ def write_validation_report(report: ValidationReport, output_dir: Path) -> Path:
 def format_validation_summary(report: ValidationReport) -> str:
     lines = [
         "Validation (VNU):",
-        f"  {report.documents_checked} document(s) checked, {report.total_messages} message(s), "
-        f"{len(report.issues)} distinct issue(s)",
+        f"  {report.documents_checked} of {report.documents_found} document(s) checked, "
+        f"{report.total_messages} message(s), {len(report.issues)} distinct issue(s)",
     ]
-    if report.ok:
+    if report.documents_unreadable:
+        # VNU skips these silently, so without saying so here the summary
+        # would report a verdict it never actually reached for them.
+        shown = ", ".join(report.documents_unreadable[:3])
+        more = len(report.documents_unreadable) - 3
+        lines.append(
+            f"  {len(report.documents_unreadable)} document(s) could not be read and were "
+            f"NOT checked: {shown}" + (f" (+{more} more)" if more > 0 else "")
+        )
+    if not report.issues:
         lines.append("  no errors")
         return "\n".join(lines)
 

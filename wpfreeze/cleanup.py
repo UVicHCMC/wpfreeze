@@ -121,6 +121,55 @@ def _broken_reference_section(build_report: dict | None) -> tuple[list[str], boo
     return (lines, True)
 
 
+def _verification_section(build_report: dict | None) -> tuple[list[str], bool]:
+    """Broken *local* links -- references that were rewritten to a path
+    inside the built site which does not exist on disk. Distinct from the
+    unresolved references above (those were never rewritten at all), and a
+    different remedy: these are wrong within the archive itself.
+    """
+    if build_report is None:
+        return ([], False)
+
+    verification = build_report.get("verification")
+    if verification is None:
+        return (
+            [
+                "## Local link verification",
+                "",
+                "The build ran with `--no-verify`, so nothing checked that the rewritten "
+                "links actually resolve to files on disk. Re-run `wpfreeze build` without "
+                "that flag to check.",
+                "",
+            ],
+            False,
+        )
+
+    broken = verification.get("broken", 0)
+    if not broken:
+        return ([], False)
+
+    samples = verification.get("broken_samples", [])
+    lines = [
+        "## Local link verification",
+        "",
+        f"{broken} link(s) inside the built site point at a file that isn't there. Unlike "
+        "the unresolved references above, these were rewritten to a local path -- the path "
+        "just doesn't exist, so they are broken within the archive itself and will not fix "
+        "themselves by keeping the original site up.",
+        "",
+    ]
+    for sample in samples[:_MAX_LISTED]:
+        source = sample.get("source", "?")
+        reference = sample.get("reference", "?")
+        reason = sample.get("reason", "")
+        lines.append(f"- `{reference}` in `{source}`" + (f" -- {reason}" if reason else ""))
+    remaining = broken - min(len(samples), _MAX_LISTED)
+    if remaining > 0:
+        lines.append(f"- ...and {remaining} more (see build-report.json)")
+    lines.append("")
+    return (lines, True)
+
+
 def _markup_quirks_section(vnu_report: dict | None) -> list[str]:
     if vnu_report is None:
         return [
@@ -177,8 +226,10 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
 
     integrity_lines, integrity_needs_attention = _integrity_section(diagnostics)
     broken_lines, broken_needs_attention = _broken_reference_section(build_report)
+    verify_lines, verify_needs_attention = _verification_section(build_report)
     markup_lines = _markup_quirks_section(vnu_report)
     markup_needs_attention = bool(vnu_report and vnu_report.get("issues"))
+    broken_needs_attention = broken_needs_attention or verify_needs_attention
 
     # An all-clear may only be given for checks that actually ran. A section
     # whose report is absent contributes False to `needs_attention` exactly
@@ -224,6 +275,7 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
     ]
     lines.extend(integrity_lines)
     lines.extend(broken_lines)
+    lines.extend(verify_lines)
     lines.extend(markup_lines)
     return "\n".join(lines).rstrip() + "\n"
 

@@ -85,6 +85,41 @@ class SiteProfile:
         return path.startswith(self.base_path) or path == self.base_path.rstrip("/")
 
 
+def scope_profile_from_config(base_url: str, extra_hosts: tuple[str, ...] | list[str] = ()) -> SiteProfile:
+    """A SiteProfile good enough to answer in_scope(), built from config
+    alone with no network probing.
+
+    `build` and `validate` run offline, potentially long after the original
+    site is gone, so probe_site is not available to them -- and the
+    manifest does not persist the probed profile. But in_scope() consults
+    only owns_host() and base_path, both of which config already
+    determines: use_https and trailing_slash affect normalize_url, not
+    scope, so their defaults here are irrelevant.
+
+    Deriving this from config rather than from the capture does mean that
+    editing base_url or extra_hosts between `acquire` and `build`
+    reclassifies an existing capture. That is the intended reading --
+    config is the statement of what "this site" means -- but it is the
+    reason to persist the real profile in the manifest if that ever stops
+    being true.
+    """
+    parts = urlsplit(base_url)
+    host = (parts.hostname or "").lower()
+    bare = host[4:] if host.startswith("www.") else host
+    hosts = {h for h in (host, bare, f"www.{bare}" if bare else "") if h}
+    hosts.update(h.lower() for h in extra_hosts if h)
+
+    base_path = parts.path or "/"
+    if not base_path.endswith("/"):
+        base_path += "/"
+
+    return SiteProfile(
+        canonical_host=bare,
+        site_hosts=frozenset(hosts),
+        base_path=base_path,
+    )
+
+
 def resolve_url(base: str, link: str) -> str | None:
     """Resolve a possibly-relative link against a base URL.
 

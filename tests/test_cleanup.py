@@ -229,3 +229,65 @@ def test_report_that_is_valid_json_but_not_an_object_is_treated_as_absent(tmp_pa
     content = build_cleanup_todo(tmp_path)
     assert content is not None
     assert "hasn't been run yet" in content
+
+
+def test_broken_local_links_reach_the_checklist(tmp_path: Path):
+    """verify_site's findings used to be printed and discarded, so a build
+    that exited 1 over broken local links still produced a checklist
+    saying the capture was clean."""
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "verification": {
+                "documents": 3,
+                "checked": 12,
+                "external": 1,
+                "skipped": 0,
+                "broken": 2,
+                "broken_samples": [
+                    {"source": "team.html", "reference": "./photo.jpg", "target": "photo.jpg", "reason": "missing"},
+                    {"source": "about.html", "reference": "./doc.pdf", "target": "doc.pdf", "reason": "missing"},
+                ],
+            },
+        },
+    )
+    _write(tmp_path, "vnu-report.json", {"issues": [], "total_messages": 0, "documents_checked": 3})
+    _write(
+        tmp_path,
+        "diagnostics.json",
+        {
+            "duplicate_local_paths": [],
+            "disk_hash_mismatches": [],
+            "content_type_shape_mismatches": [],
+            "homepage": {"found": True},
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+
+    assert "looks clean" not in content
+    assert "worth a look before you call it done" in content
+    assert "## Local link verification" in content
+    assert "./photo.jpg" in content and "team.html" in content
+
+
+def test_no_verify_build_says_verification_did_not_run(tmp_path: Path):
+    _write(tmp_path, "build-report.json", {"unresolved": 0, "unresolved_samples": [], "verification": None})
+    content = build_cleanup_todo(tmp_path)
+    assert "--no-verify" in content
+
+
+def test_clean_verification_adds_no_noise(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "verification": {"documents": 3, "checked": 12, "external": 1, "skipped": 0, "broken": 0, "broken_samples": []},
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "## Local link verification" not in content
