@@ -39,6 +39,7 @@ from bs4 import BeautifulSoup
 
 from wpfreeze.extract import decode_static_bundle
 from wpfreeze.manifest import FLAG_ATTACHMENT_PAGE, Manifest, ManifestRecord, Status
+from wpfreeze.normalize import NormalizeStats, apply_normalizations
 from wpfreeze.policy import Policy, PolicyStats, apply_policy
 from wpfreeze.urlnorm import PERMALINK_QUERY_KEYS, scope_profile_from_config
 
@@ -92,6 +93,7 @@ class BuildStats:
     attachment_links_retargeted: int = 0
     redirects_copied: bool = False
     policy: PolicyStats = field(default_factory=PolicyStats)
+    normalize: NormalizeStats = field(default_factory=NormalizeStats)
     unresolved_samples: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -569,6 +571,10 @@ def build_site(
             # left to match on. Strip, then rewrite what remains.
             if policy.any_enabled:
                 apply_policy(soup, policy, stats.policy)
+            # After policy (which only removes) and before rewriting, so the
+            # rewriter never sees an attribute normalization is about to
+            # delete.
+            apply_normalizations(soup, stats.normalize)
             rewriter.rewrite_soup(soup, record.url, record.output_path)
             destination.write_text(str(soup), encoding="utf-8")
         elif is_css:
@@ -798,5 +804,14 @@ def format_build_summary(stats: BuildStats) -> str:
             f"  stripped: {p.telemetry_removed} telemetry, "
             f"{p.forms_removed} form(s), {p.feeds_removed} feed link(s), "
             f"{p.wp_meta_links_removed} WP protocol-discovery link(s)"
+        )
+    n = stats.normalize
+    if n.total:
+        lines.append(
+            f"  markup repaired: {n.word_artifacts_unwrapped} Word artifact(s), "
+            f"{n.obsolete_attrs_removed} obsolete attribute(s), "
+            f"{n.control_chars_stripped} forbidden control char(s), "
+            f"{n.invalid_dimensions_removed} invalid dimension(s), "
+            f"{n.boolean_attrs_normalized} boolean attribute(s)"
         )
     return "\n".join(lines)
