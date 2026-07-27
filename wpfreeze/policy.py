@@ -184,6 +184,10 @@ class Policy:
     strip_forms: bool = True
     strip_feeds: bool = True
     strip_wp_meta_links: bool = True
+    # Lift <style> blocks repeated verbatim across pages into shared files.
+    # Not a strip -- nothing is removed, the same CSS is served from one
+    # place instead of hundreds. See dedupe.py.
+    dedupe_inline_css: bool = True
     # Site-specific trackers to add to the built-in host blocklist.
     telemetry_extra_hosts: list[str] = field(default_factory=list)
     # Escape hatch: hostnames never stripped even if otherwise matched.
@@ -206,6 +210,7 @@ class Policy:
             strip_forms=bool(raw.get("strip_forms", True)),
             strip_feeds=bool(raw.get("strip_feeds", True)),
             strip_wp_meta_links=bool(raw.get("strip_wp_meta_links", True)),
+            dedupe_inline_css=bool(raw.get("dedupe_inline_css", True)),
             telemetry_extra_hosts=list(raw.get("telemetry_extra_hosts", []) or []),
             telemetry_keep_hosts=list(raw.get("telemetry_keep_hosts", []) or []),
         )

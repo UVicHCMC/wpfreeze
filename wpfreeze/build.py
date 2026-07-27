@@ -37,6 +37,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
+from wpfreeze.dedupe import DedupeStats, InlineCssIndex, extract_shared_css
 from wpfreeze.extract import decode_static_bundle
 from wpfreeze.manifest import FLAG_ATTACHMENT_PAGE, Manifest, ManifestRecord, Status
 from wpfreeze.normalize import NormalizeStats, apply_normalizations
@@ -94,6 +95,7 @@ class BuildStats:
     redirects_copied: bool = False
     policy: PolicyStats = field(default_factory=PolicyStats)
     normalize: NormalizeStats = field(default_factory=NormalizeStats)
+    dedupe: DedupeStats = field(default_factory=DedupeStats)
     unresolved_samples: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -542,6 +544,7 @@ def build_site(
     stats = BuildStats()
     bundler = BundleReassembler(records, output_dir, site_dir, stats)
     rewriter = LinkRewriter(lookup, stats, bundler, attachment_media, base_url, extra_hosts)
+    css_index = InlineCssIndex()
     bundler.rewriter = rewriter
     logger.info("build: %d lookup keys, %d attachment redirects", len(lookup), len(attachment_media))
 
@@ -575,7 +578,16 @@ def build_site(
             # rewriter never sees an attribute normalization is about to
             # delete.
             apply_normalizations(soup, stats.normalize)
+            # Hash the *pre-rewrite* CSS: rewrite_soup relativizes url()
+            # per page depth, so identical source blocks emit differently
+            # from pages at different depths and would never match.
+            raw_styles = [
+                (tag, str(tag.string)) for tag in soup.find_all("style") if tag.string
+            ]
             rewriter.rewrite_soup(soup, record.url, record.output_path)
+            if policy.dedupe_inline_css:
+                for tag, raw_css in raw_styles:
+                    css_index.record(raw_css, str(tag), record.output_path, record.url)
             destination.write_text(str(soup), encoding="utf-8")
         elif is_css:
             stats.assets += 1
@@ -587,6 +599,13 @@ def build_site(
         else:
             stats.assets += 1
             destination.write_bytes(source.read_bytes())
+
+    if policy.dedupe_inline_css:
+        # A throwaway rewriter: these rewrites are bookkeeping for the
+        # shared file's own location and must not inflate the build's
+        # reference counts.
+        scratch = LinkRewriter(lookup, BuildStats(), bundler, attachment_media, base_url, extra_hosts)
+        extract_shared_css(css_index, site_dir, scratch.rewrite_css, stats.dedupe)
 
     # The redirect map is an acquisition product (directory->file rules plus
     # ?attachment_id=/alias 301s); it only helps if it travels with the site
@@ -805,6 +824,18 @@ def format_build_summary(stats: BuildStats) -> str:
             f"{p.forms_removed} form(s), {p.feeds_removed} feed link(s), "
             f"{p.wp_meta_links_removed} WP protocol-discovery link(s)"
         )
+    d = stats.dedupe
+    if d.redundant_bytes_seen:
+        lines.append(
+            f"  duplicated inline CSS: {d.redundant_bytes_seen / 1024:.0f} KB found; "
+            f"{d.bytes_saved / 1024:.0f} KB removed by lifting {d.blocks_extracted} block(s) "
+            f"into shared stylesheets across {d.pages_updated} page(s)"
+        )
+        if d.blocks_below_threshold or d.blocks_context_dependent:
+            lines.append(
+                f"  (left inline: {d.blocks_below_threshold} below size threshold, "
+                f"{d.blocks_context_dependent} page-dependent)"
+            )
     n = stats.normalize
     if n.total:
         lines.append(
