@@ -211,7 +211,7 @@ def build_attachment_media_map(
         source = output_dir / record.local_path
         if not source.exists():
             continue
-        soup = BeautifulSoup(source.read_text(encoding="utf-8", errors="replace"), "lxml")
+        soup = BeautifulSoup(source.read_text(encoding="utf-8", errors="replace"), "html5lib")
         for anchor in soup.select('a[href*="/wp-content/uploads/"]'):
             if not anchor.find("img"):
                 continue
@@ -469,7 +469,7 @@ class LinkRewriter:
         return _CSS_URL_RE.sub(substitute, text)
 
     def rewrite_html(self, html: str, page_url: str, page_output: str) -> str:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html5lib")
         self.rewrite_soup(soup, page_url, page_output)
         return str(soup)
 
@@ -561,7 +561,7 @@ def build_site(
         if is_html:
             stats.pages += 1
             text = source.read_text(encoding="utf-8", errors="replace")
-            soup = BeautifulSoup(text, "lxml")
+            soup = BeautifulSoup(text, "html5lib")
             # Policy runs first, on the original markup: telemetry references
             # still carry their true host here (e.g. googletagmanager.com),
             # whereas rewriting localizes them into host-less paths -- a
@@ -632,7 +632,7 @@ def _iter_document_references(text: str, is_css: bool):
             yield match.group(2)
         return
 
-    soup = BeautifulSoup(text, "lxml")
+    soup = BeautifulSoup(text, "html5lib")
     for tag_name, attrs in _URL_ATTRS.items():
         for tag in soup.find_all(tag_name):
             for attr in attrs:
