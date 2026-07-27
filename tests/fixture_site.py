@@ -261,14 +261,22 @@ class MultisiteFixture:
         # links is how one embedded page turns into another site's entire
         # graph. Distinct from /rocketry/, which is hyperlink-only and so
         # never fetched at all.
+        # The <img> is the load-bearing part. A hyperlink out of an
+        # out-of-scope page is rejected at admission anyway, so it cannot
+        # show whether the page was parsed. A RENDER reference can: render
+        # links are deliberately unconfined, so if this page is ever parsed
+        # its image is fetched -- which is the cascade the leaf rule exists
+        # to stop.
         widget_html = f"""<!doctype html>
         <html><body><p>widget</p>
+        <img src="/otherlab/widget-asset.png">
         <a href="/otherlab/widget-deep{slash}">Deeper</a></body></html>"""
 
         routes = {
             f"/courses{slash}": (200, "text/html", home_html.encode()),
             f"/otherlab/widget{slash}": (200, "text/html", widget_html.encode()),
             f"/otherlab/widget-deep{slash}": (200, "text/html", b"<html><body>deep</body></html>"),
+            "/otherlab/widget-asset.png": (200, "image/png", b"WIDGET-ASSET-PNG"),
             f"/courses/about{slash}": (200, "text/html", about_html.encode()),
             f"/rocketry{slash}": (200, "text/html", sibling_html.encode()),
             "/rocketry/members/": (200, "text/html", b"<html><body>members</body></html>"),

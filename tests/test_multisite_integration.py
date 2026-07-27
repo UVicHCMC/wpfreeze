@@ -211,4 +211,11 @@ def test_out_of_scope_html_reached_by_iframe_is_fetched_but_stays_a_leaf(tmp_pat
         fetched = _fetched_paths(manifest)
 
         assert "/otherlab/widget/" in fetched, sorted(fetched)
+        # Its hyperlink is rejected at admission regardless of the parse
+        # gate, so it proves nothing on its own...
         assert "/otherlab/widget-deep/" not in _paths(manifest), sorted(_paths(manifest))
+        # ...but its <img> would be fetched if the page were ever parsed,
+        # because render links are deliberately unconfined. That is the
+        # cascade the leaf rule exists to stop, and the only assertion here
+        # that actually pins it.
+        assert "/otherlab/widget-asset.png" not in _paths(manifest), sorted(_paths(manifest))
