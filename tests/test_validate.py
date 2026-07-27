@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -367,3 +368,72 @@ def test_against_the_real_vnu_jar(tmp_path: Path):
     assert report.documents_checked == 2
     assert any("alt" in issue.message for issue in report.issues)
     assert "1 of" not in format_validation_summary(report)
+
+
+def test_stylesheets_are_checked_as_well_as_documents(monkeypatch, tmp_path: Path):
+    """build.py lifts CSS repeated across pages out of the markup and into
+    shared .css files. An HTML-only pass would stop reporting defects it
+    used to catch, purely because the bytes moved -- the report would look
+    cleaner without the site being any better."""
+    site_dir = _site_with_pages(tmp_path, ["a.html"])
+    (site_dir / "shared.css").write_text("body{background-repeat-y:no-repeat}", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        payload = {"messages": []}
+        if "--skip-non-css" in cmd:
+            payload = {
+                "messages": [
+                    {
+                        "type": "error",
+                        "url": f"file:{site_dir / 'shared.css'}",
+                        "message": 'CSS: "background-repeat-y": Property doesn\'t exist.',
+                        "extract": "background-repeat-y",
+                    }
+                ]
+            }
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    report = validate_site(Path("vnu.jar"), site_dir)
+
+    assert len(calls) == 2, "expected an HTML pass and a CSS pass"
+    assert any("--skip-non-html" in c for c in calls)
+    assert any("--skip-non-css" in c for c in calls)
+    assert report.stylesheets_checked == 1
+    assert any("background-repeat-y" in i.message for i in report.issues)
+    assert "shared.css" in report.issues[0].pages
+
+
+def test_no_css_pass_is_run_when_the_site_has_no_stylesheets(monkeypatch, tmp_path: Path):
+    """VNU emits nothing at all when its walk matches no files, which
+    _run_vnu treats as an invocation failure -- so don't invoke it."""
+    site_dir = _site_with_pages(tmp_path, ["a.html"])
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"messages": []}), "")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    report = validate_site(Path("vnu.jar"), site_dir)
+    assert len(calls) == 1
+    assert report.stylesheets_checked == 0
+
+
+def test_an_unreadable_stylesheet_is_caught_too(tmp_path: Path, monkeypatch):
+    site_dir = _site_with_pages(tmp_path, ["a.html"])
+    locked = site_dir / "locked.css"
+    locked.write_text("a{}", encoding="utf-8")
+    locked.chmod(0o000)
+    try:
+        _fake_run(monkeypatch, stdout=json.dumps({"messages": []}))
+        with pytest.raises(VnuUnavailable) as excinfo:
+            validate_site(Path("vnu.jar"), site_dir)
+        assert "locked.css" in str(excinfo.value)
+    finally:
+        locked.chmod(0o644)

@@ -34,7 +34,14 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_VNU_ARGS = ("--format", "json", "--skip-non-html", "--errors-only", "--stdout")
+# Two passes, because VNU's directory walk is filtered by extension and the
+# filters are mutually exclusive. Checking stylesheets is not optional
+# extra credit: build.py lifts CSS repeated across pages out of the markup
+# and into shared .css files, so an HTML-only pass would stop seeing
+# defects it used to report simply because the bytes moved.
+_VNU_BASE_ARGS = ("--format", "json", "--errors-only", "--stdout")
+_VNU_HTML_ARGS = (*_VNU_BASE_ARGS, "--skip-non-html")
+_VNU_CSS_ARGS = (*_VNU_BASE_ARGS, "--skip-non-css")
 _MAX_ISSUES_SHOWN = 10
 
 # GitHub's release-alias URL for the jar -- always resolves (redirect) to
@@ -151,6 +158,7 @@ class ValidationReport:
     total_messages: int
     issues: list[ValidationIssue] = field(default_factory=list)
     documents_unreadable: list[str] = field(default_factory=list)
+    stylesheets_checked: int = 0
 
     @property
     def documents_found(self) -> int:
@@ -163,14 +171,14 @@ class ValidationReport:
         return not self.issues and not self.documents_unreadable
 
 
-def _run_vnu(vnu_jar: Path, site_dir: Path) -> list[dict]:
+def _run_vnu(vnu_jar: Path, site_dir: Path, args: tuple[str, ...] = _VNU_HTML_ARGS) -> list[dict]:
     """One JVM invocation over the whole site directory; VNU walks it
     itself (`--skip-non-html` restricts the walk to .html/.htm/.xhtml/.xht).
     Returns the raw `messages` list from its JSON report.
     """
     try:
         result = subprocess.run(
-            ["java", "-jar", str(vnu_jar), *_VNU_ARGS, str(site_dir)],
+            ["java", "-jar", str(vnu_jar), *args, str(site_dir)],
             capture_output=True,
             text=True,
             check=False,
@@ -201,9 +209,10 @@ def _run_vnu(vnu_jar: Path, site_dir: Path) -> list[dict]:
 
 
 _HTML_SUFFIXES = (".html", ".htm", ".xhtml", ".xht")
+_CSS_SUFFIXES = (".css",)
 
 
-def _scan_documents(site_dir: Path) -> tuple[int, list[str]]:
+def _scan_documents(site_dir: Path, suffixes: tuple[str, ...] = _HTML_SUFFIXES) -> tuple[int, list[str]]:
     """(readable documents, site-relative paths of unreadable ones).
 
     VNU is never asked which files it checked and its JSON carries no such
@@ -226,7 +235,7 @@ def _scan_documents(site_dir: Path) -> tuple[int, list[str]]:
     checked = 0
     unreadable: list[str] = []
     for path in sorted(site_dir.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in _HTML_SUFFIXES:
+        if not path.is_file() or path.suffix.lower() not in suffixes:
             continue
         if os.access(path, os.R_OK):
             checked += 1
@@ -252,7 +261,9 @@ def validate_site(vnu_jar: Path, site_dir: Path) -> ValidationReport:
     # Scan before launching the JVM: an unreadable document aborts the
     # entire VNU run, so finding it first turns "could not parse vnu output
     # as JSON" into something the reader can act on.
-    documents_checked, documents_unreadable = _scan_documents(resolved)
+    documents_checked, documents_unreadable = _scan_documents(resolved, _HTML_SUFFIXES)
+    stylesheets_checked, css_unreadable = _scan_documents(resolved, _CSS_SUFFIXES)
+    documents_unreadable = documents_unreadable + css_unreadable
     if documents_unreadable:
         shown = ", ".join(documents_unreadable[:5])
         more = len(documents_unreadable) - 5
@@ -263,7 +274,9 @@ def validate_site(vnu_jar: Path, site_dir: Path) -> ValidationReport:
             + ". Fix the permissions and re-run."
         )
 
-    messages = _run_vnu(vnu_jar, resolved)
+    messages = _run_vnu(vnu_jar, resolved, _VNU_HTML_ARGS)
+    if stylesheets_checked:
+        messages += _run_vnu(vnu_jar, resolved, _VNU_CSS_ARGS)
 
     grouped: dict[str, list[dict]] = defaultdict(list)
     for message in messages:
@@ -287,6 +300,7 @@ def validate_site(vnu_jar: Path, site_dir: Path) -> ValidationReport:
         total_messages=sum(len(items) for items in grouped.values()),
         issues=issues,
         documents_unreadable=documents_unreadable,
+        stylesheets_checked=stylesheets_checked,
     )
 
 
@@ -296,6 +310,7 @@ def write_validation_report(report: ValidationReport, output_dir: Path) -> Path:
         "documents_found": report.documents_found,
         "documents_checked": report.documents_checked,
         "documents_unreadable": report.documents_unreadable,
+        "stylesheets_checked": report.stylesheets_checked,
         "total_messages": report.total_messages,
         "distinct_issues": len(report.issues),
         "issues": [
@@ -315,7 +330,8 @@ def write_validation_report(report: ValidationReport, output_dir: Path) -> Path:
 def format_validation_summary(report: ValidationReport) -> str:
     lines = [
         "Validation (VNU):",
-        f"  {report.documents_checked} of {report.documents_found} document(s) checked, "
+        f"  {report.documents_checked} of {report.documents_found} document(s) and "
+        f"{report.stylesheets_checked} stylesheet(s) checked, "
         f"{report.total_messages} message(s), {len(report.issues)} distinct issue(s)",
     ]
     if report.documents_unreadable:
