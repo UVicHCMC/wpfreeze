@@ -153,3 +153,56 @@ def test_idempotent_on_already_normalized_urls():
     property the crawl loop depends on for alias detection)."""
     already = "https://example.com/foo/bar/"
     assert normalize_url(already, SLASH_PROFILE) == already
+
+
+# --- in_scope ---------------------------------------------------------------
+
+MULTISITE_SLASH = SiteProfile(
+    canonical_host="example.com",
+    site_hosts=frozenset({"example.com", "www.example.com"}),
+    use_https=True,
+    trailing_slash=True,
+    base_path="/courses/",
+)
+
+# The combination that used to lose the subsite's front page. It is not
+# exotic: _probe_trailing_slash only ever probes (and so only ever returns
+# False) on a subdirectory install, which is the only case where base_path
+# is not "/" -- the two conditions always arrive together.
+MULTISITE_NO_SLASH = SiteProfile(
+    canonical_host="example.com",
+    site_hosts=frozenset({"example.com", "www.example.com"}),
+    use_https=True,
+    trailing_slash=False,
+    base_path="/courses/",
+)
+
+
+@pytest.mark.parametrize("profile", [MULTISITE_SLASH, MULTISITE_NO_SLASH])
+def test_in_scope_accepts_the_subsite_root_with_or_without_its_trailing_slash(profile):
+    assert profile.in_scope("https://example.com/courses/")
+    assert profile.in_scope("https://example.com/courses")
+
+
+@pytest.mark.parametrize("profile", [MULTISITE_SLASH, MULTISITE_NO_SLASH])
+def test_in_scope_still_confines_to_the_subsite(profile):
+    assert profile.in_scope("https://example.com/courses/about/")
+    assert not profile.in_scope("https://example.com/siblinglab/")
+    assert not profile.in_scope("https://example.com/coursesX/")  # not a path-segment prefix
+    assert not profile.in_scope("https://elsewhere.example.org/courses/")
+
+
+def test_in_scope_round_trips_a_normalized_subsite_root_under_either_slash_preference():
+    """normalize_url strips the trailing slash when the site prefers none,
+    which is precisely what used to fall out of scope."""
+    for profile in (MULTISITE_SLASH, MULTISITE_NO_SLASH):
+        normalized = normalize_url("https://example.com/courses/", profile)
+        assert profile.in_scope(normalized), normalized
+
+
+def test_in_scope_degrades_to_owns_host_at_a_domain_root():
+    assert SLASH_PROFILE.base_path == "/"
+    assert SLASH_PROFILE.in_scope("https://example.com/")
+    assert SLASH_PROFILE.in_scope("https://example.com/anything/deep/")
+    assert SLASH_PROFILE.in_scope("https://example.com")  # bare origin, empty path
+    assert not SLASH_PROFILE.in_scope("https://elsewhere.example.org/")

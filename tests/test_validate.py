@@ -235,3 +235,69 @@ def test_write_validation_report_round_trips(tmp_path: Path):
     assert data["distinct_issues"] == 1
     assert data["issues"][0]["message"] == "boom"
     assert data["issues"][0]["pages"] == ["a.html", "b.html"]
+
+
+def test_ensure_vnu_jar_falls_back_to_cache_when_the_download_drops_mid_stream(
+    tmp_path: Path, caplog
+):
+    """The 32MB body stream is likelier to be interrupted than the
+    handshake, but only the handshake used to be guarded -- so a dropped
+    connection escaped as a raw ConnectionError past run_validate, which
+    catches only VnuUnavailable."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "vnu.jar").write_bytes(b"already-cached")
+
+    class _DropsMidStream:
+        status_code = 200
+        headers: dict = {}
+
+        def iter_content(self, chunk_size: int):
+            yield b"partial"
+            raise requests.ConnectionError("connection reset")
+
+        def close(self) -> None:
+            pass
+
+    class _Session:
+        def get(self, *args, **kwargs):
+            return _DropsMidStream()
+
+    jar_path = ensure_vnu_jar(session=_Session(), cache_dir=cache_dir)
+
+    assert jar_path == cache_dir / "vnu.jar"
+    assert jar_path.read_bytes() == b"already-cached"  # untouched
+    assert not (cache_dir / "vnu.jar.tmp").exists()  # partial file cleaned up
+
+
+def test_ensure_vnu_jar_raises_vnu_unavailable_if_the_stream_drops_with_no_cache(tmp_path: Path):
+    class _DropsMidStream:
+        status_code = 200
+        headers: dict = {}
+
+        def iter_content(self, chunk_size: int):
+            raise requests.ConnectionError("connection reset")
+
+        def close(self) -> None:
+            pass
+
+    class _Session:
+        def get(self, *args, **kwargs):
+            return _DropsMidStream()
+
+    with pytest.raises(VnuUnavailable):
+        ensure_vnu_jar(session=_Session(), cache_dir=tmp_path / "cache")
+
+
+def test_format_validation_summary_handles_an_issue_with_no_pages(monkeypatch, tmp_path: Path):
+    """VNU messages need not carry a url; `pages` is built by skipping
+    those, so it can legitimately be empty and must not be indexed."""
+    site_dir = _site_with_pages(tmp_path, ["a.html"])
+    messages = {"messages": [{"type": "error", "message": "no url on this one", "extract": "x"}]}
+    _fake_run(monkeypatch, stdout=json.dumps(messages))
+
+    report = validate_site(Path("vnu.jar"), site_dir)
+
+    summary = format_validation_summary(report)  # used to raise IndexError
+    assert "no url on this one" in summary
+    assert "0 page(s)" in summary

@@ -69,14 +69,20 @@ class SiteProfile:
         not containment, because every sibling site on the network shares the
         hostname. With base_path == "/" this is exactly owns_host.
 
-        Pass a *normalized* URL. The prefix test is textual, so an
-        un-normalized "https://host/courses" (no trailing slash -- how a
-        network sitemap lists a subsite's own homepage) fails against
-        "/courses/" and would drop the site's own front page.
+        The base itself counts as in scope with or without its trailing
+        slash. base_path is always "/"-terminated (see probe_site), but a
+        site that prefers no trailing slash normalizes its own root to
+        "/courses" -- and a bare textual prefix test against
+        "/courses/" would drop the subsite's front page, the single most
+        important URL in the capture. That combination is not exotic:
+        trailing_slash is only ever probed (and so only ever False) on a
+        subdirectory install, which is the only case where base_path isn't
+        "/", so the two conditions always arrive together.
         """
         if not self.owns_host(urlsplit(url).hostname or ""):
             return False
-        return urlsplit(url).path.startswith(self.base_path)
+        path = urlsplit(url).path
+        return path.startswith(self.base_path) or path == self.base_path.rstrip("/")
 
 
 def resolve_url(base: str, link: str) -> str | None:

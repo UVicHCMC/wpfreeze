@@ -114,6 +114,16 @@ def ensure_vnu_jar(
         with tmp_path.open("wb") as fh:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
                 fh.write(chunk)
+    except requests.RequestException as exc:
+        # Same fallback as the request above, for the same reason -- and this
+        # is the likelier of the two to fire, since it spans a 32MB transfer
+        # rather than one handshake. The cached jar is untouched until the
+        # replace() below, so a stale checker is still available.
+        tmp_path.unlink(missing_ok=True)
+        if jar_path.exists():
+            logger.warning("download of a newer vnu.jar failed (%s); using cached copy at %s", exc, jar_path)
+            return jar_path
+        raise VnuUnavailable(f"could not download vnu.jar: {exc}") from exc
     finally:
         response.close()
     tmp_path.replace(jar_path)
@@ -251,7 +261,7 @@ def format_validation_summary(report: ValidationReport) -> str:
     for issue in report.issues[:_MAX_ISSUES_SHOWN]:
         lines.append(
             f"  {issue.count:5d}x  {issue.message[:100]}  "
-            f"({len(issue.pages)} page(s), e.g. {issue.pages[0]})"
+            f"({len(issue.pages)} page(s){f', e.g. {issue.pages[0]}' if issue.pages else ''})"
         )
     if len(report.issues) > _MAX_ISSUES_SHOWN:
         lines.append(f"  ... and {len(report.issues) - _MAX_ISSUES_SHOWN} more distinct issue(s); see vnu-report.json")

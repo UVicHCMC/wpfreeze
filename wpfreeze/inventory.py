@@ -142,8 +142,16 @@ def register_shortlink_aliases(
         normalized_link = normalize_url(link, profile)
         if not profile.in_scope(normalized_link):
             continue
+        # Annotate only; never create. _seed has already run over these same
+        # items and dropped anything out of scope or excluded, so a URL with
+        # no record here is one it deliberately rejected -- and get_or_create
+        # would resurrect it (with empty provenance, invisible to the
+        # inventory-source counts) one line after it was filtered out.
+        record = manifest.get(normalized_link)
+        if record is None:
+            continue
         shortlink = f"{base_url.rstrip('/')}/?p={item_id}"
-        manifest.get_or_create(normalized_link).add_alias(normalize_url(shortlink, profile))
+        record.add_alias(normalize_url(shortlink, profile))
 
 
 # ---------------------------------------------------------------------------

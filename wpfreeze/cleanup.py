@@ -25,12 +25,18 @@ _MAX_LISTED = 15
 
 
 def _load_json(path: Path) -> dict | None:
+    """A report, or None if it is absent, unreadable, malformed, or simply
+    not a JSON object. Every caller treats None as "this step hasn't run",
+    which is the useful reading for all four cases -- but the annotation
+    has to hold, or the `is None` checks pass a list straight through to a
+    `.get()` call."""
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    return data if isinstance(data, dict) else None
 
 
 def _integrity_section(diagnostics: dict | None) -> tuple[list[str], bool]:
@@ -51,7 +57,8 @@ def _integrity_section(diagnostics: dict | None) -> tuple[list[str], bool]:
     dup = diagnostics.get("duplicate_local_paths", [])
     mismatches = diagnostics.get("disk_hash_mismatches", [])
     shape = diagnostics.get("content_type_shape_mismatches", [])
-    homepage_found = diagnostics.get("homepage", {}).get("found", True)
+    # `or {}` not a default arg: the key can be present and null.
+    homepage_found = (diagnostics.get("homepage") or {}).get("found", True)
 
     problems = []
     if dup:
@@ -148,7 +155,9 @@ def _markup_quirks_section(vnu_report: dict | None) -> list[str]:
     for issue in issues[:_MAX_LISTED]:
         pages = issue.get("pages", [])
         example = pages[0] if pages else "?"
-        lines.append(f"- **{issue['count']}x** {issue['message']} ({len(pages)} page(s), e.g. `{example}`)")
+        count = issue.get("count", 0)
+        message = issue.get("message", "(no message recorded)")
+        lines.append(f"- **{count}x** {message} ({len(pages)} page(s), e.g. `{example}`)")
     if len(issues) > _MAX_LISTED:
         lines.append(f"- ...and {len(issues) - _MAX_LISTED} more distinct issue(s) (see vnu-report.json)")
     lines.append("")
@@ -171,12 +180,33 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
     markup_lines = _markup_quirks_section(vnu_report)
     markup_needs_attention = bool(vnu_report and vnu_report.get("issues"))
 
+    # An all-clear may only be given for checks that actually ran. A section
+    # whose report is absent contributes False to `needs_attention` exactly
+    # like a section that ran and found nothing -- so without this the
+    # headline cheerfully certifies work never performed, directly
+    # contradicting the "hasn't been run yet" prose in its own body.
+    unrun = [
+        name
+        for name, report in (
+            ("build", build_report),
+            ("validate", vnu_report),
+            ("diagnose", diagnostics),
+        )
+        if report is None
+    ]
+
     if integrity_needs_attention or broken_needs_attention:
         headline = "This capture has a handful of things worth a look before you call it done."
     elif markup_needs_attention:
         headline = (
             "This capture looks structurally sound -- what's left is polish in the "
             "original site's own markup, not anything wpfreeze got wrong."
+        )
+    elif unrun:
+        headline = (
+            f"Nothing to flag from the checks that have run -- but {' and '.join(unrun)} "
+            f"{'has' if len(unrun) == 1 else 'have'} not, so this is not yet a clean bill "
+            "of health. See the sections below."
         )
     else:
         headline = "This capture looks clean: nothing unresolved, no integrity anomalies, no markup issues found."

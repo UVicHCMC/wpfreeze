@@ -548,3 +548,99 @@ def test_seeding_applies_exclusions_so_no_record_is_ever_created(monkeypatch):
     urls = {r.url for r in manifest.all()}
     assert "https://example.com/siblinglab/" in urls
     assert not any("otherlab" in u for u in urls)
+
+
+def _rest_profile(base_url, trailing_slash=True):
+    from urllib.parse import urlsplit
+
+    from wpfreeze.urlnorm import SiteProfile
+
+    host = urlsplit(base_url).hostname
+    path = urlsplit(base_url).path or "/"
+    if not path.endswith("/"):
+        path += "/"
+    return SiteProfile(
+        canonical_host=host,
+        site_hosts=frozenset({host, "www." + host}),
+        use_https=True,
+        trailing_slash=trailing_slash,
+        base_path=path,
+    )
+
+
+def test_seeding_keeps_the_subsite_homepage_when_the_site_prefers_no_trailing_slash():
+    """A network sitemap lists the subsite's own homepage without a
+    trailing slash. Under trailing_slash=False, normalize_url strips the
+    slash the base_path prefix test expects -- which used to drop the
+    single most important URL in the capture."""
+    from wpfreeze import inventory
+
+    profile = _rest_profile("https://example.com/courses/", trailing_slash=False)
+    manifest = Manifest()
+    kept, rejected = inventory._seed(
+        manifest,
+        [
+            "https://example.com/courses",
+            "https://example.com/courses/about/",
+            "https://example.com/siblinglab/",
+        ],
+        "sitemap",
+        profile,
+        [],
+    )
+    urls = {r.url for r in manifest.all()}
+    assert any(u.rstrip("/").endswith("/courses") for u in urls), urls
+    assert not any("siblinglab" in u for u in urls)
+    assert (kept, rejected) == (2, 1)
+
+
+def test_shortlink_aliases_never_create_a_record_seed_rejected():
+    """register_shortlink_aliases runs over the same REST items _seed just
+    filtered. Using get_or_create there resurrected anything _seed had
+    dropped as excluded -- with empty provenance, so it was invisible to
+    the inventory-source counts while still inflating the manifest."""
+    import re
+
+    from wpfreeze import inventory
+
+    profile = _rest_profile("https://example.com/")
+    items = [
+        {"id": 11, "link": "https://example.com/public-post/"},
+        {"id": 12, "link": "https://example.com/private/secret-page/"},
+    ]
+    exclusions = [re.compile(r"/private/")]
+
+    manifest = Manifest()
+    inventory._seed(
+        manifest, inventory.extract_links_from_rest_items(items), "rest_api", profile, exclusions
+    )
+    inventory.register_shortlink_aliases(manifest, items, "https://example.com/", profile)
+
+    urls = {r.url for r in manifest.all()}
+    assert urls == {"https://example.com/public-post/"}
+    assert not any("/private/" in u for u in urls)
+    # the kept record still gets its shortlink alias
+    kept = manifest.get("https://example.com/public-post/")
+    assert "https://example.com/?p=11" in kept.aliases
+
+
+def test_shortlink_aliases_are_confined_to_the_site_being_archived():
+    """The in_scope guard here had no test at all: deleting it left the
+    whole suite passing."""
+    from wpfreeze import inventory
+
+    profile = _rest_profile("https://example.com/courses/")
+    items = [
+        {"id": 21, "link": "https://example.com/courses/post/"},
+        {"id": 22, "link": "https://example.com/siblinglab/post/"},
+    ]
+    manifest = Manifest()
+    # Pre-seed both, so only the scope guard can distinguish them.
+    for item in items:
+        manifest.get_or_create(item["link"], discovered_via="test")
+    inventory.register_shortlink_aliases(manifest, items, "https://example.com/courses/", profile)
+
+    assert manifest.get("https://example.com/courses/post/").aliases == [
+        "https://example.com/courses/?p=21"
+    ]
+    assert manifest.get("https://example.com/siblinglab/post/").aliases == []
