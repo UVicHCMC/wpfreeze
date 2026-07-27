@@ -711,18 +711,23 @@ def test_build_scope_knows_about_configured_extra_hosts():
     assert r._out_of_scope("https://cdn.unrelated.net/assets/a.js", page)
 
 
-def test_extra_hosts_are_still_path_confined_on_a_subdirectory_install():
-    """KNOWN LIMITATION, pinned so it changes deliberately rather than by
-    accident. base_path applies uniformly to every host in site_hosts, but
-    a CDN serves this site's assets from its own root and has no sibling-
-    subsite problem -- the path confinement exists only because siblings
-    share the *primary* hostname. Separating primary hosts from extra
-    hosts in SiteProfile would fix it, and would change crawl-time
-    admission too, so it is not a local change to LinkRewriter."""
+def test_extra_hosts_are_not_path_confined_on_a_subdirectory_install():
+    """base_path confines only the host carrying sibling subsites. A
+    configured CDN serves this site's uploads from its own root, so a
+    prefix drawn from base_url means nothing there -- and ordinary
+    single-site runs already treat extra hosts this way (base_path "/"
+    makes the prefix test vacuous). Without this the same config line
+    meant different things depending on install shape."""
     from wpfreeze.build import BuildStats, LinkRewriter
 
     r = LinkRewriter({}, BuildStats(), None, None, "https://example.com/courses/", ["cdn.example.net"])
-    assert r._out_of_scope("https://cdn.example.net/assets/a.js", "https://example.com/courses/a/")
+    page = "https://example.com/courses/a/"
+
+    assert not r._out_of_scope("https://cdn.example.net/assets/a.js", page)
+    assert not r._out_of_scope("https://cdn.example.net/wp-content/uploads/x.jpg", page)
+    # ...while the primary host stays confined to the subsite.
+    assert r._out_of_scope("https://example.com/siblinglab/", page)
+    assert r._out_of_scope("https://cdn.unrelated.net/a.js", page)
 
 
 def test_write_build_report_persists_verification_findings(tmp_path: Path):

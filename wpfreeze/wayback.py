@@ -186,8 +186,13 @@ def _recover_one(
     logger.info("recovered %s from Wayback snapshot %s", record.url, chosen.timestamp)
 
     kind = content_kind(record.content_type, record.url)
-    recovered_host = (urlsplit(record.url).hostname or "").lower()
-    if _should_parse_for_links(kind, record.url, recovered_host, profile):
+    # in_scope's contract is a *normalized* URL, and record.url is not
+    # guaranteed to be one -- the homepage is seeded straight from
+    # config.base_url. Normalizing here keeps this agreeing with
+    # crawl.py::_process_one, which normalizes before the same test.
+    scope_url = normalize_url(record.url, profile)
+    recovered_host = (urlsplit(scope_url).hostname or "").lower()
+    if _should_parse_for_links(kind, scope_url, recovered_host, profile):
         # See crawl.py::_should_parse_for_links -- HTML is confined to the
         # site being archived (or a sibling page recovered from Wayback
         # becomes a crawl root of its own and cascades into that other

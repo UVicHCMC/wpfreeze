@@ -156,6 +156,13 @@ _FEED_LINK_TYPES: frozenset[str] = frozenset(
 # --- WordPress protocol-discovery link rels/types --------------------------
 # rel values matched directly (each is its own dedicated protocol marker,
 # not shared with anything legitimate a build should keep).
+#
+# Note on "shortlink": apply_policy runs immediately before the rewriter
+# (build.py), so this tag is gone before any reference in it is resolved.
+# inventory.register_shortlink_aliases still earns its place -- it covers
+# raw ?p=<id> links in body content, which policy does not touch -- but
+# neither is redundant just because the other exists. Don't remove one on
+# the strength of the other.
 _WP_META_LINK_RELS: frozenset[str] = frozenset(
     {"pingback", "shortlink", "edituri", "https://api.w.org/"}
 )

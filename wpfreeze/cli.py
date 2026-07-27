@@ -215,6 +215,7 @@ def probe_site(
         use_https=use_https,
         trailing_slash=trailing_slash,
         base_path=base_path,
+        extra_hosts=frozenset(h.lower() for h in extra_hosts if h),
     )
 
 

@@ -56,6 +56,7 @@ class SiteProfile:
     use_https: bool = True
     trailing_slash: bool = True
     base_path: str = "/"
+    extra_hosts: frozenset[str] = field(default_factory=frozenset)
 
     def owns_host(self, host: str) -> bool:
         return host in self.site_hosts or host == self.canonical_host
@@ -79,8 +80,19 @@ class SiteProfile:
         subdirectory install, which is the only case where base_path isn't
         "/", so the two conditions always arrive together.
         """
-        if not self.owns_host(urlsplit(url).hostname or ""):
+        host = urlsplit(url).hostname or ""
+        if not self.owns_host(host):
             return False
+        if host in self.extra_hosts:
+            # base_path confines only the host that carries sibling subsites.
+            # A configured extra host is a CDN serving this site's uploads
+            # from its own root -- it has no sibling-subsite problem, so a
+            # path prefix drawn from base_url means nothing there. Ordinary
+            # single-site runs already treat extra hosts this way (base_path
+            # is "/", so the prefix test is vacuous); without this, the same
+            # config line would quietly mean something different depending on
+            # whether the target happened to be a subdirectory install.
+            return True
         path = urlsplit(url).path
         return path.startswith(self.base_path) or path == self.base_path.rstrip("/")
 
@@ -117,6 +129,7 @@ def scope_profile_from_config(base_url: str, extra_hosts: tuple[str, ...] | list
         canonical_host=bare,
         site_hosts=frozenset(hosts),
         base_path=base_path,
+        extra_hosts=frozenset(h.lower() for h in extra_hosts if h),
     )
 
 

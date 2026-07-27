@@ -550,6 +550,18 @@ def test_seeding_applies_exclusions_so_no_record_is_ever_created(monkeypatch):
     assert not any("otherlab" in u for u in urls)
 
 
+class _FakeOutcome:
+    """Minimal stand-in for fetch_with_retries' return value."""
+
+    def __init__(self, body: bytes, url: str):
+        from wpfreeze.fetch import SUCCESS
+
+        self.category = SUCCESS
+        self.result = type(
+            "R", (), {"content": body, "headers": {}, "final_url": url, "status_code": 200}
+        )()
+
+
 def _rest_profile(base_url, trailing_slash=True):
     from urllib.parse import urlsplit
 
@@ -644,3 +656,38 @@ def test_shortlink_aliases_are_confined_to_the_site_being_archived():
         "https://example.com/courses/?p=21"
     ]
     assert manifest.get("https://example.com/siblinglab/post/").aliases == []
+
+
+def test_rest_discovery_honours_exclusions_end_to_end(monkeypatch):
+    """Exclusions were only ever tested on the sitemap path, yet the REST
+    path is the one that also runs register_shortlink_aliases."""
+    import json as _json
+    import re
+
+    from wpfreeze import inventory
+
+    items = [
+        {"id": 1, "link": "https://example.com/public/"},
+        {"id": 2, "link": "https://example.com/private/hidden/"},
+    ]
+
+    def _fake_fetch(url, session, rate_limiter, fetch_config):
+        body = _json.dumps(items).encode() if "/posts" in url else b"[]"
+        return _FakeOutcome(body, url)
+
+    monkeypatch.setattr(inventory, "fetch_with_retries", _fake_fetch)
+
+    manifest = Manifest()
+    inventory.discover_rest_api(
+        manifest,
+        "https://example.com/",
+        _rest_profile("https://example.com/"),
+        [re.compile(r"/private/")],
+        None,
+        None,
+        None,
+    )
+
+    urls = {r.url for r in manifest.all()}
+    assert "https://example.com/public/" in urls
+    assert not any("/private/" in u for u in urls), urls

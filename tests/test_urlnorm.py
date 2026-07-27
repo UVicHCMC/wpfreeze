@@ -206,3 +206,28 @@ def test_in_scope_degrades_to_owns_host_at_a_domain_root():
     assert SLASH_PROFILE.in_scope("https://example.com/anything/deep/")
     assert SLASH_PROFILE.in_scope("https://example.com")  # bare origin, empty path
     assert not SLASH_PROFILE.in_scope("https://elsewhere.example.org/")
+
+
+MULTISITE_WITH_CDN = SiteProfile(
+    canonical_host="example.com",
+    site_hosts=frozenset({"example.com", "www.example.com", "cdn.example.net"}),
+    base_path="/courses/",
+    extra_hosts=frozenset({"cdn.example.net"}),
+)
+
+
+def test_configured_extra_hosts_are_not_confined_by_base_path():
+    """base_path exists only because sibling subsites share the *primary*
+    hostname. A CDN serves this site's uploads from its own root, so the
+    prefix means nothing there -- and an ordinary single-site run already
+    treats extra hosts this way, since base_path "/" makes the test
+    vacuous. Applying it on multisite made one config line mean two
+    different things depending on install shape."""
+    assert MULTISITE_WITH_CDN.in_scope("https://cdn.example.net/assets/app.js")
+    assert MULTISITE_WITH_CDN.in_scope("https://cdn.example.net/wp-content/uploads/x.jpg")
+
+
+def test_the_primary_host_is_still_confined_when_extra_hosts_exist():
+    assert MULTISITE_WITH_CDN.in_scope("https://example.com/courses/about/")
+    assert not MULTISITE_WITH_CDN.in_scope("https://example.com/siblinglab/")
+    assert not MULTISITE_WITH_CDN.in_scope("https://cdn.unrelated.net/a.js")

@@ -133,6 +133,11 @@ def register_shortlink_aliases(
     fine under its pretty permalink. The REST API already hands us `id`
     and `link` together in the same JSON item, so the alias can be
     registered directly with no extra live fetch.
+
+    Note: `build` strips the shortlink <link> tag itself (policy.py's
+    _strip_wp_meta_links, which runs before the rewriter), so the aliases
+    registered here are earned by raw ?p=<id> references in body content,
+    not by the tag that motivated them. Both mechanisms are still needed.
     """
     for item in items:
         item_id = item.get("id")
