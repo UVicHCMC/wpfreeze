@@ -227,7 +227,16 @@ def normalize_url(
 
     owned = profile.owns_host(host)
     if owned:
-        host = profile.canonical_host
+        # Fold to the canonical host -- but only hosts that are *aliases* of
+        # it (the www/non-www pair the site itself redirects between). A
+        # configured extra host is a genuinely different server, usually a
+        # CDN; rewriting cdn.example.com to example.com invents a URL that
+        # does not exist and points every asset at the wrong origin. Never
+        # observed in the wild only because no config has ever set
+        # extra_hosts -- they are all [], which makes this a no-op for every
+        # capture taken so far.
+        if host not in profile.extra_hosts:
+            host = profile.canonical_host
         if profile.use_https:
             scheme = "https"
 

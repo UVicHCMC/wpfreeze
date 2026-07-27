@@ -160,3 +160,121 @@ class FixtureSite:
             "/old-page/": "/about/",
         }
         return routes, redirects
+
+
+class MultisiteFixture:
+    """A WordPress multisite *subdirectory* network, served locally.
+
+    The shape is what matters:
+
+      /courses/    the subsite being archived (base_url points here)
+      /rocketry/     a sibling subsite -- same host, must stay out of scope
+      /wp-content/   the network-wide theme and uploads, shared by every
+                     subsite and therefore living OUTSIDE the archived
+                     subsite's base_path
+      cdn 127.0.0.2  a configured extra_host serving this site's assets
+
+    That `/wp-content/` placement is the whole point. It is the one case
+    where "owned host" and "in scope" genuinely disagree, so it is the only
+    way to exercise the rule that HTML stays confined to base_path while
+    CSS only has to be on an owned host. The stylesheet chain is two deep
+    (style.css @imports print.css, and each references an upload) so the
+    test proves recursive discovery through content that no page links to
+    directly.
+
+    `trailing_slash=False` serves the subsite root at "/courses" with no
+    redirect, which is what makes _probe_trailing_slash return False. That
+    is the only configuration in which in_scope's accept-the-base-with-or-
+    without-its-slash handling is load-bearing, and no real site we have
+    access to is configured that way.
+    """
+
+    def __init__(self, trailing_slash: bool = True):
+        self.trailing_slash = trailing_slash
+        self._site_ctx = None
+        self._cdn_ctx = None
+        self.site_server = None
+        self.cdn_server = None
+
+    def __enter__(self) -> "MultisiteFixture":
+        self._cdn_ctx = _run_server(
+            _make_handler({"/assets/app.js": (200, "application/javascript", b"CDN-APP-JS")}, {}),
+            "127.0.0.2",
+        )
+        self.cdn_server = self._cdn_ctx.__enter__()
+        self.cdn_base = f"http://127.0.0.2:{self.cdn_server.server_port}"
+
+        routes, redirects = self._site_routes(self.cdn_base)
+        self._site_ctx = _run_server(_make_handler(routes, redirects), "127.0.0.1")
+        self.site_server = self._site_ctx.__enter__()
+        self.site_base = f"http://127.0.0.1:{self.site_server.server_port}"
+        self.base_url = f"{self.site_base}/courses/"
+        return self
+
+    def __exit__(self, *exc_info):
+        self._site_ctx.__exit__(*exc_info)
+        self._cdn_ctx.__exit__(*exc_info)
+
+    @property
+    def site_request_log(self) -> list[str]:
+        return self.site_server.RequestHandlerClass.request_log
+
+    @property
+    def cdn_request_log(self) -> list[str]:
+        return self.cdn_server.RequestHandlerClass.request_log
+
+    def _site_routes(self, cdn_base: str):
+        slash = "/" if self.trailing_slash else ""
+
+        home_html = f"""<!doctype html>
+        <html><head>
+        <link rel="stylesheet" href="/wp-content/themes/demo/style.css">
+        </head><body>
+        <a href="/courses/about{slash}">About</a>
+        <a href="/rocketry{slash}">Sibling lab</a>
+        <script src="{cdn_base}/assets/app.js"></script>
+        </body></html>"""
+
+        about_html = """<!doctype html>
+        <html><body><h1>About this subsite</h1></body></html>"""
+
+        # A sibling subsite. Nothing here may ever be fetched: it shares the
+        # hostname but is a different site, kept alive independently of this
+        # one's static replacement.
+        sibling_html = """<!doctype html>
+        <html><body><h1>Rocketry</h1>
+        <a href="/rocketry/members/">Members</a></body></html>"""
+
+        # Network-wide theme CSS: outside base_path, on an owned host.
+        style_css = """
+        .hero { background: url(/wp-content/uploads/hero.jpg); }
+        @import "/wp-content/themes/demo/print.css";
+        """
+        print_css = """
+        @font-face { font-family: d; src: url(/wp-content/uploads/font.woff2); }
+        """
+
+        routes = {
+            f"/courses{slash}": (200, "text/html", home_html.encode()),
+            f"/courses/about{slash}": (200, "text/html", about_html.encode()),
+            f"/rocketry{slash}": (200, "text/html", sibling_html.encode()),
+            "/rocketry/members/": (200, "text/html", b"<html><body>members</body></html>"),
+            "/wp-content/themes/demo/style.css": (200, "text/css", style_css.encode()),
+            "/wp-content/themes/demo/print.css": (200, "text/css", print_css.encode()),
+            "/wp-content/uploads/hero.jpg": (200, "image/jpeg", b"HERO-JPEG-BYTES"),
+            "/wp-content/uploads/font.woff2": (200, "font/woff2", b"FONT-WOFF2-BYTES"),
+        }
+        # Whichever form the site prefers, a real server canonicalizes the
+        # other one -- and that redirect is exactly what
+        # _probe_trailing_slash reads. Without the inverse redirect here the
+        # no-slash fixture would 404 on its own seed URL (base_url is always
+        # "/"-terminated), which is a fixture bug rather than a finding.
+        if self.trailing_slash:
+            redirects = {"/courses": "/courses/", "/rocketry": "/rocketry/"}
+        else:
+            redirects = {
+                "/courses/": "/courses",
+                "/courses/about/": "/courses/about",
+                "/rocketry/": "/rocketry",
+            }
+        return routes, redirects
