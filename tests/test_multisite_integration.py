@@ -194,3 +194,21 @@ def test_no_trailing_slash_install_still_reaches_the_shared_theme(tmp_path: Path
         _, manifest = _acquire(site, tmp_path / "raw")
         fetched = _fetched_paths(manifest)
         assert "/wp-content/uploads/hero.jpg" in fetched, sorted(fetched)
+
+
+def test_out_of_scope_html_reached_by_iframe_is_fetched_but_stays_a_leaf(tmp_path: Path):
+    """The case the HTML half of the parse gate actually guards.
+
+    A hyperlink to another subsite is rejected outright, so it never
+    reaches the fetcher. A RENDER reference is different: an iframe is part
+    of how this page looks, so the target is fetched and localized. What
+    must not happen is following *its* links -- that is precisely how one
+    embedded page becomes a crawl root and cascades into another site's
+    whole graph.
+    """
+    with MultisiteFixture() as site:
+        _, manifest = _acquire(site, tmp_path / "raw")
+        fetched = _fetched_paths(manifest)
+
+        assert "/otherlab/widget/" in fetched, sorted(fetched)
+        assert "/otherlab/widget-deep/" not in _paths(manifest), sorted(_paths(manifest))

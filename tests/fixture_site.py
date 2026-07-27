@@ -232,6 +232,7 @@ class MultisiteFixture:
         </head><body>
         <a href="/courses/about{slash}">About</a>
         <a href="/rocketry{slash}">Sibling lab</a>
+        <iframe src="/otherlab/widget{slash}"></iframe>
         <script src="{cdn_base}/assets/app.js"></script>
         </body></html>"""
 
@@ -254,8 +255,20 @@ class MultisiteFixture:
         @font-face { font-family: d; src: url(/wp-content/uploads/font.woff2); }
         """
 
+        # An out-of-scope HTML page reached as a RENDER reference (an
+        # iframe), not a hyperlink. It IS fetched -- "render even if
+        # external, localize it" -- but must stay a leaf: following its
+        # links is how one embedded page turns into another site's entire
+        # graph. Distinct from /rocketry/, which is hyperlink-only and so
+        # never fetched at all.
+        widget_html = f"""<!doctype html>
+        <html><body><p>widget</p>
+        <a href="/otherlab/widget-deep{slash}">Deeper</a></body></html>"""
+
         routes = {
             f"/courses{slash}": (200, "text/html", home_html.encode()),
+            f"/otherlab/widget{slash}": (200, "text/html", widget_html.encode()),
+            f"/otherlab/widget-deep{slash}": (200, "text/html", b"<html><body>deep</body></html>"),
             f"/courses/about{slash}": (200, "text/html", about_html.encode()),
             f"/rocketry{slash}": (200, "text/html", sibling_html.encode()),
             "/rocketry/members/": (200, "text/html", b"<html><body>members</body></html>"),
