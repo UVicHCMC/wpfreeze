@@ -281,3 +281,58 @@ def test_recover_via_wayback_snapshot_fetch_fails_marks_missing(tmp_path: Path):
 
         record = manifest.get(target_url)
         assert record.status == Status.MISSING.value
+
+
+SUBSITE_NO_SLASH_PROFILE = SiteProfile(
+    canonical_host="example.com",
+    site_hosts=frozenset({"example.com"}),
+    use_https=True,
+    trailing_slash=False,
+    base_path="/courses/",
+)
+
+
+def test_a_recovered_subsite_homepage_contributes_its_links(tmp_path: Path):
+    """The subsite root is seeded straight from config.base_url (always
+    "/"-terminated) while a site preferring no trailing slash normalizes it
+    to "/courses". Both spellings must reach the same verdict, or the
+    single most important recovered page contributes nothing.
+
+    Note: wayback.py normalizes record.url before this test purely to
+    honour in_scope's documented contract and to match
+    crawl.py::_process_one. It is *not* load-bearing -- in_scope accepts
+    the base with or without its trailing slash, and .hostname already
+    lowercases and drops default ports, so both spellings pass either way.
+    Mutating that normalization away does not fail any test, and shouldn't:
+    there is no reachable behaviour difference to pin. What this test does
+    pin is the outcome, which is what matters.
+    """
+    target_url = "https://example.com/courses/"  # exactly how the homepage is seeded
+    snapshot_ts = "20220301000000"
+    html = b'<html><body><a href="https://example.com/courses/found/">x</a></body></html>'
+
+    cdx_responses = {target_url: _cdx_json(target_url, [(snapshot_ts, "200")])}
+    snapshots = {f"/web/{snapshot_ts}id_/{target_url}": (200, "text/html", html)}
+
+    with run_fake_wayback(cdx_responses, snapshots) as fake_base:
+        manifest = Manifest()
+        record = manifest.get_or_create(target_url)
+        record.status = Status.RETRYING.value
+
+        recover_via_wayback(
+            manifest,
+            SUBSITE_NO_SLASH_PROFILE,
+            requests.Session(),
+            RateLimiter(0.0),
+            FAST_CONFIG,
+            tmp_path / "raw",
+            date(2022, 3, 1),
+            cdx_api=fake_base + "/cdx/search/cdx",
+            wayback_base=fake_base,
+        )
+
+        assert manifest.get(target_url).status == Status.FETCHED_WAYBACK.value
+        # The recovered subsite homepage must contribute its links.
+        assert manifest.get("https://example.com/courses/found") is not None, sorted(
+            r.url for r in manifest.all()
+        )
