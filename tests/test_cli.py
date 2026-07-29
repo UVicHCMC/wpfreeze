@@ -16,6 +16,7 @@ from wpfreeze.cli import (
     probe_site,
     run_acquire,
     run_report,
+    run_rescan,
     run_status,
 )
 from wpfreeze.fetch import RateLimiter
@@ -181,6 +182,146 @@ def test_run_acquire_dry_run_fetches_nothing_beyond_inventory(tmp_path: Path):
         base_record = manifest.get(site.site_base + "/")
         assert base_record.status == Status.PENDING.value
         assert not (config.output_dir / "raw").exists()
+
+
+def test_run_acquire_releases_lock_after_completion(tmp_path: Path):
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        run_acquire(config, resume=False, dry_run=False)
+        assert not (config.output_dir / ".wpfreeze.lock").exists()
+
+
+def test_run_acquire_refuses_when_lock_held_by_live_process(tmp_path: Path):
+    import os
+
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        config.output_dir.mkdir(parents=True)
+        (config.output_dir / ".wpfreeze.lock").write_text(str(os.getpid()))  # this test process is "alive"
+
+        exit_code = run_acquire(config, resume=False, dry_run=False)
+
+        assert exit_code == 2
+        assert not (config.output_dir / "manifest.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# run_rescan
+# ---------------------------------------------------------------------------
+
+
+def _patch_discover_links_to_inject(monkeypatch, source_url: str, injected_url: str):
+    """Simulates the actual feature: an extraction-code improvement finds a
+    reference on `source_url`'s already-stored bytes that the original
+    crawl's extraction did not."""
+    import wpfreeze.rescan as rescan_module
+    from wpfreeze.extract import HYPERLINK, ExtractedLink
+
+    real_discover_links = rescan_module.discover_links
+
+    def patched(content, final_url, kind):
+        links = real_discover_links(content, final_url, kind)
+        if final_url == source_url:
+            links = [*links, ExtractedLink(injected_url, HYPERLINK, "test:injected")]
+        return links
+
+    monkeypatch.setattr(rescan_module, "discover_links", patched)
+
+
+def test_run_rescan_report_only_writes_nothing(tmp_path: Path, monkeypatch):
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        run_acquire(config, resume=False, dry_run=False)
+        _patch_discover_links_to_inject(
+            monkeypatch, site.site_base + "/about/", site.site_base + "/discovered-by-rescan/"
+        )
+        manifest_path = config.output_dir / "manifest.json"
+        before_bytes = manifest_path.read_bytes()
+
+        exit_code = run_rescan(config, apply=False, profile_from_config=False)
+
+        assert exit_code == 0
+        assert manifest_path.read_bytes() == before_bytes
+
+
+def test_run_rescan_apply_writes_new_pending_record(tmp_path: Path, monkeypatch):
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        run_acquire(config, resume=False, dry_run=False)
+        new_url = site.site_base + "/discovered-by-rescan/"
+        _patch_discover_links_to_inject(monkeypatch, site.site_base + "/about/", new_url)
+
+        exit_code = run_rescan(config, apply=True, profile_from_config=False)
+
+        assert exit_code == 0
+        manifest = Manifest.load(config.output_dir / "manifest.json")
+        record = manifest.get(new_url)
+        assert record is not None
+        assert record.status == Status.PENDING.value
+        assert not (config.output_dir / ".wpfreeze.lock").exists()  # released
+
+
+def test_run_rescan_no_manifest_found(tmp_path: Path):
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        exit_code = run_rescan(config, apply=False, profile_from_config=False)
+        assert exit_code == 2
+
+
+def test_run_rescan_apply_refuses_on_manifest_without_persisted_profile(tmp_path: Path):
+    """A schema-1 manifest has no persisted SiteProfile -- guessing one
+    from config alone can disagree with the real crawl's normalization and
+    flood the manifest with spurious duplicates, so --apply refuses
+    without an explicit override."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps({"schema_version": 1, "generated": "x", "records": []}))
+    config = SiteConfig(base_url="http://example.com/", output_dir=output_dir, rate_limit=0.0)
+
+    exit_code = run_rescan(config, apply=True, profile_from_config=False)
+
+    assert exit_code == 2
+    assert json.loads(manifest_path.read_text())["records"] == []
+
+
+def test_run_rescan_apply_proceeds_with_explicit_profile_override(tmp_path: Path):
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps({"schema_version": 1, "generated": "x", "records": []}))
+    config = SiteConfig(base_url="http://example.com/", output_dir=output_dir, rate_limit=0.0)
+
+    exit_code = run_rescan(config, apply=True, profile_from_config=True)
+
+    assert exit_code == 0
+
+
+def test_run_rescan_report_only_never_refuses_on_legacy_manifest(tmp_path: Path):
+    """Report-only mode just warns -- it writes nothing, so there is
+    nothing for a wrong-guessed profile to corrupt."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps({"schema_version": 1, "generated": "x", "records": []}))
+    config = SiteConfig(base_url="http://example.com/", output_dir=output_dir, rate_limit=0.0)
+
+    exit_code = run_rescan(config, apply=False, profile_from_config=False)
+
+    assert exit_code == 0
+
+
+def test_run_rescan_apply_refuses_when_lock_held_by_live_process(tmp_path: Path):
+    import os
+
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        run_acquire(config, resume=False, dry_run=False)
+        (config.output_dir / ".wpfreeze.lock").write_text(str(os.getpid()))
+
+        exit_code = run_rescan(config, apply=True, profile_from_config=False)
+
+        assert exit_code == 2
 
 
 def test_run_report_regenerates_without_refetching(tmp_path: Path):

@@ -220,6 +220,38 @@ def _should_parse_for_links(
     return profile.in_scope(final_url)
 
 
+def admit_link(link, profile: SiteProfile) -> str | None:
+    """Normalized URL if `link` may become a manifest record, else None.
+
+    The one gate deciding which extracted links are worth queuing at all --
+    shared between the live crawl (_process_one, below) and `rescan`, so a
+    stored capture re-parsed offline is admitted exactly as it would have
+    been during the original crawl.
+
+    External hyperlink targets do not enter as pending -- and on a
+    multisite subdirectory install, neither do links into sibling sites,
+    which share the hostname but are not the site being archived. RENDER
+    links are deliberately NOT confined this way: an image a page embeds
+    from a sibling site (or from the network-wide /wp-content/) is part of
+    how this page looks, so it is still fetched and localized under
+    "render even if external".
+
+    Per CLAUDE-acquire.md, "Link extraction": <script> scanning is scoped
+    to internal hosts/uploads paths -- unlike genuine src/CSS/preload/
+    og:image contexts, a script-derived match is only a URL-shaped-string
+    heuristic (JS comments, license/source-map mentions, tracking config)
+    and gets no "render even if external" allowance.
+    """
+    normalized = normalize_url(link.url, profile)
+    host = urlsplit(normalized).hostname or ""
+    owned = profile.owns_host(host)
+    if link.kind == HYPERLINK and not profile.in_scope(normalized):
+        return None
+    if link.context.startswith("script:") and not owned:
+        return None
+    return normalized
+
+
 def _process_one(
     record: ManifestRecord,
     manifest: Manifest,
@@ -283,28 +315,8 @@ def _process_one(
             assert final_url is not None
             _record_success(record, outcome.result, final_url, manifest, profile, raw_dir)
             for link in discovered_links:
-                normalized = normalize_url(link.url, profile)
-                host = urlsplit(normalized).hostname or ""
-                owned = profile.owns_host(host)
-                if link.kind == HYPERLINK and not profile.in_scope(normalized):
-                    # External hyperlink targets do not enter as pending --
-                    # and on a multisite subdirectory install, neither do
-                    # links into sibling sites, which share the hostname but
-                    # are not the site being archived. RENDER links below are
-                    # deliberately NOT confined this way: an image a page
-                    # embeds from a sibling site (or from the network-wide
-                    # /wp-content/) is part of how this page looks, so it is
-                    # still fetched and localized under "render even if
-                    # external".
-                    continue
-                if link.context.startswith("script:") and not owned:
-                    # Per CLAUDE-acquire.md, "Link extraction": <script>
-                    # scanning is scoped to internal hosts/uploads paths --
-                    # unlike genuine src/CSS/preload/og:image contexts, a
-                    # script-derived match is only a URL-shaped-string
-                    # heuristic (JS comments, license/source-map mentions,
-                    # tracking config) and gets no "render even if
-                    # external" allowance.
+                normalized = admit_link(link, profile)
+                if normalized is None:
                     continue
                 manifest.get_or_create(normalized, discovered_via=f"crawl:{final_url}")
         elif outcome.category == WAYBACK_CANDIDATE:

@@ -17,8 +17,7 @@ from urllib.parse import urlencode, urlsplit
 
 import requests
 
-from wpfreeze.crawl import _should_parse_for_links, content_kind, discover_links, store_bytes
-from wpfreeze.extract import HYPERLINK
+from wpfreeze.crawl import admit_link, _should_parse_for_links, content_kind, discover_links, store_bytes
 from wpfreeze.fetch import SUCCESS, FetchConfig, RateLimiter, fetch_with_retries
 from wpfreeze.manifest import Manifest, ManifestRecord, Source, Status
 from wpfreeze.urlnorm import SiteProfile, normalize_url
@@ -198,11 +197,7 @@ def _recover_one(
         # becomes a crawl root of its own and cascades into that other
         # site's whole graph); CSS only has to be on an owned host.
         for link in discover_links(result.content, record.url, kind):
-            normalized = normalize_url(link.url, profile)
-            host = (urlsplit(normalized).hostname or "").lower()
-            owned = profile.owns_host(host)
-            if link.kind == HYPERLINK and not profile.in_scope(normalized):
+            normalized = admit_link(link, profile)
+            if normalized is None:
                 continue
-            if link.context.startswith("script:") and not owned:
-                continue  # see crawl.py::_process_one for why
             manifest.get_or_create(normalized, discovered_via=f"wayback:{record.url}")

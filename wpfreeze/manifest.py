@@ -16,6 +16,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from wpfreeze.urlnorm import SiteProfile
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,6 +70,30 @@ GAP_STATUSES = frozenset({Status.MISSING.value, Status.EXTERNAL_UNFETCHABLE.valu
 def utc_now() -> str:
     """Current UTC timestamp, ISO 8601 with offset."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def _site_profile_to_dict(profile: SiteProfile) -> dict[str, Any]:
+    """SiteProfile as JSON-safe dict -- frozensets become sorted lists so
+    the same profile always serializes to the same bytes."""
+    return {
+        "canonical_host": profile.canonical_host,
+        "site_hosts": sorted(profile.site_hosts),
+        "use_https": profile.use_https,
+        "trailing_slash": profile.trailing_slash,
+        "base_path": profile.base_path,
+        "extra_hosts": sorted(profile.extra_hosts),
+    }
+
+
+def _site_profile_from_dict(data: dict[str, Any]) -> SiteProfile:
+    return SiteProfile(
+        canonical_host=data["canonical_host"],
+        site_hosts=frozenset(data.get("site_hosts", ())),
+        use_https=data.get("use_https", True),
+        trailing_slash=data.get("trailing_slash", True),
+        base_path=data.get("base_path", "/"),
+        extra_hosts=frozenset(data.get("extra_hosts", ())),
+    )
 
 
 @dataclass
@@ -127,11 +153,12 @@ class Manifest:
     Single-threaded callers may ignore it entirely.
     """
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self) -> None:
         self._records: dict[str, ManifestRecord] = {}
         self._redirect_aliases: dict[str, str] = {}
+        self.site_profile: SiteProfile | None = None
         self.lock = threading.RLock()
 
     def __len__(self) -> int:
@@ -229,11 +256,17 @@ class Manifest:
         with self.lock:
             records_snapshot = [r.to_dict() for r in self._records.values()]
             redirect_aliases_snapshot = dict(self._redirect_aliases)
+            site_profile_snapshot = self.site_profile
         payload = {
             "schema_version": self.SCHEMA_VERSION,
             "generated": utc_now(),
             "records": records_snapshot,
             "redirect_aliases": redirect_aliases_snapshot,
+            "site_profile": (
+                _site_profile_to_dict(site_profile_snapshot)
+                if site_profile_snapshot is not None
+                else None
+            ),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(
@@ -261,4 +294,8 @@ class Manifest:
             record = ManifestRecord.from_dict(raw)
             manifest._records[record.url] = record
         manifest._redirect_aliases = dict(payload.get("redirect_aliases", {}))
+        profile_data = payload.get("site_profile")
+        manifest.site_profile = (
+            _site_profile_from_dict(profile_data) if profile_data is not None else None
+        )
         return manifest

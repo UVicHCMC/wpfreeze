@@ -44,7 +44,9 @@ from wpfreeze.manifest import Manifest, Status, utc_now
 from wpfreeze.outputs import compute_output_paths, generate_redirects_htaccess
 from wpfreeze.policy import Policy
 from wpfreeze.report import write_report_html, write_report_json
-from wpfreeze.urlnorm import SiteProfile
+from wpfreeze.rescan import format_rescan_summary, rescan
+from wpfreeze.runlock import RunLock, RunLockHeld
+from wpfreeze.urlnorm import SiteProfile, scope_profile_from_config
 from wpfreeze.validate import (
     VnuUnavailable,
     ensure_vnu_jar,
@@ -275,6 +277,21 @@ def run_acquire(config: SiteConfig, resume: bool, dry_run: bool) -> int:
         )
         return 2
 
+    lock = RunLock(output_dir)
+    try:
+        lock.acquire()
+    except RunLockHeld as exc:
+        print(str(exc))
+        return 2
+    try:
+        return _run_acquire_locked(config, resume, dry_run, output_dir, raw_dir, manifest_path)
+    finally:
+        lock.release()
+
+
+def _run_acquire_locked(
+    config: SiteConfig, resume: bool, dry_run: bool, output_dir: Path, raw_dir: Path, manifest_path: Path
+) -> int:
     manifest = Manifest.load(manifest_path) if manifest_path.exists() else Manifest()
 
     session = requests.Session()
@@ -293,6 +310,7 @@ def run_acquire(config: SiteConfig, resume: bool, dry_run: bool) -> int:
 
     run_started = utc_now()
     profile = probe_site(config.base_url, session, config.user_agent, config.extra_hosts)
+    manifest.site_profile = profile
 
     # Compiled before discovery, not after: inventory sources are seeded
     # through the same filter the crawl uses, so an excluded or out-of-scope
@@ -448,6 +466,84 @@ def run_status(config: SiteConfig) -> int:
     return 0
 
 
+def run_rescan(config: SiteConfig, apply: bool, profile_from_config: bool) -> int:
+    """Re-parse stored raw/ bytes with today's extraction code and queue
+    any newly-discovered reference as a new pending record.
+
+    Makes no network calls and does not run Stage 5 analysis or
+    regenerate reports -- see wpfreeze.rescan's module docstring. Report-
+    only by default; --apply is required to write, and leaves the
+    manifest in exactly the state an interrupted `acquire --resume`
+    already knows how to finish (some records pending, everything else
+    untouched) -- `acquire --resume` is the second half of this feature,
+    not something rescan reimplements.
+    """
+    manifest_path = config.output_dir / "manifest.json"
+    if not manifest_path.exists():
+        print(f"No manifest found at {manifest_path}; run `wpfreeze acquire` first.")
+        return 2
+
+    manifest = Manifest.load(manifest_path)
+    raw_dir = config.output_dir / "raw"
+
+    if manifest.site_profile is not None:
+        profile = manifest.site_profile
+    else:
+        # Pre-schema-2 manifest: the profile the crawl actually probed
+        # (use_https/trailing_slash/canonical_host) was never persisted,
+        # so it must be guessed from config alone -- and a wrong guess
+        # normalizes discovered links to different keys than the crawl
+        # used, flooding the manifest with spurious duplicate pending
+        # records. See rescan.rescan's docstring.
+        profile = scope_profile_from_config(config.base_url, config.extra_hosts)
+        print(
+            "** No persisted site profile on this manifest (captured before schema "
+            "version 2) -- guessing use_https/trailing_slash/canonical_host from "
+            "config alone. If the real site prefers www, prefers no trailing "
+            "slash, or doesn't serve https, this WILL normalize discovered links "
+            "to different keys than the original crawl and flood the manifest "
+            "with spurious duplicate pending records. Run `acquire --resume` once "
+            "to persist the real profile before trusting rescan's output on this "
+            "capture. **"
+        )
+        if apply and not profile_from_config:
+            print(
+                "Refusing to --apply against a legacy manifest with no persisted "
+                "profile. Pass --profile-from-config to proceed anyway (not "
+                "recommended), or run `acquire --resume` once first to persist "
+                "the real profile."
+            )
+            return 2
+
+    lock = None
+    if apply:
+        lock = RunLock(config.output_dir)
+        try:
+            lock.acquire()
+        except RunLockHeld as exc:
+            print(str(exc))
+            return 2
+
+    try:
+        stats = rescan(manifest, profile, raw_dir)
+        print(format_rescan_summary(stats))
+        if apply:
+            manifest.save(manifest_path)
+            print(
+                f"{stats.records_created} new pending record(s) written to {manifest_path}.\n"
+                "The manifest is now derived-stale -- output_path, flags, and the "
+                "hash-duplicate canonical map don't reflect the new records yet. "
+                "Run `acquire --resume` next, not `build`."
+            )
+        else:
+            print("Report only -- nothing written. Pass --apply to queue these records.")
+    finally:
+        if lock is not None:
+            lock.release()
+
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
@@ -596,6 +692,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "from build/validate/diagnose's reports",
     )
 
+    rescan_p = subparsers.add_parser(
+        "rescan",
+        help="re-parse stored raw/ bytes with current extraction code; queue new references as pending",
+    )
+    rescan_p.add_argument("--config", required=True, type=Path)
+    rescan_p.add_argument(
+        "--apply", action="store_true", help="write queued records to manifest.json (default: report only)"
+    )
+    rescan_p.add_argument(
+        "--profile-from-config",
+        action="store_true",
+        help="allow --apply against a manifest with no persisted site profile (schema < 2), "
+        "reconstructing it from config alone -- not recommended, see the warning this prints",
+    )
+
     return parser
 
 
@@ -694,6 +805,8 @@ def _dispatch(argv: list[str] | None) -> int:
         return run_diagnose(config)
     if args.command == "validate":
         return run_validate(config, args.site_dir, write_todo=not args.no_todo)
+    if args.command == "rescan":
+        return run_rescan(config, apply=args.apply, profile_from_config=args.profile_from_config)
 
     return 2
 

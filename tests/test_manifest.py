@@ -13,6 +13,7 @@ from wpfreeze.manifest import (
     ManifestRecord,
     Status,
 )
+from wpfreeze.urlnorm import SiteProfile
 
 
 def test_get_or_create_is_idempotent():
@@ -233,6 +234,33 @@ def test_load_of_older_manifest_without_redirect_aliases_key_still_works(tmp_pat
     path.write_text(json.dumps({"schema_version": 1, "generated": "x", "records": []}))
     manifest = Manifest.load(path)
     assert manifest._redirect_aliases == {}
+
+
+def test_site_profile_round_trips_through_save_and_load(tmp_path: Path):
+    """A non-default profile (www-preferring, no trailing slash, http-only)
+    must survive save/load verbatim -- this is the profile rescan depends
+    on to normalize URLs the same way the original crawl did."""
+    manifest = Manifest()
+    manifest.site_profile = SiteProfile(
+        canonical_host="www.example.com",
+        site_hosts=frozenset({"example.com", "www.example.com"}),
+        use_https=False,
+        trailing_slash=False,
+        base_path="/courses/",
+        extra_hosts=frozenset({"cdn.example.com"}),
+    )
+    path = tmp_path / "manifest.json"
+    manifest.save(path)
+
+    reloaded = Manifest.load(path)
+    assert reloaded.site_profile == manifest.site_profile
+
+
+def test_schema_1_manifest_without_site_profile_key_loads_with_none(tmp_path: Path):
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps({"schema_version": 1, "generated": "x", "records": []}))
+    manifest = Manifest.load(path)
+    assert manifest.site_profile is None
 
 
 def test_resume_never_resets_existing_record_to_pending():
