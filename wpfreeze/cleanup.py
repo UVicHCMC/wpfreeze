@@ -287,13 +287,14 @@ def _verification_section(build_report: dict | None) -> tuple[list[str], bool]:
 
 # Order to present form categories in, and what to say about each -- see
 # policy.py's _strip_forms/_comment_wrapper for how "comment" is detected
-# and why it's the one category whose caption is removed automatically.
-# Categories beyond "comment"/"other" (search, subscribe, contact, ...) do
-# not exist yet; anything not recognized as a comment form buckets as
-# "other" until they do.
-_FORM_CATEGORY_ORDER = ("comment", "other", "unspecified")
+# and why it's the one category whose caption is removed automatically,
+# and _is_search_form for how "search" is detected. Categories beyond
+# those two (subscribe, contact, ...) don't exist yet; anything not
+# recognized as either buckets as "other" until they do.
+_FORM_CATEGORY_ORDER = ("comment", "search", "other", "unspecified")
 _FORM_CATEGORY_LABEL = {
     "comment": "Comment forms",
+    "search": "Search forms",
     "other": "Other forms",
     "unspecified": "Forms (from a build made before categorization existed)",
 }
@@ -343,9 +344,17 @@ def _form_category_lines(
         if extras:
             para += " Also cleaned up on the same pages: " + ", ".join(extras) + "."
         para += " Full list:"
+    elif category == "search":
+        para = (
+            f"**{label}** -- {total} across {len(pages)} page(s), removed like any other form -- it "
+            "can't submit anywhere useful on a static archive either. If you're planning to wire up "
+            "a replacement (a static index, a hosted search service) rather than just lose search "
+            "entirely, set `strip_search_forms: false` in the config and re-run `wpfreeze build` to "
+            "leave these in place as a starting point instead. Full list:"
+        )
     elif category == "other":
         para = (
-            f"**{label}** -- {total} across {len(pages)} page(s): search, subscribe, contact, or "
+            f"**{label}** -- {total} across {len(pages)} page(s): subscribe, contact, or "
             "unrecognized. Only the form was removed -- a heading, label, or \"Subscribe\" button "
             "around it wasn't touched and may now describe nothing. Worth a look:"
         )
@@ -428,6 +437,47 @@ def _excised_content_section(build_report: dict | None) -> tuple[list[str], bool
     return (lines, needs_attention)
 
 
+def _search_forms_kept_section(build_report: dict | None) -> tuple[list[str], bool]:
+    """Search forms recognized but deliberately left in place -- only
+    populated when `strip_search_forms: false` is set (see policy.py's
+    search_forms_kept_pages). Deliberately not part of "Content
+    intentionally excised": nothing was removed here, so reporting it
+    there would say something false. Always worth a look: "left in place"
+    doesn't mean "still works" -- see policy.py's own strip_search_forms
+    comment for the caveat this section repeats.
+    """
+    if build_report is None:
+        return ([], False)
+
+    policy = build_report.get("policy") or {}
+    kept_pages = policy.get("search_forms_kept_pages") or {}
+    if not kept_pages:
+        return ([], False)
+
+    def _count(info) -> int:
+        return info.get("count", 0) if isinstance(info, dict) else info
+
+    total = sum(_count(info) for info in kept_pages.values())
+    lines = [
+        "## Search forms left in place",
+        "",
+        f"{total} search form(s) across {len(kept_pages)} page(s) were left untouched "
+        "(`strip_search_forms: false`) instead of being removed. This does not make them "
+        "functional -- the form's `action` still points at the local homepage once rewritten, "
+        "so submitting it as-is does nothing useful. It's raw material for wiring up a "
+        "replacement (a static index, a hosted search service), not a working search box:",
+        "",
+    ]
+    for page, info in sorted(kept_pages.items(), key=lambda kv: (-_count(kv[1]), kv[0])):
+        output_path = info.get("output_path", "") if isinstance(info, dict) else ""
+        page_label = _linked(f"`{page}`", _site_link(output_path))
+        count = _count(info)
+        lines.append(f"- {page_label}" + (f" ({count} form(s))" if count > 1 else ""))
+    lines.append("")
+
+    return (lines, True)
+
+
 def _markup_quirks_section(vnu_report: dict | None) -> list[str]:
     if vnu_report is None:
         return [
@@ -487,9 +537,12 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
     broken_lines, broken_needs_attention = _broken_reference_section(build_report)
     verify_lines, verify_needs_attention = _verification_section(build_report)
     excised_lines, excised_needs_attention = _excised_content_section(build_report)
+    kept_search_lines, kept_search_needs_attention = _search_forms_kept_section(build_report)
     markup_lines = _markup_quirks_section(vnu_report)
     markup_needs_attention = bool(vnu_report and vnu_report.get("issues"))
-    broken_needs_attention = broken_needs_attention or verify_needs_attention or excised_needs_attention
+    broken_needs_attention = (
+        broken_needs_attention or verify_needs_attention or excised_needs_attention or kept_search_needs_attention
+    )
 
     # An all-clear may only be given for checks that actually ran. A section
     # whose report is absent contributes False to `needs_attention` exactly
@@ -537,6 +590,7 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
     lines.extend(broken_lines)
     lines.extend(verify_lines)
     lines.extend(excised_lines)
+    lines.extend(kept_search_lines)
     lines.extend(markup_lines)
     return "\n".join(lines).rstrip() + "\n"
 

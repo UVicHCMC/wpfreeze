@@ -97,8 +97,9 @@ policy:
   # at that removed id elsewhere on the page (WordPress's own "N comments"
   # post-meta link) is also fixed; see strip_comment_counts below for what
   # happens to the "N comments" text itself. Categorized in the cleanup
-  # checklist's "Content intentionally excised" section as "comment" vs
-  # "other" (search, subscribe, contact, unrecognized).
+  # checklist's "Content intentionally excised" section as "comment",
+  # "search" (see strip_search_forms below), or "other" (subscribe,
+  # contact, unrecognized).
   strip_forms: true
 
   # Only meaningful when strip_forms removes a comment form's wrapper. True
@@ -110,6 +111,19 @@ policy:
   # noise, not information. The dead #respond link itself is always fixed,
   # regardless of this setting.
   strip_comment_counts: true
+
+  # Only meaningful when strip_forms would remove a recognized search form
+  # (role="search", or a name="s" input -- WordPress's own conventions,
+  # theme-independent). True (default) removes it like any other form.
+  # False leaves it completely untouched, for a site owner planning to
+  # wire up a replacement (a static index, a hosted search service) rather
+  # than just lose search entirely -- pages with one left this way are
+  # listed in the cleanup checklist's "Search forms left in place" section.
+  # This does NOT make the form functional: its action attribute still
+  # gets rewritten like any other reference, so submitting it as-is just
+  # navigates to the local homepage with an ignored ?s= query string. It's
+  # raw material to repurpose, not a working search box.
+  strip_search_forms: true
 
   # Remove feed links -- the <link rel="alternate" type="application/rss+xml">
   # (and Atom/RDF) pointers in the document head, which reference endpoints

@@ -121,7 +121,7 @@ def test_forms_are_kept_when_strip_forms_is_disabled():
 
 def test_removed_forms_are_attributed_to_their_page():
     soup = BeautifulSoup(
-        '<form action="/?s="><input name="s"></form><form action="/x"><input></form>', "lxml"
+        '<form action="/subscribe"><input name="email"></form><form action="/x"><input></form>', "lxml"
     )
     stats = PolicyStats()
     apply_policy(soup, Policy(), stats, "https://s/contact/", "/contact.html")
@@ -188,8 +188,8 @@ def test_comment_form_without_a_wrapper_falls_back_to_form_only_removal():
     assert "Leave a Reply" in out
 
 
-def test_unrelated_form_is_not_categorized_as_comment():
-    html = '<form action="/?s="><input name="s"></form>'
+def test_unrelated_form_is_categorized_as_other():
+    html = '<form action="/subscribe"><input name="email"></form>'
     soup = BeautifulSoup(html, "lxml")
     stats = PolicyStats()
     apply_policy(soup, Policy(), stats, "https://s/", "/index.html")
@@ -218,7 +218,7 @@ def test_mixed_categories_on_one_page_are_both_counted():
     apply_policy(soup, Policy(), stats, "https://s/post/", "/post.html")
     entry = stats.forms_removed_pages["https://s/post/"]
     assert entry["count"] == 2
-    assert entry["categories"] == {"comment": 1, "other": 1}
+    assert entry["categories"] == {"comment": 1, "search": 1}
 
 
 def test_wrapper_containing_two_forms_does_not_double_count_or_crash():
@@ -237,6 +237,81 @@ def test_wrapper_containing_two_forms_does_not_double_count_or_crash():
     assert stats.forms_removed == 1
     assert "<form" not in out
     assert "respond" not in out
+
+
+# --- search-form detection and strip_search_forms ---------------------------
+
+
+def test_search_form_detected_by_role_search():
+    html = '<form role="search" method="get" action="/"><input type="search" name="q"></form>'
+    out, stats = _apply(html)
+    assert "<form" not in out
+    assert stats.forms_removed_pages == {}  # no page_url passed via _apply
+
+
+def test_search_form_detected_by_name_s_input_without_role():
+    # Divi's own search widget: no role="search" was found on some themes'
+    # variants -- name="s" alone must be sufficient.
+    html = '<form class="et-search-form" method="get" action="/"><input type="search" name="s"></form>'
+    soup = BeautifulSoup(html, "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(), stats, "https://s/purpose/", "/purpose.html")
+    assert stats.forms_removed_pages["https://s/purpose/"]["categories"] == {"search": 1}
+
+
+def test_search_form_categorized_as_search_not_other():
+    html = '<form role="search" method="get" action="/"><input type="search" name="s"></form>'
+    soup = BeautifulSoup(html, "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(), stats, "https://s/", "/index.html")
+    assert stats.forms_removed_pages["https://s/"]["categories"] == {"search": 1}
+
+
+def test_strip_search_forms_false_leaves_the_form_untouched():
+    html = '<form role="search" method="get" action="/"><input type="search" name="s"></form>'
+    soup = BeautifulSoup(html, "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(strip_search_forms=False), stats, "https://s/purpose/", "/purpose.html")
+
+    assert "<form" in str(soup)
+    assert stats.forms_removed == 0
+    assert stats.forms_removed_pages == {}
+    assert stats.search_forms_kept_pages == {
+        "https://s/purpose/": {"count": 1, "output_path": "/purpose.html"}
+    }
+
+
+def test_strip_search_forms_false_still_strips_comment_forms():
+    html = (
+        '<div id="respond"><form id="commentform" class="comment-form"><input></form></div>'
+        '<form role="search" method="get" action="/"><input type="search" name="s"></form>'
+    )
+    soup = BeautifulSoup(html, "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(strip_search_forms=False), stats, "https://s/post/", "/post.html")
+
+    out = str(soup)
+    assert 'class="comment-form"' not in out
+    assert 'role="search"' in out
+    assert stats.forms_removed_pages["https://s/post/"]["categories"] == {"comment": 1}
+    assert stats.search_forms_kept_pages["https://s/post/"]["count"] == 1
+
+
+def test_strip_search_forms_false_with_no_page_url_still_skips_removal():
+    html = '<form role="search" method="get" action="/"><input type="search" name="s"></form>'
+    out, stats = _apply(html, Policy(strip_search_forms=False))
+    assert "<form" in out
+    assert stats.search_forms_kept_pages == {}  # nothing to key by, but not removed either
+
+
+def test_form_with_neither_signal_is_not_search():
+    html = '<form action="/subscribe"><input name="email"></form>'
+    soup = BeautifulSoup(html, "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(strip_search_forms=False), stats, "https://s/", "/index.html")
+    # Not recognized as search, so strip_search_forms=False doesn't spare it.
+    assert stats.forms_removed_pages["https://s/"]["categories"] == {"other": 1}
+    assert stats.search_forms_kept_pages == {}
 
 
 # --- dead in-page links left by comment-form removal ------------------------

@@ -290,6 +290,63 @@ def test_comment_category_without_extra_cleanup_omits_the_aside(tmp_path: Path):
     assert "Full list:" in content
 
 
+def test_search_forms_are_their_own_category_not_other(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "forms_removed": 1,
+                "forms_removed_pages": {
+                    "https://s/purpose/": {"count": 1, "output_path": "/purpose.html", "categories": {"search": 1}}
+                },
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "**Search forms**" in content
+    assert "strip_search_forms: false" in content
+    assert "[`https://s/purpose/`](site/purpose.html)" in content
+    # search is a recognized, deliberate removal like comment forms, but
+    # unlike comment forms it still pushes "worth a look" (no wrapper
+    # cleanup happens for it, see policy.py's _is_search_form)
+    assert "worth a look before you call it done" in content
+
+
+def test_search_forms_kept_in_place_section(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "search_forms_kept_pages": {
+                    "https://s/purpose/": {"count": 1, "output_path": "/purpose.html"},
+                    "https://s/contact/": {"count": 2, "output_path": "/contact.html"},
+                }
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "## Search forms left in place" in content
+    assert "3 search form(s) across 2 page(s)" in content
+    # outlier (2 forms) sorts before the single-form page
+    section = content.split("## Search forms left in place", 1)[1]
+    assert section.index("contact.html") < section.index("purpose.html")
+    assert "[`https://s/contact/`](site/contact.html) (2 form(s))" in content
+    assert "does not make them functional" in content
+    assert "worth a look before you call it done" in content
+
+
+def test_search_forms_kept_in_place_absent_when_none_kept(tmp_path: Path):
+    _write(tmp_path, "build-report.json", {"unresolved": 0, "unresolved_samples": [], "policy": {}})
+    content = build_cleanup_todo(tmp_path)
+    assert "Search forms left in place" not in content
+
+
 def test_excised_form_page_links_to_local_copy(tmp_path: Path):
     _write(
         tmp_path,

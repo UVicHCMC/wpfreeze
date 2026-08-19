@@ -203,6 +203,19 @@ _COMMENT_WRAPPER_MAX_DEPTH = 5
 # match this by accident.
 _META_SEPARATOR_RE = re.compile(r"^\s*[|/•·]\s*$")
 
+# --- Search-form fingerprints -----------------------------------------------
+#
+# Unlike comment forms, WordPress core doesn't hardcode a wrapper around a
+# search form -- get_search_form() just returns the <form> itself, and a
+# theme is free to wrap it in whatever markup it likes. But the <form>'s own
+# attributes are still reliable: role="search" is the accessibility
+# convention core's default template sets, and name="s" is WordPress's own
+# canonical query-var for search -- both survive even in themes (Divi
+# included) that don't call get_search_form() at all and hand-roll their own
+# markup with their own class names instead. Either alone is sufficient;
+# neither is something a non-search form would plausibly carry.
+_SEARCH_INPUT_NAME = "s"
+
 
 @dataclass
 class Policy:
@@ -223,6 +236,18 @@ class Policy:
     # way. A "0 comments" blurb is always removed regardless of this flag:
     # it's noise, not information, in either mode.
     strip_comment_counts: bool = True
+    # Only meaningful when strip_forms removes a recognized search form
+    # (see _is_search_form). True (default) removes it like any other
+    # form -- it can't submit anywhere useful on a static archive. False
+    # leaves it completely untouched: for a site owner planning to wire up
+    # a replacement (Google Custom Search, a static index, ...) rather
+    # than just lose search entirely. Note this does NOT make the form
+    # functional -- its action attribute still gets rewritten like any
+    # other reference, so submitting it as-is just navigates to the local
+    # homepage with an ignored ?s= query string. It's raw material to
+    # repurpose, not a working search box. Pages with a form left this way
+    # are listed in the cleanup checklist so they're easy to find again.
+    strip_search_forms: bool = True
     # Lift <style> blocks repeated verbatim across pages into shared files.
     # Not a strip -- nothing is removed, the same CSS is served from one
     # place instead of hundreds. See dedupe.py.
@@ -250,6 +275,7 @@ class Policy:
             strip_feeds=bool(raw.get("strip_feeds", True)),
             strip_wp_meta_links=bool(raw.get("strip_wp_meta_links", True)),
             strip_comment_counts=bool(raw.get("strip_comment_counts", True)),
+            strip_search_forms=bool(raw.get("strip_search_forms", True)),
             dedupe_inline_css=bool(raw.get("dedupe_inline_css", True)),
             telemetry_extra_hosts=list(raw.get("telemetry_extra_hosts", []) or []),
             telemetry_keep_hosts=list(raw.get("telemetry_keep_hosts", []) or []),
@@ -276,8 +302,9 @@ class PolicyStats:
     # {"count": int, "output_path": str, "categories": {"comment": int, ...}}.
     # "comment" forms had their caption/cancel-link wrapper removed with
     # them (see _comment_wrapper) and so are lower-priority to check by
-    # hand; anything else -- search, subscribe, contact, unrecognized --
-    # buckets under "other" for now.
+    # hand; "search" forms are recognized but get no special wrapper
+    # handling (see _is_search_form); subscribe, contact, and anything
+    # unrecognized still bucket under "other" for now.
     forms_removed_pages: dict[str, dict] = field(default_factory=dict)
     # In-page anchors that pointed at an id a form-wrapper removal just took
     # with it (WordPress's own "N comments" post-meta link, most commonly,
@@ -286,6 +313,13 @@ class PolicyStats:
     # instead (comment_count_blurbs_removed). See _clean_dead_fragment_links.
     dead_fragment_links_removed: int = 0
     comment_count_blurbs_removed: int = 0
+    # Which pages had a search form recognized but left in place, per
+    # strip_search_forms: false -- same shape as forms_removed_pages'
+    # values, minus "categories" (always search, that's the only reason an
+    # entry exists here). Tracked separately from forms_removed_pages
+    # because nothing was actually removed; reporting it as an excision
+    # would say something false.
+    search_forms_kept_pages: dict[str, dict] = field(default_factory=dict)
 
 
 def _is_telemetry_ref(url: str, blocked: frozenset[str], kept: list[str]) -> bool:
@@ -412,6 +446,15 @@ def _clean_dead_fragment_links(
             stats.dead_fragment_links_removed += 1
 
 
+def _is_search_form(form) -> bool:
+    """True if `form` is a WordPress search form -- see the fingerprint
+    note above _SEARCH_INPUT_NAME for why role="search" or a name="s"
+    input, either alone, is enough regardless of theme."""
+    if (form.get("role") or "").strip().lower() == "search":
+        return True
+    return form.find("input", attrs={"name": _SEARCH_INPUT_NAME}) is not None
+
+
 def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page_url: str, page_output: str) -> None:
     # On a static archive no <form> submits usefully: comment and search
     # forms hit dead endpoints, and subscribe forms leak to a third party.
@@ -423,13 +466,28 @@ def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page
     count = 0
     categories: dict[str, int] = {}
     removed_ids: set[str] = set()
+    kept_search_count = 0
 
     for form in soup.find_all("form"):
         if id(form) in handled:
             continue
 
         wrapper = _comment_wrapper(form)
-        category = "comment" if wrapper is not None or _is_comment_form(form) else "other"
+        if wrapper is not None or _is_comment_form(form):
+            category = "comment"
+        elif _is_search_form(form):
+            category = "search"
+        else:
+            category = "other"
+
+        if category == "search" and not policy.strip_search_forms:
+            # Left in place, not removed -- see strip_search_forms's own
+            # comment for why (a site owner may want to reimplement search
+            # rather than just lose it). Tracked separately below, not as
+            # an excision, since nothing was actually excised.
+            kept_search_count += 1
+            continue
+
         target = wrapper if wrapper is not None else form
 
         # A wrapper can (rarely, malformed markup) contain more than one
@@ -463,6 +521,12 @@ def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page
             entry["count"] += count
             for category, n in categories.items():
                 entry["categories"][category] = entry["categories"].get(category, 0) + n
+
+    if kept_search_count and page_url:
+        entry = stats.search_forms_kept_pages.setdefault(
+            page_url, {"count": 0, "output_path": page_output}
+        )
+        entry["count"] += kept_search_count
 
 
 def _strip_feeds(soup: BeautifulSoup, stats: PolicyStats) -> None:

@@ -246,12 +246,17 @@ Sections, in order:
   path that doesn't exist on disk (broken within the archive itself,
   distinct from the above).
 - **Content intentionally excised** — what `build`'s content policy
-  removed (see "Building a servable site" below), broken out by category.
-  Forms specifically get a per-page list, since a removed `<form>` can
-  leave a heading or button behind describing nothing; comment forms are
-  called out separately and deprioritized, since their caption is removed
-  automatically (see below) and doesn't need a manual check the way
-  everything else in this section does.
+  removed (see "Building a servable site" below), broken out by category
+  (comment, search, other). Forms specifically get a per-page list, since
+  a removed `<form>` can leave a heading or button behind describing
+  nothing; comment forms are called out separately and deprioritized,
+  since their caption is removed automatically (see below) and doesn't
+  need a manual check the way everything else in this section does.
+- **Search forms left in place** — only appears when `strip_search_forms:
+  false` is set. A per-page list of search forms that were deliberately
+  *not* removed, for a site owner reimplementing search rather than
+  losing it — distinct from the section above since nothing was actually
+  excised here.
 - **Site markup/content quirks** — pre-existing HTML/CSS defects in the
   original theme/content that `validate` catches. Not something `build`
   introduced or fixes automatically — the point of a static archive is
@@ -300,6 +305,17 @@ touching the capture, so re-running is always safe. In that tree:
   fixed too; the "N comments" text itself is removed by default, or kept
   for a nonzero count when `strip_comment_counts: false` — see
   `example-site.yaml`.
+- **Search forms are recognized and removed like any other form by
+  default** — detected by `role="search"` or a `name="s"` input, both
+  WordPress's own conventions regardless of theme (unlike class names:
+  Divi's own search widget uses none of the ones WordPress core's default
+  template does). Set `strip_search_forms: false` to leave them
+  completely untouched instead, for a site owner planning to wire up a
+  replacement (a static index, a hosted search service) rather than just
+  lose search entirely — this doesn't make the form functional as-is,
+  just raw material to repurpose; see `example-site.yaml` for the exact
+  caveat. Pages with one left this way are listed in the cleanup
+  checklist's own "Search forms left in place" section.
 - **Third-party iframe embeds (YouTube, Vimeo, Google Maps, social
   embeds) are left pointing at the live original**, not downloaded — an
   iframe embeds a whole foreign application that depends on live JS/API
