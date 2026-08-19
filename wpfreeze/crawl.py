@@ -241,6 +241,18 @@ def admit_link(link, profile: SiteProfile) -> str | None:
     og:image contexts, a script-derived match is only a URL-shaped-string
     heuristic (JS comments, license/source-map mentions, tracking config)
     and gets no "render even if external" allowance.
+
+    iframe[src] gets a narrower version of the same treatment: admitted
+    when `owned` (a same-site or same-network-sibling embed -- genuinely
+    capturable content, no different from any other RENDER reference), but
+    not for a genuine third-party host. `owned`, not `in_scope`, on purpose:
+    the sibling-site case above is exactly what a strict in_scope check
+    would wrongly reject here too. Unlike script's heuristic match, an
+    iframe target is a real, deliberate embed either way -- the reason to
+    hold it back is not confidence in the extraction, it's that a
+    third-party document (YouTube, Vimeo, Google Maps, a social embed)
+    depends on live JS/API calls no static snapshot can reproduce; saving
+    one anyway produces a dead embed in the build, not a working one.
     """
     normalized = normalize_url(link.url, profile)
     host = urlsplit(normalized).hostname or ""
@@ -248,6 +260,8 @@ def admit_link(link, profile: SiteProfile) -> str | None:
     if link.kind == HYPERLINK and not profile.in_scope(normalized):
         return None
     if link.context.startswith("script:") and not owned:
+        return None
+    if link.context == "iframe[src]" and not owned:
         return None
     return normalized
 

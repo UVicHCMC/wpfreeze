@@ -62,6 +62,17 @@ def test_object_data_is_render():
     assert links[0].context == "object[data]"
 
 
+def test_iframe_src_is_render():
+    # Extraction still treats it like any other src-like context (RENDER,
+    # unconfined here); the third-party-embed problem is handled downstream
+    # by crawl.admit_link's narrower "owned" gate for iframe[src] -- see the
+    # comment above extract._RENDER_ATTRS -- not by extraction itself.
+    links = extract_from_html('<iframe src="https://www.youtube.com/embed/abc123"></iframe>', BASE)
+    assert links[0].kind == RENDER
+    assert links[0].context == "iframe[src]"
+    assert links[0].url == "https://www.youtube.com/embed/abc123"
+
+
 def test_form_action_is_hyperlink():
     links = extract_from_html('<form action="/search-results/"></form>', BASE)
     assert links[0].kind == HYPERLINK

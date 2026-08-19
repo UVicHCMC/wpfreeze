@@ -4,6 +4,10 @@ See CLAUDE-acquire.md, "Link extraction", for the attribute/context list
 and the render-vs-hyperlink distinction this module encodes: src-like
 contexts, CSS urls, preloads, and og:image are renderable (localized even
 if external); href on <a> is a hyperlink (followed only if internal).
+iframe[src] stays RENDER-kind here but gets its own narrower admission gate
+in crawl.admit_link -- see the comment above _RENDER_ATTRS -- since unlike
+other render contexts it can point at a foreign document/application that
+cannot actually be localized.
 """
 from __future__ import annotations
 
@@ -58,6 +62,21 @@ _HYPERLINK_ATTRS = {
 }
 
 # tag -> attributes that are renderable resources (localize even if external).
+# iframe[src] stays RENDER-kind (extracted the same as every other src-like
+# context) but is gated differently at admission -- see crawl.admit_link's
+# "owned, not merely in_scope" check for it -- because unlike every other
+# RENDER tag, which points at a single static asset (an image, a script
+# file, a media file) that genuinely downloads and serves locally with full
+# fidelity, an iframe embeds an entire foreign HTML document/application.
+# For a same-site or same-network-sibling embed that's still real,
+# capturable content, exactly like any other RENDER reference. For a
+# genuine third party -- YouTube, Vimeo, Google Maps, a social embed --
+# "localizing" it means saving one frozen snapshot of a page that depends
+# on live JS and API calls to function at all; the saved copy is not a
+# working replacement, just an inert imitation. Real case: a YouTube
+# <iframe src> got downloaded as a 120KB static snapshot of the player page
+# and served locally, producing a dead, non-functional embed instead of
+# leaving the reference pointing at the still-live, still-working video.
 _RENDER_ATTRS = {
     "img": ("src", "srcset"),
     "source": ("src", "srcset"),

@@ -48,6 +48,31 @@ def _seed_and_crawl(site: FixtureSite, raw_dir: Path, manifest_save_path=None) -
     return manifest
 
 
+def test_admit_link_leaves_a_cross_origin_iframe_uncaptured():
+    """iframe[src] is RENDER-kind (see extract._RENDER_ATTRS) but gets its
+    own narrower "owned" gate in admit_link -- a genuine third-party embed
+    (YouTube, Vimeo, ...) is never queued, so build.py's rewriter leaves it
+    pointing at the real, live original instead of a downloaded,
+    non-functional snapshot of the embed page. A same-site or
+    same-network-sibling embed is still admitted, same as any other RENDER
+    reference -- only unrelated hosts are held back."""
+    from wpfreeze.crawl import admit_link
+    from wpfreeze.extract import RENDER, ExtractedLink
+
+    profile = SiteProfile(
+        canonical_host="example.com", site_hosts=frozenset({"example.com", "sibling.example.com"})
+    )
+
+    cross_origin = ExtractedLink("https://www.youtube.com/embed/abc123", RENDER, "iframe[src]")
+    assert admit_link(cross_origin, profile) is None
+
+    same_site = ExtractedLink("https://example.com/embedded-page/", RENDER, "iframe[src]")
+    assert admit_link(same_site, profile) is not None
+
+    network_sibling = ExtractedLink("https://sibling.example.com/widget/", RENDER, "iframe[src]")
+    assert admit_link(network_sibling, profile) is not None
+
+
 def test_crawl_discovers_and_fetches_everything(tmp_path: Path):
     raw_dir = tmp_path / "raw"
     with FixtureSite() as site:
