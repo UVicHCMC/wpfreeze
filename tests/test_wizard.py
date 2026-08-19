@@ -5,7 +5,9 @@ import yaml
 from wpfreeze.wizard import (
     build_config_dict,
     find_resumable_configs,
+    print_overview,
     run_wizard,
+    scan_configs,
     slugify_domain,
 )
 
@@ -252,6 +254,162 @@ def test_find_resumable_configs_multiple_candidates(tmp_path):
     candidates = find_resumable_configs(tmp_path)
 
     assert {path.name for path, _ in candidates} == {"a.yaml", "b.yaml"}
+
+
+def _write_complete_manifest(output_dir: Path) -> None:
+    """A manifest with no pending/retrying records -- acquisition looks
+    finished, distinct from _write_fake_manifest's single pending record."""
+    from wpfreeze.manifest import Manifest, Status
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest = Manifest()
+    record = manifest.get_or_create("https://example.com/", discovered_via="sitemap")
+    record.status = Status.FETCHED.value
+    manifest.save(output_dir / "manifest.json")
+
+
+# ---------------------------------------------------------------------------
+# scan_configs: like find_resumable_configs, but keeps every valid config
+# (not just ones with a manifest) and reports what didn't parse
+# ---------------------------------------------------------------------------
+
+
+def test_scan_configs_includes_a_config_with_no_manifest_yet(tmp_path):
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+
+    valid, invalid = scan_configs(tmp_path)
+
+    assert [path.name for path, _ in valid] == ["site.yaml"]
+    assert invalid == []
+
+
+def test_scan_configs_reports_unparseable_yaml_instead_of_dropping_it(tmp_path):
+    (tmp_path / "not-a-config.yaml").write_text("- just\n- a\n- list\n", encoding="utf-8")
+
+    valid, invalid = scan_configs(tmp_path)
+
+    assert valid == []
+    assert [path.name for path in invalid] == ["not-a-config.yaml"]
+
+
+def test_scan_configs_empty_directory(tmp_path):
+    assert scan_configs(tmp_path) == ([], [])
+
+
+# ---------------------------------------------------------------------------
+# print_overview: bare `wpfreeze`, no stdin, no side effects
+# ---------------------------------------------------------------------------
+
+
+def _run_overview(tmp_path) -> list[str]:
+    lines: list[str] = []
+    print_overview(tmp_path, tell=lines.append)
+    return lines
+
+
+def test_print_overview_not_yet_acquired(tmp_path):
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+
+    lines = _run_overview(tmp_path)
+    text = "\n".join(lines)
+
+    assert "Not yet acquired." in text
+    assert "wpfreeze acquire --config site.yaml --dry-run" in text
+    assert "wpfreeze acquire --config site.yaml" in text
+    assert "wpfreeze status" not in text
+
+
+def test_print_overview_resumable_run_suggests_resume_only(tmp_path):
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+    _write_fake_manifest(tmp_path / "out")  # one pending record
+
+    lines = _run_overview(tmp_path)
+    text = "\n".join(lines)
+
+    assert "wpfreeze acquire --config site.yaml --resume" in text
+    assert "wpfreeze status" not in text
+    assert "wpfreeze build" not in text
+
+
+def test_print_overview_complete_not_built(tmp_path):
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+    _write_complete_manifest(tmp_path / "out")
+
+    lines = _run_overview(tmp_path)
+    text = "\n".join(lines)
+
+    assert "Built: no." in text
+    assert "wpfreeze status --config site.yaml" in text
+    assert "wpfreeze build" in text
+    assert "wpfreeze validate" not in text
+    assert "wpfreeze upload-script" not in text
+
+
+def test_print_overview_built_without_upload_remote(tmp_path):
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+    _write_complete_manifest(tmp_path / "out")
+    (tmp_path / "out" / "site").mkdir(parents=True)
+
+    lines = _run_overview(tmp_path)
+    text = "\n".join(lines)
+
+    assert "Built: yes." in text
+    assert "wpfreeze validate" in text
+    assert "wpfreeze upload-script" not in text
+
+
+def test_print_overview_built_with_upload_remote(tmp_path):
+    site_yaml = tmp_path / "site.yaml"
+    site_yaml.write_text(
+        yaml.safe_dump(
+            {
+                "base_url": "https://example.com/",
+                "output_dir": str(tmp_path / "out"),
+                "upload": {"remote": "user@host:/path"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_complete_manifest(tmp_path / "out")
+    (tmp_path / "out" / "site").mkdir(parents=True)
+
+    lines = _run_overview(tmp_path)
+    text = "\n".join(lines)
+
+    assert "wpfreeze upload-script --config site.yaml" in text
+
+
+def test_print_overview_lists_non_conformant_yaml_by_name_only(tmp_path):
+    (tmp_path / "broken.yaml").write_text("- just\n- a\n- list\n", encoding="utf-8")
+
+    lines = _run_overview(tmp_path)
+    text = "\n".join(lines)
+
+    assert "Found 1 YAML file that doesn't look like a valid site config: broken.yaml" in text
+
+
+def test_print_overview_pluralizes_multiple_non_conformant_files(tmp_path):
+    (tmp_path / "broken-a.yaml").write_text("- x\n", encoding="utf-8")
+    (tmp_path / "broken-b.yaml").write_text("- y\n", encoding="utf-8")
+
+    lines = _run_overview(tmp_path)
+    text = "\n".join(lines)
+
+    assert "Found 2 YAML files that don't look like a valid site config: broken-a.yaml, broken-b.yaml" in text
+
+
+def test_print_overview_always_points_at_wizard_and_setup(tmp_path):
+    lines = _run_overview(tmp_path)
+    text = "\n".join(lines)
+
+    assert "wpfreeze wizard" in text
+    assert "SETUP.md" in text
+
+
+def test_print_overview_never_reads_stdin_and_returns_zero(tmp_path):
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+    exit_code = print_overview(tmp_path, tell=lambda m: None)
+    assert exit_code == 0
 
 
 # ---------------------------------------------------------------------------

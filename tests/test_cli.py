@@ -766,10 +766,25 @@ def test_build_validate_offer_skips_validate_when_build_hard_fails(tmp_path: Pat
 # ---------------------------------------------------------------------------
 
 
-def test_main_with_no_args_launches_wizard(monkeypatch):
+def test_main_with_no_args_prints_overview_not_wizard(monkeypatch):
+    """Bare `wpfreeze` is the non-interactive overview, not the interactive
+    wizard -- see print_overview's own docstring for why the split exists.
+    `wizard` (the subcommand) is what launches run_wizard now."""
+    overview_calls = []
+    wizard_calls = []
+    monkeypatch.setattr("wpfreeze.wizard.print_overview", lambda: overview_calls.append("overview") or 0)
+    monkeypatch.setattr("wpfreeze.wizard.run_wizard", lambda: wizard_calls.append("wizard") or 0)
+
+    assert main([]) == 0
+
+    assert overview_calls == ["overview"]
+    assert wizard_calls == []
+
+
+def test_main_wizard_subcommand_launches_the_interactive_wizard(monkeypatch):
     calls = []
     monkeypatch.setattr("wpfreeze.wizard.run_wizard", lambda: calls.append("wizard") or 0)
-    assert main([]) == 0
+    assert main(["wizard"]) == 0
     assert calls == ["wizard"]
 
 

@@ -125,6 +125,13 @@ policy:
   # genuine self-reference and is left alone.
   strip_wp_meta_links: true
 
+  # Lift <style> blocks that are byte-identical across many pages into a
+  # single shared stylesheet, linked from each page instead of repeated
+  # inline. Not a strip -- nothing is removed, the same CSS is just served
+  # from one place instead of hundreds. Only kicks in once the redundancy
+  # crosses a size threshold; small or page-specific blocks stay inline.
+  dedupe_inline_css: true
+
   # Add site-specific tracker hostnames to the built-in blocklist, for a
   # tracker this list doesn't already know. Matched as a substring of the
   # reference's host, so "analytics.example.com" covers its subdomains.

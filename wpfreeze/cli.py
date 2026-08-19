@@ -687,9 +687,14 @@ def run_upload_script(config: SiteConfig, site_dir: Path | None) -> int:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wpfreeze")
-    # Not required: no subcommand at all launches the interactive wizard
-    # (see run_wizard in wpfreeze.wizard).
+    # Not required: no subcommand at all prints the non-interactive overview
+    # (see print_overview in wpfreeze.wizard) -- `wizard` below is the
+    # interactive flow that used to be the no-args default.
     subparsers = parser.add_subparsers(dest="command", required=False)
+
+    subparsers.add_parser(
+        "wizard", help="interactive setup: resume an existing run, or build a new site config"
+    )
 
     acquire_p = subparsers.add_parser("acquire", help="run (or resume) the full acquisition pipeline")
     acquire_p.add_argument("--config", required=True, type=Path)
@@ -837,11 +842,16 @@ def _dispatch(argv: list[str] | None) -> int:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
 
     if not raw_argv:
+        from wpfreeze.wizard import print_overview
+
+        return print_overview()
+
+    args = build_arg_parser().parse_args(raw_argv)
+
+    if args.command == "wizard":
         from wpfreeze.wizard import run_wizard
 
         return run_wizard()
-
-    args = build_arg_parser().parse_args(raw_argv)
 
     try:
         config = load_config(args.config)

@@ -1,16 +1,28 @@
-"""No-args wizard mode: `wpfreeze` with no subcommand first looks in the
-current directory for a site config with an existing, resumable run and
-offers to pick that back up (see find_resumable_configs) -- and only if
-there's none, or the user declines all of them, walks through building a
-new config interactively: base URL, output directory, politeness, Wayback
-recovery, and an optional WordPress XML export (WXR) to augment inventory
-completeness -- then writes a normal site YAML and offers to dry-run and
-run it immediately.
+"""Two entry points live here, split by whether they touch stdin.
 
-Every question here maps onto the same SiteConfig/YAML shape load_config()
-already reads (see wpfreeze.cli) -- the file this writes is a completely
-ordinary config afterward: --resume, report, and status all work on it
-with no wizard involved.
+`print_overview` is what bare `wpfreeze` (no subcommand) runs: a
+non-interactive, side-effect-free summary of every site config in the
+current directory and the commands relevant to each one's state, plus a
+pointer to `wizard`/SETUP.md for starting from scratch. Never reads
+stdin, never runs anything -- safe to run just to look, or from a
+non-interactive context.
+
+`run_wizard` is the interactive flow, behind the explicit `wpfreeze
+wizard` subcommand (it used to be the no-args default; the split exists
+because the old default action-oriented behavior -- auto-offering to
+resume a run, blocking on stdin -- is a bad fit for "what's here?"). It
+first looks in the current directory for a site config with an existing,
+resumable run and offers to pick that back up (see find_resumable_configs)
+-- and only if there's none, or the user declines all of them, walks
+through building a new config interactively: base URL, output directory,
+politeness, Wayback recovery, and an optional WordPress XML export (WXR)
+to augment inventory completeness -- then writes a normal site YAML and
+offers to dry-run and run it immediately.
+
+Every question `run_wizard` asks maps onto the same SiteConfig/YAML shape
+load_config() already reads (see wpfreeze.cli) -- the file it writes is a
+completely ordinary config afterward: --resume, report, and status all
+work on it with no wizard involved.
 """
 from __future__ import annotations
 
@@ -102,28 +114,119 @@ def find_resumable_configs(directory: Path = Path(".")) -> list[tuple[Path, Site
     will have unrelated YAML files, and probing them is not this
     function's business to fail loudly over.
     """
+    valid, _invalid = scan_configs(directory)
+    return [(path, config) for path, config in valid if (config.output_dir / "manifest.json").exists()]
+
+
+def scan_configs(directory: Path = Path(".")) -> tuple[list[tuple[Path, SiteConfig]], list[Path]]:
+    """Every *.yaml/*.yml in `directory`, split into (site configs that
+    parse, paths that don't). Unlike find_resumable_configs, keeps every
+    valid config regardless of whether acquisition has ever run -- a
+    config nobody has acquired yet is exactly as relevant to an overview
+    as one mid-run -- and, unlike that function, does not silently drop
+    what fails to parse: `print_overview`'s whole purpose is telling
+    someone what's going on in this directory, and staying quiet about a
+    YAML file that looks like it should be a config but isn't works
+    against that.
+    """
     from wpfreeze.cli import load_config  # deferred: cli imports this module
 
-    candidates = []
+    valid: list[tuple[Path, SiteConfig]] = []
+    invalid: list[Path] = []
     paths = sorted(directory.glob("*.yaml")) + sorted(directory.glob("*.yml"))
     for path in paths:
         try:
             config = load_config(path)
         except Exception:
+            invalid.append(path)
             continue
-        if (config.output_dir / "manifest.json").exists():
-            candidates.append((path, config))
-    return candidates
+        valid.append((path, config))
+    return valid, invalid
 
 
-def _describe_manifest(output_dir: Path) -> str:
+def _manifest_counts(output_dir: Path) -> tuple[int, int, int]:
+    """(fetched, pending/retrying, total) records in the manifest at
+    `output_dir` -- the shared counting logic behind both
+    `_describe_manifest`'s one-line summary and `print_overview`'s
+    per-config state (resumable vs. complete)."""
     from wpfreeze.manifest import Manifest, Status
 
     manifest = Manifest.load(output_dir / "manifest.json")
     counts = Counter(r.status for r in manifest.all())
     fetched = counts.get(Status.FETCHED.value, 0) + counts.get(Status.FETCHED_WAYBACK.value, 0)
     pending = counts.get(Status.PENDING.value, 0) + counts.get(Status.RETRYING.value, 0)
-    return f"{fetched} fetched, {pending} pending/retrying, {len(manifest)} total"
+    return fetched, pending, len(manifest)
+
+
+def _describe_manifest(output_dir: Path) -> str:
+    fetched, pending, total = _manifest_counts(output_dir)
+    return f"{fetched} fetched, {pending} pending/retrying, {total} total"
+
+
+def _print_commands(tell: Callable[[str], None], config_name: str, entries: list[tuple[str, str]]) -> None:
+    """Print one `wpfreeze <subcommand> --config <config_name><suffix>`
+    line per (subcommand, suffix) in `entries`, with subcommand names
+    padded so every line's `--config` column lines up. `suffix` is
+    appended verbatim -- a flag (" --resume"), a parenthetical aside
+    ("   (safe to re-run any time)"), or "" for nothing extra.
+    """
+    width = max(len(cmd) for cmd, _ in entries)
+    for cmd, suffix in entries:
+        tell(f"    wpfreeze {cmd:<{width}} --config {config_name}{suffix}")
+
+
+def print_overview(directory: Path = Path("."), tell: Callable[[str], None] = print) -> int:
+    """Bare `wpfreeze` (no subcommand): a non-interactive, side-effect-free
+    summary of every site config in `directory` and the commands relevant
+    to each one's current state, plus a pointer to getting started from
+    scratch. Never reads stdin and never runs anything -- see `run_wizard`
+    (the `wizard` subcommand) for the interactive flow this replaced as
+    the no-args default.
+    """
+    valid, invalid = scan_configs(directory)
+
+    tell("wpfreeze -- static-archive WordPress sites")
+    tell("")
+
+    if valid:
+        noun = "config" if len(valid) == 1 else "configs"
+        tell(f"Found {len(valid)} site {noun} in this directory:")
+        tell("")
+        for path, config in valid:
+            tell(f"  {path.name}  ({config.base_url})")
+            manifest_path = config.output_dir / "manifest.json"
+            site_dir = config.output_dir / "site"
+            if not manifest_path.exists():
+                tell("    Not yet acquired.")
+                _print_commands(tell, path.name, [("acquire", " --dry-run"), ("acquire", "")])
+            else:
+                fetched, pending, total = _manifest_counts(config.output_dir)
+                tell(
+                    f"    Acquired: {fetched} fetched, {pending} pending, {total} total. "
+                    f"Built: {'yes' if site_dir.exists() else 'no'}."
+                )
+                if pending:
+                    _print_commands(tell, path.name, [("acquire", " --resume")])
+                else:
+                    entries = [("status", ""), ("build", "   (safe to re-run any time)")]
+                    if site_dir.exists():
+                        entries.append(("validate", ""))
+                        if config.upload.remote:
+                            entries.append(("upload-script", ""))
+                    _print_commands(tell, path.name, entries)
+            tell("")
+
+    if invalid:
+        noun = "file" if len(invalid) == 1 else "files"
+        verb = "doesn't" if len(invalid) == 1 else "don't"
+        names = ", ".join(p.name for p in invalid)
+        tell(f"Found {len(invalid)} YAML {noun} that {verb} look like a valid site config: {names}")
+        tell("")
+
+    tell("Starting a new site, or fixing a config that isn't loading? Run `wpfreeze wizard`")
+    tell("for a guided walkthrough, or see SETUP.md.")
+
+    return 0
 
 
 def _offer_resume(
