@@ -74,6 +74,19 @@ _URL_ATTRS: dict[str, tuple[str, ...]] = {
 }
 _SRCSET_TAGS = ("img", "source")
 
+
+def _element_context(tag_name: str, tag) -> str:
+    """A short, human-findable label for the element a reference came from
+    -- an anchor's visible text, an image's alt text. Only defined where
+    the page usually carries something readable; other tags (script, link,
+    iframe, ...) don't, so they get "" and unresolved_samples falls back to
+    just page+value for those, same as before this existed."""
+    if tag_name in ("a", "area"):
+        return tag.get_text(strip=True)
+    if tag_name == "img":
+        return tag.get("alt") or ""
+    return ""
+
 _CSS_URL_RE = re.compile(r"""url\(\s*(['"]?)([^'")]+)\1\s*\)""", re.IGNORECASE)
 
 _HTML_TYPES = ("text/html", "application/xhtml+xml")
@@ -96,7 +109,7 @@ class BuildStats:
     policy: PolicyStats = field(default_factory=PolicyStats)
     normalize: NormalizeStats = field(default_factory=NormalizeStats)
     dedupe: DedupeStats = field(default_factory=DedupeStats)
-    unresolved_samples: list[tuple[str, str]] = field(default_factory=list)
+    unresolved_samples: list[dict] = field(default_factory=list)
 
     @property
     def considered(self) -> int:
@@ -376,9 +389,17 @@ class LinkRewriter:
             return _different_host(absolute, page_url)
         return not self._profile.in_scope(absolute)
 
-    def resolve(self, value: str, page_url: str, page_output: str) -> str | None:
+    def resolve(self, value: str, page_url: str, page_output: str, context: str = "") -> str | None:
         """Return the relative replacement for `value`, or None to leave it
-        exactly as it was."""
+        exactly as it was.
+
+        `context` is a short, caller-supplied label for the element carrying
+        the reference (an anchor's link text, an image's alt text) -- not
+        used for resolution, only recorded alongside an unresolved sample so
+        two references with the identical href/src on the same page (a
+        near-daily occurrence: nav duplicates, image-plus-caption links)
+        can still be told apart later without re-parsing the page.
+        """
         raw = value.strip()
         if not raw or raw.lower().startswith(_SKIP_PREFIXES):
             self.stats.skipped += 1
@@ -427,8 +448,20 @@ class LinkRewriter:
             self.stats.left_absolute += 1
         else:
             self.stats.unresolved += 1
-            if len(self.stats.unresolved_samples) < 50:
-                self.stats.unresolved_samples.append((page_url, value[:120]))
+            self.stats.unresolved_samples.append(
+                {
+                    "page": page_url,
+                    "value": value[:120],
+                    "context": context[:60],
+                    # Both needed for the cleanup checklist to link this
+                    # sample two ways: `page_output` for the local built
+                    # copy of the referring page, `target` (the resolved
+                    # absolute form of `value`, not the raw possibly-
+                    # relative attribute text) for the still-live original.
+                    "page_output": page_output,
+                    "target": absolute,
+                }
+            )
         return None
 
     def rewrite_srcset(self, value: str, page_url: str, page_output: str) -> str:
@@ -488,7 +521,7 @@ class LinkRewriter:
                 for attr in attrs:
                     value = tag.get(attr)
                     if value:
-                        replacement = self.resolve(value, page_url, page_output)
+                        replacement = self.resolve(value, page_url, page_output, _element_context(tag_name, tag))
                         if replacement:
                             tag[attr] = replacement
 
@@ -573,7 +606,7 @@ def build_site(
             # tracker bucketed to /assets/js/external/fbevents.js has no host
             # left to match on. Strip, then rewrite what remains.
             if policy.any_enabled:
-                apply_policy(soup, policy, stats.policy)
+                apply_policy(soup, policy, stats.policy, record.url, record.output_path)
             # After policy (which only removes) and before rewriting, so the
             # rewriter never sees an attribute normalization is about to
             # delete.
@@ -679,12 +712,24 @@ def _iter_document_references(text: str, is_css: bool):
                 yield match.group(2)
 
 
-def verify_site(site_dir: Path) -> VerifyReport:
+def verify_site(site_dir: Path, written_after: float | None = None) -> VerifyReport:
     """Resolve every local reference in the emitted tree against disk.
 
     A reference is checked as a static server would serve it: query strings
     and fragments are ignored (a file either exists at that path or does
     not), and percent-encoding is decoded first.
+
+    `written_after` restricts the scan to files this build actually wrote,
+    by mtime: pass `time.time()` captured just before calling `build_site`,
+    and anything already sitting in `site_dir` from before that moment --
+    something a user copied in for their own purposes, say -- is skipped
+    rather than checked as if it were this build's own output. build_site
+    rewrites every file it owns unconditionally on every run (no up-to-date
+    skip), so this reliably separates "wrote this build" from "was already
+    there" without having to track every write call site across build_site,
+    BundleReassembler, and dedupe.extract_shared_css individually. Omit it
+    (the default) to check every .html/.htm/.css file present, matching
+    this function's behaviour before written_after existed.
     """
     from posixpath import normpath
     from urllib.parse import unquote
@@ -693,6 +738,8 @@ def verify_site(site_dir: Path) -> VerifyReport:
 
     for document in sorted(site_dir.rglob("*")):
         if not document.is_file() or document.suffix.lower() not in (".html", ".htm", ".css"):
+            continue
+        if written_after is not None and document.stat().st_mtime < written_after:
             continue
         report.documents += 1
         relative_dir = document.parent.relative_to(site_dir).as_posix()
@@ -751,9 +798,6 @@ def format_verify_summary(report: VerifyReport) -> str:
     return "\n".join(lines)
 
 
-_MAX_BROKEN_SAMPLES = 50
-
-
 def write_build_report(
     stats: BuildStats, output_dir: Path, verify: "VerifyReport | None" = None
 ) -> Path:
@@ -786,7 +830,7 @@ def write_build_report(
             "broken": len(verify.broken),
             "broken_samples": [
                 {"source": b.source, "reference": b.reference, "target": b.target, "reason": b.reason}
-                for b in verify.broken[:_MAX_BROKEN_SAMPLES]
+                for b in verify.broken
             ],
         }
     )
@@ -823,6 +867,11 @@ def format_build_summary(stats: BuildStats) -> str:
             f"  stripped: {p.telemetry_removed} telemetry, "
             f"{p.forms_removed} form(s), {p.feeds_removed} feed link(s), "
             f"{p.wp_meta_links_removed} WP protocol-discovery link(s)"
+        )
+    if p.dead_fragment_links_removed or p.comment_count_blurbs_removed:
+        lines.append(
+            f"  (also: {p.dead_fragment_links_removed} dead in-page link(s) unwrapped, "
+            f"{p.comment_count_blurbs_removed} stale comment-count blurb(s) removed)"
         )
     d = stats.dedupe
     if d.redundant_bytes_seen:

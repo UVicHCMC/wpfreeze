@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from wpfreeze.cleanup import build_cleanup_todo, write_cleanup_todo
+from wpfreeze.cleanup import (
+    build_cleanup_todo,
+    build_cleanup_todo_html,
+    write_cleanup_todo,
+    write_cleanup_todo_html,
+)
 
 
 def _write(path: Path, name: str, data: dict) -> None:
@@ -14,6 +19,97 @@ def test_returns_none_when_nothing_has_run_yet(tmp_path: Path):
     assert build_cleanup_todo(tmp_path) is None
     assert write_cleanup_todo(tmp_path) is None
     assert not (tmp_path / "cleanup-todo.md").exists()
+    assert build_cleanup_todo_html(tmp_path) is None
+    assert write_cleanup_todo_html(tmp_path) is None
+    assert not (tmp_path / "cleanup-todo.html").exists()
+
+
+def test_html_renders_headings_lists_and_inline_markup(tmp_path: Path):
+    _write(
+        tmp_path,
+        "vnu-report.json",
+        {
+            "documents_checked": 1,
+            "total_messages": 2,
+            "issues": [
+                {"message": 'An "img" element must have an "alt" & no more.', "count": 2, "pages": ["a&b.html"]}
+            ],
+        },
+    )
+    write_cleanup_todo(tmp_path)
+    html_path = write_cleanup_todo_html(tmp_path)
+
+    assert html_path == tmp_path / "cleanup-todo.html"
+    content = html_path.read_text(encoding="utf-8")
+    assert "<title>Cleanup checklist</title>" in content
+    assert "<h1>Cleanup checklist</h1>" in content
+    assert "<h2>Site markup/content quirks</h2>" in content
+    assert "<li><strong>2x</strong>" in content
+    assert "<code>a&amp;b.html</code>" in content
+    # the raw markdown's stray '&' and quotes must be escaped, not
+    # interpreted as HTML, and not double-escaped
+    assert "must have an &quot;alt&quot; &amp; no more" in content
+    assert "&amp;quot;" not in content
+    # markdown delimiters themselves must not leak into the HTML as text
+    assert "**" not in content
+
+
+def test_html_renders_markdown_links_as_anchors_opening_in_a_new_tab(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 1,
+            "unresolved_samples": [
+                {
+                    "page": "https://s/submit/",
+                    "value": "https://s/touched-by-disposession/",
+                    "context": "",
+                    "page_output": "/submit.html",
+                    "target": "https://s/touched-by-disposession/",
+                }
+            ],
+        },
+    )
+    html_path = write_cleanup_todo_html(tmp_path)
+    content = html_path.read_text(encoding="utf-8")
+    assert (
+        '<a href="https://s/touched-by-disposession/" target="_blank" rel="noopener">'
+        "<code>https://s/touched-by-disposession/</code></a>" in content
+    )
+    assert (
+        '<a href="site/submit.html" target="_blank" rel="noopener"><code>https://s/submit/</code></a>' in content
+    )
+    # markdown link syntax itself must not leak into the HTML as text
+    assert "](" not in content
+
+
+def test_html_collapses_long_lists_but_short_lists_stay_plain(tmp_path: Path):
+    long_issues = [{"message": f"Issue {i}.", "count": 1, "pages": [f"p{i}.html"]} for i in range(15)]
+    _write(
+        tmp_path,
+        "vnu-report.json",
+        {"documents_checked": 15, "total_messages": 15, "issues": long_issues},
+    )
+    _write(
+        tmp_path,
+        "diagnostics.json",
+        {
+            "duplicate_local_paths": [{"local_path": "a.html", "urls": ["x", "y"]}],
+            "disk_hash_mismatches": [],
+            "content_type_shape_mismatches": [],
+            "homepage": {"found": True},
+        },
+    )
+    html_path = write_cleanup_todo_html(tmp_path)
+    content = html_path.read_text(encoding="utf-8")
+
+    # 15 markup issues > threshold: collapsed behind <details>, all present
+    assert "<details><summary>15 items -- click to expand</summary>" in content
+    assert "Issue 0." in content
+    assert "Issue 14." in content
+    # 1 integrity problem <= threshold: plain <ul>, no <details> wrapper
+    assert "<ul>\n<li>1 file(s) were claimed" in content
 
 
 def test_clean_run_gets_the_all_clear_headline(tmp_path: Path):
@@ -53,13 +149,313 @@ def test_unresolved_references_are_listed_with_samples(tmp_path: Path):
     assert "linked from `https://s/team/`" in content
 
 
-def test_unresolved_sample_overflow_is_summarized_not_dumped(tmp_path: Path):
+def test_broken_reference_links_to_original_and_local_copy(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 1,
+            "unresolved_samples": [
+                {
+                    "page": "https://s/submit/",
+                    "value": "https://s/touched-by-disposession/",
+                    "context": "",
+                    "page_output": "/submit.html",
+                    "target": "https://s/touched-by-disposession/",
+                }
+            ],
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "[`https://s/touched-by-disposession/`](https://s/touched-by-disposession/)" in content
+    assert "[`https://s/submit/`](site/submit.html)" in content
+
+
+def test_broken_reference_without_link_data_falls_back_to_plain_text(tmp_path: Path):
+    # Legacy build-report.json shape: no page_output/target to link to.
+    _write(
+        tmp_path,
+        "build-report.json",
+        {"unresolved": 1, "unresolved_samples": [["https://s/team/", "https://s/never-captured/"]]},
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "`https://s/never-captured/`" in content
+    assert "[`https://s/never-captured/`]" not in content
+    assert "`https://s/team/`" in content
+    assert "[`https://s/team/`]" not in content
+
+
+def test_context_shown_only_to_disambiguate_duplicate_targets(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 3,
+            "unresolved_samples": [
+                # Unique (page, value): no context needed, none shown even
+                # though it was recorded.
+                ["https://s/about/", "https://s/dead/", "About us"],
+                # Same (page, value) reached via two different links: context
+                # is the only way to tell them apart, so it's shown for both.
+                ["https://s/submit/", "https://s/touched-by-disposession/", "Touched by Dispossession"],
+                ["https://s/submit/", "https://s/touched-by-disposession/", "menu link"],
+            ],
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert 'text: "About us"' not in content
+    assert 'text: "Touched by Dispossession"' in content
+    assert 'text: "menu link"' in content
+
+
+def test_identical_broken_reference_repeated_on_a_page_is_shown_once(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 2,
+            "unresolved_samples": [
+                ["https://s/students/", "https://s/kara-isozaki", "Kara Isozaki"],
+                ["https://s/students/", "https://s/kara-isozaki", "Kara Isozaki"],
+            ],
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert content.count("kara-isozaki") == 1
+
+
+def test_excised_forms_are_listed_per_page_and_flagged_for_attention(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "forms_removed": 3,
+                "forms_removed_pages": {"https://s/contact/": 2, "https://s/subscribe/": 1},
+                "telemetry_removed": 0,
+                "feeds_removed": 0,
+                "wp_meta_links_removed": 0,
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "## Content intentionally excised" in content
+    assert "3 form(s) across 2 page(s)" in content
+    assert "`https://s/contact/` (2 form(s))" in content
+    assert "`https://s/subscribe/`" in content and "(1 form(s))" not in content
+    assert "worth a look before you call it done" in content
+
+
+def test_comment_category_mentions_dead_link_and_blurb_cleanup(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "forms_removed": 1,
+                "forms_removed_pages": {
+                    "https://s/post/": {"count": 1, "output_path": "/post.html", "categories": {"comment": 1}}
+                },
+                "dead_fragment_links_removed": 3,
+                "comment_count_blurbs_removed": 1,
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "3 now-dead in-page link(s) unwrapped" in content
+    assert '1 stale "N comments" blurb(s) removed' in content
+
+
+def test_comment_category_without_extra_cleanup_omits_the_aside(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "forms_removed": 1,
+                "forms_removed_pages": {
+                    "https://s/post/": {"count": 1, "output_path": "/post.html", "categories": {"comment": 1}}
+                },
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "Also cleaned up" not in content
+    assert "Full list:" in content
+
+
+def test_excised_form_page_links_to_local_copy(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "forms_removed": 1,
+                "forms_removed_pages": {"https://s/contact/": {"count": 1, "output_path": "/contact.html"}},
+                "telemetry_removed": 0,
+                "feeds_removed": 0,
+                "wp_meta_links_removed": 0,
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "[`https://s/contact/`](site/contact.html)" in content
+
+
+def test_excised_forms_pages_without_output_path_are_not_linked(tmp_path: Path):
+    # Legacy build-report.json shape: a bare int per page, no output_path.
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {"forms_removed": 1, "forms_removed_pages": {"https://s/contact/": 1}},
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "`https://s/contact/`" in content
+    assert "[`https://s/contact/`]" not in content
+
+
+def test_comment_forms_removed_on_many_pages_are_listed_in_full_with_outliers_first(tmp_path: Path):
+    # Simulates a real site where nearly every page carries the theme's one
+    # boilerplate comment form, plus two pages that had an actual extra
+    # comment thread (a page with more than one #respond block). Nothing is
+    # cut -- all 22 pages must appear -- but the two outliers should sort
+    # ahead of the alphabetically-earlier single-form pages so a skimming
+    # reader spots them first.
+    pages = {
+        f"https://s/page-{i}/": {"count": 1, "output_path": f"/page-{i}.html", "categories": {"comment": 1}}
+        for i in range(20)
+    }
+    pages["https://s/aaa-many-forms/"] = {
+        "count": 3,
+        "output_path": "/aaa-many-forms.html",
+        "categories": {"comment": 3},
+    }
+    pages["https://s/zzz-many-forms/"] = {
+        "count": 2,
+        "output_path": "/zzz-many-forms.html",
+        "categories": {"comment": 2},
+    }
+    total = sum(p["count"] for p in pages.values())
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {"forms_removed": total, "forms_removed_pages": pages},
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "**Comment forms**" in content
+    assert "lower priority" in content
+    assert "[`https://s/aaa-many-forms/`](site/aaa-many-forms.html) (3 form(s))" in content
+    assert "[`https://s/zzz-many-forms/`](site/zzz-many-forms.html) (2 form(s))" in content
+    # comment forms alone shouldn't push the "worth a look" headline
+    assert "worth a look before you call it done" not in content
+    assert "`https://s/page-19/`" in content
+    assert "more (see build-report.json" not in content
+    section = content.split("## Content intentionally excised", 1)[1]
+    assert section.index("aaa-many-forms") < section.index("page-0/")
+
+
+def test_legacy_forms_without_category_data_bucket_as_unspecified(tmp_path: Path):
+    # A build-report.json written before form categorization existed: bare
+    # int per page, no "categories" key at all. Can't be split by category,
+    # so it lands under "unspecified" rather than being guessed at, and
+    # (unlike "comment") still counts toward "worth a look".
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {"forms_removed": 1, "forms_removed_pages": {"https://s/contact/": 1}},
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "Forms (from a build made before categorization existed)" in content
+    assert "worth a look before you call it done" in content
+
+
+def test_other_category_forms_push_the_worth_a_look_headline(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "forms_removed": 1,
+                "forms_removed_pages": {
+                    "https://s/contact/": {"count": 1, "output_path": "/contact.html", "categories": {"other": 1}}
+                },
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "**Other forms**" in content
+    assert "worth a look before you call it done" in content
+
+
+def test_invisible_excisions_are_summarized_without_a_page_list(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "forms_removed": 0,
+                "forms_removed_pages": {},
+                "telemetry_removed": 5,
+                "feeds_removed": 2,
+                "wp_meta_links_removed": 4,
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "## Content intentionally excised" in content
+    assert "5 telemetry/analytics reference(s), 2 feed link(s), 4 WP protocol-discovery link(s)" in content
+    # nothing visible was removed, so this shouldn't drive the "look at
+    # this first" headline the way a form removal does
+    assert "worth a look before you call it done" not in content
+
+
+def test_no_excisions_omits_the_section(tmp_path: Path):
+    _write(tmp_path, "build-report.json", {"unresolved": 0, "unresolved_samples": [], "policy": {}})
+    content = build_cleanup_todo(tmp_path)
+    assert "## Content intentionally excised" not in content
+
+
+def test_unresolved_samples_are_listed_in_full(tmp_path: Path):
     samples = [[f"https://s/page-{i}/", f"https://s/missing-{i}/"] for i in range(30)]
     _write(tmp_path, "build-report.json", {"unresolved": 30, "unresolved_samples": samples})
     content = build_cleanup_todo(tmp_path)
     assert "missing-0" in content
-    assert "missing-29" not in content
-    assert "...and 15 more" in content
+    assert "missing-29" in content
+    assert "more (see build-report.json)" not in content
+
+
+def test_unresolved_samples_short_of_count_is_still_summarized(tmp_path: Path):
+    # A build-report.json written before build.py stopped capping
+    # unresolved_samples at 50 can have fewer samples than `unresolved`.
+    samples = [[f"https://s/page-{i}/", f"https://s/missing-{i}/"] for i in range(10)]
+    _write(tmp_path, "build-report.json", {"unresolved": 30, "unresolved_samples": samples})
+    content = build_cleanup_todo(tmp_path)
+    assert "missing-9" in content
+    assert "...and 20 more (see build-report.json)" in content
 
 
 def test_vnu_issues_are_listed_with_page_counts(tmp_path: Path):
@@ -83,6 +479,23 @@ def test_vnu_issues_are_listed_with_page_counts(tmp_path: Path):
     assert "106x" in content
     assert "alt" in content
     assert "yours to hand-edit directly" in content
+    # `pages` are already site-relative output paths, so the example links directly
+    assert "[`team.html`](site/team.html)" in content
+
+
+def test_vnu_issues_are_listed_in_full(tmp_path: Path):
+    issues = [
+        {"message": f"Issue number {i}.", "count": 1, "pages": [f"page-{i}.html"]} for i in range(30)
+    ]
+    _write(
+        tmp_path,
+        "vnu-report.json",
+        {"documents_checked": 30, "total_messages": 30, "issues": issues},
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "Issue number 0." in content
+    assert "Issue number 29." in content
+    assert "more distinct issue" not in content
 
 
 def test_integrity_anomalies_are_flagged_as_look_at_this_first(tmp_path: Path):
@@ -271,6 +684,35 @@ def test_broken_local_links_reach_the_checklist(tmp_path: Path):
     assert "worth a look before you call it done" in content
     assert "## Local link verification" in content
     assert "./photo.jpg" in content and "team.html" in content
+    # `source` is already a site-relative output path, so it links directly
+    assert "[`team.html`](site/team.html)" in content
+
+
+def test_broken_local_links_are_listed_in_full(tmp_path: Path):
+    samples = [
+        {"source": f"page-{i}.html", "reference": f"./missing-{i}.jpg", "target": f"missing-{i}.jpg", "reason": "missing"}
+        for i in range(30)
+    ]
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "verification": {
+                "documents": 30,
+                "checked": 30,
+                "external": 0,
+                "skipped": 0,
+                "broken": 30,
+                "broken_samples": samples,
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "missing-0.jpg" in content
+    assert "missing-29.jpg" in content
+    assert "more (see build-report.json)" not in content
 
 
 def test_no_verify_build_says_verification_did_not_run(tmp_path: Path):

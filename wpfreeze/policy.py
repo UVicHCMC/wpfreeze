@@ -48,10 +48,11 @@ Two honest limits follow from that, neither silently swallowed:
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 # --- Telemetry host blocklist ---------------------------------------------
 #
@@ -174,6 +175,34 @@ _WP_META_LINK_ALTERNATE_TYPES: frozenset[str] = frozenset(
     {"application/json", "application/json+oembed", "text/xml+oembed"}
 )
 
+# --- Comment-form fingerprints ---------------------------------------------
+#
+# WordPress core's comment_form() (wp-includes/comment-template.php) hardcodes
+# this wrapper -- a heading, the form, and a "Cancel reply" link, all inside
+# <div id="respond" class="comment-respond"> -- regardless of what a theme
+# does with the surrounding page. A theme can (and often does) override the
+# heading's *text* via comment_form()'s $args, but the id="respond"/
+# class="comment-respond" wrapper and id="commentform"/class="comment-form"
+# form itself are not part of that args array -- they're baked into the
+# function. So detecting the wrapper, not the caption text, catches a themed
+# "Submit a Comment" heading exactly as reliably as the untouched default
+# "Leave a Reply", without any language- or theme-specific guessing.
+_COMMENT_WRAPPER_IDS: frozenset[str] = frozenset({"respond"})
+_COMMENT_WRAPPER_CLASSES: frozenset[str] = frozenset({"comment-respond"})
+_COMMENT_FORM_IDS: frozenset[str] = frozenset({"commentform"})
+_COMMENT_FORM_CLASSES: frozenset[str] = frozenset({"comment-form"})
+# How far up from a <form> to look for its wrapper. Generous for real markup
+# (the wrapper is almost always the form's direct parent) but bounded so a
+# pathologically deep tree can't turn this into an unbounded walk.
+_COMMENT_WRAPPER_MAX_DEPTH = 5
+
+# A lone separator character between post-meta items ("Feb 1, 2018 | News |
+# 0 comments") -- matched so removing the last item in the line doesn't
+# leave a dangling "|" with nothing after it. Deliberately only whitespace
+# plus one punctuation character: a real content text node should never
+# match this by accident.
+_META_SEPARATOR_RE = re.compile(r"^\s*[|/•·]\s*$")
+
 
 @dataclass
 class Policy:
@@ -184,6 +213,16 @@ class Policy:
     strip_forms: bool = True
     strip_feeds: bool = True
     strip_wp_meta_links: bool = True
+    # Only meaningful when strip_forms removes a comment form's wrapper (see
+    # _comment_wrapper): whether the "N comments" post-meta blurb built
+    # around the now-dead #respond link is removed outright (True, the
+    # default -- matches strip_forms's own "no live-web machinery" stance),
+    # or -- when False -- kept as plain text for any page with a nonzero
+    # count (the comment thread, if captured, is still real content someone
+    # may want the count for) while still unwrapping the dead link either
+    # way. A "0 comments" blurb is always removed regardless of this flag:
+    # it's noise, not information, in either mode.
+    strip_comment_counts: bool = True
     # Lift <style> blocks repeated verbatim across pages into shared files.
     # Not a strip -- nothing is removed, the same CSS is served from one
     # place instead of hundreds. See dedupe.py.
@@ -210,6 +249,7 @@ class Policy:
             strip_forms=bool(raw.get("strip_forms", True)),
             strip_feeds=bool(raw.get("strip_feeds", True)),
             strip_wp_meta_links=bool(raw.get("strip_wp_meta_links", True)),
+            strip_comment_counts=bool(raw.get("strip_comment_counts", True)),
             dedupe_inline_css=bool(raw.get("dedupe_inline_css", True)),
             telemetry_extra_hosts=list(raw.get("telemetry_extra_hosts", []) or []),
             telemetry_keep_hosts=list(raw.get("telemetry_keep_hosts", []) or []),
@@ -225,6 +265,27 @@ class PolicyStats:
     forms_removed: int = 0
     feeds_removed: int = 0
     wp_meta_links_removed: int = 0
+    # Which pages had a form excised, how many, and the page's own output
+    # path (so the cleanup checklist can link straight to the local built
+    # copy). Unlike the other three strips (telemetry, feeds, WP protocol-
+    # discovery links) -- all <head> or third-party removals invisible in
+    # the rendered page -- a removed <form> can leave a heading, label, or
+    # "Subscribe" button behind with nothing under it any more. Per-page
+    # detail is what a site owner needs to go check those pages, not just
+    # a global count (see cleanup.py). Keyed by page_url; each value is
+    # {"count": int, "output_path": str, "categories": {"comment": int, ...}}.
+    # "comment" forms had their caption/cancel-link wrapper removed with
+    # them (see _comment_wrapper) and so are lower-priority to check by
+    # hand; anything else -- search, subscribe, contact, unrecognized --
+    # buckets under "other" for now.
+    forms_removed_pages: dict[str, dict] = field(default_factory=dict)
+    # In-page anchors that pointed at an id a form-wrapper removal just took
+    # with it (WordPress's own "N comments" post-meta link, most commonly,
+    # via #respond) -- the link itself unwrapped (dead_fragment_links_removed)
+    # or, when it sits in a "comments-number" blurb, the whole blurb removed
+    # instead (comment_count_blurbs_removed). See _clean_dead_fragment_links.
+    dead_fragment_links_removed: int = 0
+    comment_count_blurbs_removed: int = 0
 
 
 def _is_telemetry_ref(url: str, blocked: frozenset[str], kept: list[str]) -> bool:
@@ -266,13 +327,142 @@ def _strip_telemetry(soup: BeautifulSoup, policy: Policy, stats: PolicyStats) ->
             stats.telemetry_removed += 1
 
 
-def _strip_forms(soup: BeautifulSoup, stats: PolicyStats) -> None:
+def _comment_wrapper(form):
+    """The nearest ancestor matching WordPress core's comment_form() wrapper
+    (id="respond"/class="comment-respond"), or None if `form` isn't inside
+    one -- either because it's some other kind of form, or because whatever
+    generated it didn't use core's wrapper. Bounded to
+    _COMMENT_WRAPPER_MAX_DEPTH ancestors; the wrapper is almost always the
+    form's direct parent in practice.
+    """
+    node = form.parent
+    for _ in range(_COMMENT_WRAPPER_MAX_DEPTH):
+        name = getattr(node, "name", None)
+        if name in (None, "[document]", "html"):
+            return None
+        if node.get("id") in _COMMENT_WRAPPER_IDS:
+            return node
+        if set(node.get("class") or []) & _COMMENT_WRAPPER_CLASSES:
+            return node
+        node = node.parent
+    return None
+
+
+def _is_comment_form(form) -> bool:
+    """True if the <form> itself carries WordPress core's comment-form
+    id/class -- a fallback for the (presumably rare) case its wrapper isn't
+    present but the form's own attributes are."""
+    if form.get("id") in _COMMENT_FORM_IDS:
+        return True
+    return bool(set(form.get("class") or []) & _COMMENT_FORM_CLASSES)
+
+
+_COMMENT_COUNT_DIGITS_RE = re.compile(r"\d+")
+
+
+def _comment_count(text: str) -> int | None:
+    """The first integer found in a "comments-number" blurb's text ("0
+    comments", "2 Comments", ...), or None if it doesn't contain one (a
+    theme writing "No comments yet" or "One comment" with no numeral --
+    presumably rare, but not something to guess a value for)."""
+    match = _COMMENT_COUNT_DIGITS_RE.search(text)
+    return int(match.group()) if match else None
+
+
+def _remove_comments_number_blurb(wrapper, stats: PolicyStats) -> None:
+    prev = wrapper.previous_sibling
+    if isinstance(prev, NavigableString) and _META_SEPARATOR_RE.match(str(prev)):
+        prev.extract()
+    wrapper.decompose()
+    stats.comment_count_blurbs_removed += 1
+
+
+def _clean_dead_fragment_links(
+    soup: BeautifulSoup, removed_ids: set[str], stats: PolicyStats, strip_comment_counts: bool
+) -> None:
+    """An in-page anchor (`href="...#id"`) pointing at an id a form-wrapper
+    removal just took with it is now a dead link to nowhere -- most often
+    WordPress's own "N comments" post-meta blurb (`class="comments-number"`),
+    which core themes link to the comment form's #respond id. The link
+    itself is always unwrapped (dropped, visible text kept) when its blurb
+    is not removed outright, since a link to a place that no longer exists
+    is unconditionally wrong regardless of what it says.
+
+    Whether the blurb itself goes depends on `strip_comment_counts`: True
+    removes it unconditionally (a frozen count is stale information on a
+    static archive regardless of its value); False keeps it when it reports
+    a nonzero count (the comment thread, if captured, is still real content
+    someone may want the count for) and removes it only when the count
+    parses as zero -- "0 comments" is noise either way. Unparseable text
+    (see _comment_count) is treated as "has comments": the safer of the two
+    wrong guesses, since it only risks leaving a stale count rather than
+    deleting a real one.
+    """
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"]
+        fragment = href.rsplit("#", 1)[-1] if "#" in href else None
+        if not fragment or fragment not in removed_ids:
+            continue
+
+        wrapper = anchor.find_parent(class_="comments-number")
+        if wrapper is not None and (strip_comment_counts or _comment_count(wrapper.get_text()) == 0):
+            _remove_comments_number_blurb(wrapper, stats)
+        else:
+            anchor.unwrap()
+            stats.dead_fragment_links_removed += 1
+
+
+def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page_url: str, page_output: str) -> None:
     # On a static archive no <form> submits usefully: comment and search
     # forms hit dead endpoints, and subscribe forms leak to a third party.
-    # Remove the element outright (decision B: remove, not neuter).
+    # Remove the element outright (decision B: remove, not neuter). A
+    # recognized comment form takes its whole wrapper with it -- heading and
+    # "Cancel reply" link included -- rather than leaving an orphaned
+    # caption behind; see the fingerprint note above _COMMENT_WRAPPER_IDS.
+    handled: set[int] = set()  # id() of <form> tags already removed via a wrapper
+    count = 0
+    categories: dict[str, int] = {}
+    removed_ids: set[str] = set()
+
     for form in soup.find_all("form"):
-        form.decompose()
-        stats.forms_removed += 1
+        if id(form) in handled:
+            continue
+
+        wrapper = _comment_wrapper(form)
+        category = "comment" if wrapper is not None or _is_comment_form(form) else "other"
+        target = wrapper if wrapper is not None else form
+
+        # A wrapper can (rarely, malformed markup) contain more than one
+        # <form>; mark every form inside it handled before decomposing so a
+        # later loop iteration doesn't touch an already-detached node.
+        inner_forms = target.find_all("form") if target is not form else [form]
+        for inner in inner_forms:
+            handled.add(id(inner))
+
+        # Record the id(s) being removed before decomposing -- an in-page
+        # anchor elsewhere on this page may point at one of them (see
+        # _clean_dead_fragment_links) and would otherwise be left dangling.
+        for node in (target, form):
+            node_id = node.get("id")
+            if node_id:
+                removed_ids.add(node_id)
+
+        target.decompose()
+        count += 1
+        categories[category] = categories.get(category, 0) + 1
+
+    if removed_ids:
+        _clean_dead_fragment_links(soup, removed_ids, stats, policy.strip_comment_counts)
+
+    if count:
+        stats.forms_removed += count
+        if page_url:
+            entry = stats.forms_removed_pages.setdefault(
+                page_url, {"count": 0, "output_path": page_output, "categories": {}}
+            )
+            entry["count"] += count
+            for category, n in categories.items():
+                entry["categories"][category] = entry["categories"].get(category, 0) + n
 
 
 def _strip_feeds(soup: BeautifulSoup, stats: PolicyStats) -> None:
@@ -309,12 +499,20 @@ def _strip_wp_meta_links(soup: BeautifulSoup, stats: PolicyStats) -> None:
             stats.wp_meta_links_removed += 1
 
 
-def apply_policy(soup: BeautifulSoup, policy: Policy, stats: PolicyStats) -> None:
-    """Apply the content policy to a parsed document, in place."""
+def apply_policy(
+    soup: BeautifulSoup, policy: Policy, stats: PolicyStats, page_url: str = "", page_output: str = ""
+) -> None:
+    """Apply the content policy to a parsed document, in place.
+
+    `page_url`/`page_output` are only used to key/link forms_removed_pages;
+    omit them (as the unit tests do, one document at a time with no page
+    identity of interest) and forms still get stripped and counted, just
+    not attributed to a page.
+    """
     if policy.strip_telemetry:
         _strip_telemetry(soup, policy, stats)
     if policy.strip_forms:
-        _strip_forms(soup, stats)
+        _strip_forms(soup, policy, stats, page_url, page_output)
     if policy.strip_feeds:
         _strip_feeds(soup, stats)
     if policy.strip_wp_meta_links:

@@ -84,6 +84,20 @@ def test_load_config_applies_defaults(tmp_path: Path):
     assert config.concurrency == 2
     assert config.exclusions == []
     assert config.wayback.enabled is True
+    assert config.upload.remote is None
+
+
+def test_load_config_upload_remote(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {
+            "base_url": "https://example.com/",
+            "output_dir": "out",
+            "upload": {"remote": "user@example.com:/var/www/html"},
+        },
+    )
+    config = load_config(path)
+    assert config.upload.remote == "user@example.com:/var/www/html"
 
 
 def test_load_config_wayback_settings(tmp_path: Path):
@@ -487,7 +501,99 @@ def test_run_build_writes_build_report_and_cleanup_todo(tmp_path: Path, capsys):
 
     assert (output_dir / "build-report.json").exists()
     assert (output_dir / "cleanup-todo.md").exists()
-    assert f"Cleanup checklist: {output_dir / 'cleanup-todo.md'}" in capsys.readouterr().out
+    assert (output_dir / "cleanup-todo.html").exists()
+    out = capsys.readouterr().out
+    assert f"Cleanup checklist: {output_dir / 'cleanup-todo.md'}" in out
+    assert "cleanup-todo.html" in out
+
+
+def test_run_build_verify_ignores_a_pre_existing_file_in_site_dir(tmp_path: Path):
+    """Regression test: a file already sitting in the site directory before
+    this build ran (e.g. one the user copied in for their own purposes) must
+    not be scanned by verification as if it were this run's own output."""
+    from wpfreeze.cli import run_build
+
+    output_dir = tmp_path / "out"
+    config = _minimal_capture(output_dir)
+    site_dir = output_dir / "site"
+    site_dir.mkdir(parents=True)
+    (site_dir / "stray.html").write_text('<a href="does-not-exist.html">dead</a>', encoding="utf-8")
+
+    exit_code = run_build(config, None, verify=True)
+
+    assert exit_code == 0
+    build_report = json.loads((output_dir / "build-report.json").read_text(encoding="utf-8"))
+    assert build_report["verification"]["broken"] == 0
+
+
+def test_run_build_never_writes_an_upload_script(tmp_path: Path):
+    """upload.sh is written only by the explicit `upload-script` command,
+    never as a side effect of `build` -- regression test for that
+    boundary, regardless of whether `upload.remote` is configured."""
+    import dataclasses
+
+    from wpfreeze.cli import UploadSettings, run_build
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(
+        _minimal_capture(output_dir), upload=UploadSettings(remote="user@example.com:/var/www/html")
+    )
+
+    run_build(config, None, verify=False)
+
+    assert not (output_dir / "upload.sh").exists()
+
+
+def test_upload_script_writes_when_remote_configured(tmp_path: Path, capsys):
+    import dataclasses
+
+    from wpfreeze.cli import UploadSettings, run_build, run_upload_script
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(
+        _minimal_capture(output_dir), upload=UploadSettings(remote="user@example.com:/var/www/html")
+    )
+    run_build(config, None, verify=False)  # so the "built site exists" check passes
+
+    exit_code = run_upload_script(config, None)
+
+    upload_path = output_dir / "upload.sh"
+    assert exit_code == 0
+    assert upload_path.exists()
+    assert 'REMOTE="user@example.com:/var/www/html"' in upload_path.read_text(encoding="utf-8")
+    assert f"Upload script: {upload_path}" in capsys.readouterr().out
+
+
+def test_upload_script_without_remote_configured_errors(tmp_path: Path, capsys):
+    from wpfreeze.cli import run_build, run_upload_script
+
+    output_dir = tmp_path / "out"
+    config = _minimal_capture(output_dir)
+    run_build(config, None, verify=False)
+
+    exit_code = run_upload_script(config, None)
+
+    assert exit_code == 2
+    assert not (output_dir / "upload.sh").exists()
+    assert "nothing to write" in capsys.readouterr().out
+
+
+def test_upload_script_without_a_built_site_errors(tmp_path: Path, capsys):
+    import dataclasses
+
+    from wpfreeze.cli import UploadSettings, run_upload_script
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(
+        _minimal_capture(output_dir), upload=UploadSettings(remote="user@example.com:/var/www/html")
+    )
+    # No run_build call -- output_dir/site never gets created.
+
+    exit_code = run_upload_script(config, None)
+
+    assert exit_code == 2
+    assert not (output_dir / "upload.sh").exists()
+    assert "run `wpfreeze build` first" in capsys.readouterr().out
 
 
 def test_run_build_no_todo_flag_skips_cleanup_todo_but_still_writes_build_report(tmp_path: Path):
@@ -500,6 +606,7 @@ def test_run_build_no_todo_flag_skips_cleanup_todo_but_still_writes_build_report
 
     assert (output_dir / "build-report.json").exists()
     assert not (output_dir / "cleanup-todo.md").exists()
+    assert not (output_dir / "cleanup-todo.html").exists()
 
 
 def test_run_validate_writes_cleanup_todo(tmp_path: Path, monkeypatch):
@@ -519,6 +626,7 @@ def test_run_validate_writes_cleanup_todo(tmp_path: Path, monkeypatch):
     run_validate(config, None)
 
     assert (output_dir / "cleanup-todo.md").exists()
+    assert (output_dir / "cleanup-todo.html").exists()
 
 
 def test_run_validate_no_todo_flag_skips_cleanup_todo(tmp_path: Path, monkeypatch):
@@ -538,6 +646,7 @@ def test_run_validate_no_todo_flag_skips_cleanup_todo(tmp_path: Path, monkeypatc
     run_validate(config, None, write_todo=False)
 
     assert not (output_dir / "cleanup-todo.md").exists()
+    assert not (output_dir / "cleanup-todo.html").exists()
 
 
 # ---------------------------------------------------------------------------

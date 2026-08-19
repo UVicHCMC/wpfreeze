@@ -141,10 +141,14 @@ and omitting it is completely normal, not a degraded mode.
 
 ```
 wpfreeze                                        # no subcommand: interactive wizard
-wpfreeze acquire --config site.yaml [--resume] [--dry-run]
-wpfreeze build   --config site.yaml [--site-dir DIR] [--no-verify]
-wpfreeze report  --config site.yaml [--html-only | --json-only]
-wpfreeze status  --config site.yaml
+wpfreeze acquire       --config site.yaml [--resume] [--dry-run]
+wpfreeze build         --config site.yaml [--site-dir DIR] [--no-verify] [--no-todo]
+wpfreeze validate      --config site.yaml [--site-dir DIR] [--no-todo]
+wpfreeze diagnose      --config site.yaml
+wpfreeze report        --config site.yaml [--html-only | --json-only]
+wpfreeze status        --config site.yaml
+wpfreeze rescan        --config site.yaml [--apply] [--profile-from-config]
+wpfreeze upload-script --config site.yaml [--site-dir DIR]
 ```
 
 - **`acquire`** runs (or resumes) the full pipeline: inventory discovery,
@@ -159,11 +163,32 @@ wpfreeze status  --config site.yaml
   `<output_dir>/site` (or `--site-dir`). Network-free and non-destructive:
   it reads `raw/` and `manifest.json` and writes a separate tree, so it is
   safe to re-run. It self-verifies afterward — every local reference is
-  resolved against a file on disk — unless `--no-verify` is passed.
+  resolved against a file on disk — unless `--no-verify` is passed. Also
+  (re)generates the cleanup checklist (see "The cleanup checklist" below)
+  unless `--no-todo` is passed.
+- **`validate`** checks the built site's HTML/CSS with the [Nu Html
+  Checker](https://validator.github.io/validator/) and writes
+  `vnu-report.json`. Informational only — these are defects in the
+  original site's own theme/content, not something `build` caused or can
+  fix, so it never fails the build over someone else's markup. Also
+  regenerates the cleanup checklist unless `--no-todo` is passed.
+- **`diagnose`** writes `diagnostics.json` — a compact capture-integrity
+  summary (duplicate local paths, disk/manifest hash mismatches,
+  content-type/URL-shape collisions) from the existing manifest, no
+  network involved.
 - **`report`** regenerates `report.html`/`report.json` from the existing
   manifest without touching the network at all.
 - **`status`** prints a one-screen summary: counts by status, how much is
   still pending, whether gaps are present.
+- **`rescan`** re-parses already-stored `raw/` bytes with today's
+  extraction code and queues anything newly discovered as pending —
+  closes the gap where a link-extraction fix can't reach content acquired
+  before the fix existed, without a full re-crawl. Reports what it would
+  queue by default; `--apply` actually writes it to `manifest.json`.
+- **`upload-script`** writes `upload.sh` for pushing the built site
+  somewhere a site owner can preview it — see "Previewing a build
+  somewhere" below. Requires both a built `site/` and `upload.remote` in
+  the config; writes nothing and exits non-zero without either.
 
 **Exit codes**: `0` = complete, `1` = complete with gaps (see `report.html`'s
 "Action required" section — expected content that couldn't be recovered
@@ -180,16 +205,62 @@ than starting over.
 Inside `output_dir`:
 
 ```
-raw/            fetched files, byte-for-byte as retrieved
-manifest.json   the spine -- one record per canonical resource
-report.html     single self-contained static report (open it in a browser)
-report.json     the manifest plus summary statistics
-logs/           one file per run, full DEBUG-level detail
-site/           servable static site (only after `wpfreeze build`)
+raw/               fetched files, byte-for-byte as retrieved
+manifest.json      the spine -- one record per canonical resource
+report.html        single self-contained static report (open it in a browser)
+report.json        the manifest plus summary statistics
+logs/              one file per run, full DEBUG-level detail
+site/              servable static site (only after `wpfreeze build`)
+build-report.json  build's own stats -- unresolved refs, verification, what policy stripped
+vnu-report.json    HTML/CSS issues from `wpfreeze validate`
+diagnostics.json   capture-integrity summary from `wpfreeze diagnose`
+cleanup-todo.md    human-readable punch list synthesized from the three reports above
+cleanup-todo.html  the same, styled like report.html, with clickable links -- see below
+upload.sh          only after `wpfreeze upload-script` -- see "Previewing a build somewhere"
 ```
 
-`report.html` has no external dependencies — no CDN scripts, no fonts, no
-tracking — it's one file you can hand to anyone.
+`report.html` and `cleanup-todo.html` have no external dependencies — no
+CDN scripts, no fonts, no tracking — each is one file you can hand to
+anyone.
+
+## The cleanup checklist
+
+`build-report.json`/`vnu-report.json`/`diagnostics.json` are machine
+reports; `cleanup-todo.md`/`.html` turn them into a short, human-readable
+punch list of what's actually worth a site owner's attention, regenerated
+automatically whenever `build` or `validate` runs (skip with `--no-todo`).
+It covers only what becomes available *after* those commands run —
+`report.html` still owns the acquisition-side gap breakdown (missing
+pages, auth-gated content, orphaned URLs).
+
+Sections, in order:
+
+- **Capture integrity** — duplicate local paths, disk/manifest hash
+  mismatches, and similar anomalies from `diagnose`, flagged first since
+  they usually mean two things silently collided during acquisition.
+- **Broken references** — reference the build couldn't resolve to a local
+  file, left pointing at the original site. Each links two ways: the
+  broken target to the still-live original (worth comparing while it's up),
+  and the referring page to its local built copy.
+- **Local link verification** — links that *were* rewritten to a local
+  path that doesn't exist on disk (broken within the archive itself,
+  distinct from the above).
+- **Content intentionally excised** — what `build`'s content policy
+  removed (see "Building a servable site" below), broken out by category.
+  Forms specifically get a per-page list, since a removed `<form>` can
+  leave a heading or button behind describing nothing; comment forms are
+  called out separately and deprioritized, since their caption is removed
+  automatically (see below) and doesn't need a manual check the way
+  everything else in this section does.
+- **Site markup/content quirks** — pre-existing HTML/CSS defects in the
+  original theme/content that `validate` catches. Not something `build`
+  introduced or fixes automatically — the point of a static archive is
+  that these files are now yours to hand-edit directly.
+
+Every list in the document is complete — nothing is ever truncated —
+and any list longer than 10 items collapses behind a `<details>` in the
+HTML version so a 500-item list doesn't dominate the page while still
+being one click away.
 
 ## Building a servable site
 
@@ -217,14 +288,32 @@ touching the capture, so re-running is always safe. In that tree:
   self-contained: analytics and tag managers (third-party *and* the
   self-hosted analytics plugins WordPress serves from its own domain),
   `<form>` elements (dead or leaky on a static site), and dead RSS/Atom feed
-  links. All three are on by default and configurable per site — see the
-  `policy:` block in [`example-site.yaml`](example-site.yaml). Counts of what
-  was removed appear in the build summary.
+  links. All on by default and configurable per site — see the `policy:`
+  block in [`example-site.yaml`](example-site.yaml). Counts of what was
+  removed appear in the build summary.
+- **A WordPress core comment form's caption goes with it, not just the
+  form.** Detected by its `id="respond"`/`class="comment-respond"`
+  wrapper — WordPress's own hardcoded markup, not something a theme's
+  caption text can hide from — so a themed "Submit a Comment" is caught
+  exactly like the default "Leave a Reply". Any in-page link left pointing
+  at that removed id (WordPress's own "N comments" post-meta link) is
+  fixed too; the "N comments" text itself is removed by default, or kept
+  for a nonzero count when `strip_comment_counts: false` — see
+  `example-site.yaml`.
+- **Third-party iframe embeds (YouTube, Vimeo, Google Maps, social
+  embeds) are left pointing at the live original**, not downloaded — an
+  iframe embeds a whole foreign application that depends on live JS/API
+  calls to function, so a static snapshot of it would just be a dead
+  imitation. A same-site or same-multisite-network iframe embed is still
+  captured and localized normally.
 
 References the capture never got are left pointing at the original site —
 honestly broken rather than silently dead — and counted in the summary. By
 default `build` then verifies its own output, resolving every local
-reference against a real file on disk and reporting any that are broken.
+reference against a real file on disk and reporting any that are broken —
+only files this run itself wrote, so a file you've placed in `site/`
+yourself (to view alongside the build through your own local server, say)
+is never scanned as if it were part of the build.
 
 **Not rewritten**: URLs that only exist inside executed JavaScript (a
 gallery that assembles image paths at runtime, a JS-only nav). Discovery and
@@ -240,6 +329,28 @@ into a script that also did real work, that script goes too. This isn't seen
 on real WordPress (tracking is injected as its own dedicated blocks), but
 it's the deliberate cost of stripping everything rather than editing script
 internals.
+
+## Previewing a build somewhere
+
+`wpfreeze upload-script` writes `upload.sh` into `output_dir` — a small,
+hand-editable `rsync` script for pushing the built site somewhere a site
+owner can look at it. It's for a staging/preview copy, not a production
+deploy, and needs `upload.remote` set in the config (see
+[`example-site.yaml`](example-site.yaml)):
+
+```bash
+wpfreeze upload-script --config site.yaml
+cd <output_dir> && ./upload.sh
+```
+
+Both steps are always explicit. `build` never generates or runs this
+script itself just because a config happens to have `upload.remote` set —
+generating it, and separately, actually running it, are things you do on
+purpose when you're ready. The script itself runs `rsync -av --delete`,
+so anything already at the destination that isn't part of this build gets
+**deleted**, not just overwritten — worth being sure of what's there
+before running it. It copies `site/`'s contents plus `cleanup-todo.html`
+and `report.html` (not the `.md`/`.json` versions).
 
 ## Behaviour worth knowing about
 

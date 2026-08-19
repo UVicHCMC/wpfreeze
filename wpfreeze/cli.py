@@ -10,6 +10,7 @@ import logging
 import re
 import shutil
 import sys
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -35,7 +36,7 @@ from wpfreeze.build import (
     verify_site,
     write_build_report,
 )
-from wpfreeze.cleanup import write_cleanup_todo
+from wpfreeze.cleanup import write_cleanup_todo, write_cleanup_todo_html
 from wpfreeze.crawl import compile_exclusions, crawl_fixpoint
 from wpfreeze.diagnostics import build_diagnostics, format_diagnostics_summary, write_diagnostics
 from wpfreeze.fetch import DEFAULT_USER_AGENT, FetchConfig, RateLimiter
@@ -46,6 +47,7 @@ from wpfreeze.policy import Policy
 from wpfreeze.report import write_report_html, write_report_json
 from wpfreeze.rescan import format_rescan_summary, rescan
 from wpfreeze.runlock import RunLock, RunLockHeld
+from wpfreeze.upload import write_upload_script
 from wpfreeze.urlnorm import SiteProfile, scope_profile_from_config
 from wpfreeze.validate import (
     VnuUnavailable,
@@ -72,6 +74,15 @@ class WaybackSettings:
 
 
 @dataclass(frozen=True)
+class UploadSettings:
+    # rsync destination for upload.sh, e.g. "user@host:/var/www/html" -- a
+    # staging/preview location, not a production deploy target. None (the
+    # default) means `wpfreeze upload-script` has nothing to write; it is
+    # never used by `build`, which has no upload-related side effects.
+    remote: str | None = None
+
+
+@dataclass(frozen=True)
 class SiteConfig:
     base_url: str
     output_dir: Path
@@ -85,6 +96,7 @@ class SiteConfig:
     xml_backup: Path | None = None  # optional: a WordPress XML export (WXR) to augment inventory
     policy: Policy = field(default_factory=Policy)  # content stripping for `build`
     vnu_jar: Path | None = None  # optional: pin a specific vnu.jar; unset auto-downloads/caches the latest
+    upload: UploadSettings = field(default_factory=UploadSettings)  # upload.sh destination; see `upload-script`
 
 
 def _parse_date(value) -> date:
@@ -121,6 +133,7 @@ def load_config(path: Path) -> SiteConfig:
         xml_backup=Path(xml_backup_raw) if xml_backup_raw else None,
         policy=Policy.from_config(raw.get("policy")),
         vnu_jar=Path(raw["vnu_jar"]) if raw.get("vnu_jar") else None,
+        upload=UploadSettings(remote=(raw.get("upload") or {}).get("remote")),
     )
 
 
@@ -561,6 +574,11 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool, write_tod
         return 2
     manifest = Manifest.load(manifest_path)
     target = site_dir or (config.output_dir / "site")
+    # Captured before build_site writes anything, so verify_site can tell
+    # this run's own output apart from whatever else might already be
+    # sitting in `target` (a file the user placed there for their own
+    # purposes, say) -- see verify_site's written_after docstring.
+    build_started = time.time()
     stats = build_site(
         manifest, config.output_dir, target, config.policy, config.base_url, config.extra_hosts
     )
@@ -573,7 +591,7 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool, write_tod
     broken = 0
     verify_report = None
     if verify:
-        verify_report = verify_site(target)
+        verify_report = verify_site(target, written_after=build_started)
         print(format_verify_summary(verify_report))
         broken = len(verify_report.broken)
     write_build_report(stats, config.output_dir, verify_report)
@@ -624,14 +642,47 @@ def run_validate(config: SiteConfig, site_dir: Path | None, write_todo: bool = T
 
 
 def _announce_cleanup_todo(output_dir: Path) -> None:
-    """Regenerate the cleanup-todo doc from whatever of
+    """Regenerate the cleanup-todo doc (markdown and HTML) from whatever of
     build-report.json/vnu-report.json/diagnostics.json exist in
     `output_dir`, and tell the user where it landed. Always runs (not
     gated on a tty) -- this is output, not a prompt, and the whole point
     is that nobody has to remember to go looking for it."""
     path = write_cleanup_todo(output_dir)
+    html_path = write_cleanup_todo_html(output_dir)
     if path is not None:
-        print(f"Cleanup checklist: {path}")
+        print(f"Cleanup checklist: {path}" + (f" ({html_path.name})" if html_path is not None else ""))
+
+
+def run_upload_script(config: SiteConfig, site_dir: Path | None) -> int:
+    """Write upload.sh so a site owner can preview the built site somewhere
+    (staging, not a production deploy) -- explicit and separate from
+    `build` on purpose: nothing about generating or running this script
+    happens automatically just because `upload.remote` is set in the
+    config. Running the script itself is a further, separate step the user
+    takes by hand; this command only ever writes it.
+    """
+    if not config.upload.remote:
+        print("No `upload: remote:` set in the config; nothing to write.")
+        return 2
+
+    target = site_dir or (config.output_dir / "site")
+    if not target.exists():
+        print(f"No built site found at {target}; run `wpfreeze build` first.")
+        return 2
+
+    try:
+        site_rel = target.relative_to(config.output_dir).as_posix()
+    except ValueError:
+        # A --site-dir outside output_dir: upload.sh's relative `cp -a
+        # {site_rel}/.` would not resolve from output_dir. Rare enough
+        # (the default --site-dir is always output_dir/site) not to be
+        # worth a portable-path workaround.
+        print(f"{target} is not inside {config.output_dir}; can't write a script relative to it.")
+        return 2
+
+    path = write_upload_script(config.output_dir, config.upload.remote, site_rel)
+    print(f"Upload script: {path}")
+    return 0
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -669,7 +720,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     build_p.add_argument(
         "--no-todo",
         action="store_true",
-        help="skip regenerating cleanup-todo.md, the human-readable punch list synthesized "
+        help="skip regenerating cleanup-todo.md/.html, the human-readable punch list synthesized "
         "from build/validate/diagnose's reports",
     )
 
@@ -688,7 +739,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     validate_p.add_argument(
         "--no-todo",
         action="store_true",
-        help="skip regenerating cleanup-todo.md, the human-readable punch list synthesized "
+        help="skip regenerating cleanup-todo.md/.html, the human-readable punch list synthesized "
         "from build/validate/diagnose's reports",
     )
 
@@ -705,6 +756,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="allow --apply against a manifest with no persisted site profile (schema < 2), "
         "reconstructing it from config alone -- not recommended, see the warning this prints",
+    )
+
+    upload_script_p = subparsers.add_parser(
+        "upload-script",
+        help="write upload.sh for pushing the built site to a staging/preview location "
+        "(needs `upload: remote:` in the config) -- writes the script only, never runs it",
+    )
+    upload_script_p.add_argument("--config", required=True, type=Path)
+    upload_script_p.add_argument(
+        "--site-dir", type=Path, default=None, help="site directory to reference (default: <output_dir>/site)"
     )
 
     return parser
@@ -807,6 +868,8 @@ def _dispatch(argv: list[str] | None) -> int:
         return run_validate(config, args.site_dir, write_todo=not args.no_todo)
     if args.command == "rescan":
         return run_rescan(config, apply=args.apply, profile_from_config=args.profile_from_config)
+    if args.command == "upload-script":
+        return run_upload_script(config, args.site_dir)
 
     return 2
 

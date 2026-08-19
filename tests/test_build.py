@@ -173,11 +173,20 @@ def test_unresolved_internal_reference_is_left_alone_and_counted():
     _fetched(manifest, f"{BASE}/", "/index.html")
     rewriter, stats = _rewriter(manifest)
 
-    html = f'<a href="{BASE}/never-captured/">x</a>'
+    html = f'<a href="{BASE}/never-captured/">Missing page</a>'
     out = rewriter.rewrite_html(html, f"{BASE}/", "/index.html")
 
     assert "/never-captured/" in out
     assert stats.unresolved == 1
+    assert stats.unresolved_samples == [
+        {
+            "page": f"{BASE}/",
+            "value": f"{BASE}/never-captured/",
+            "context": "Missing page",
+            "page_output": "/index.html",
+            "target": f"{BASE}/never-captured/",
+        }
+    ]
 
 
 def test_sibling_multisite_subsite_is_left_absolute_not_unresolved():
@@ -316,11 +325,18 @@ def test_write_build_report_persists_unresolved_samples(tmp_path: Path):
     """unresolved_samples is the highest-signal field for the cleanup-todo
     synthesis (see cleanup.py), which reads this file back from a
     potentially separate later invocation -- must round-trip through JSON
-    correctly, including the (page, value) tuples."""
+    correctly, including the page/value/context/page_output/target dict."""
     import json
 
+    sample = {
+        "page": f"{BASE}/team/",
+        "value": f"{BASE}/never-captured/",
+        "context": "Meet the team",
+        "page_output": "/team.html",
+        "target": f"{BASE}/never-captured/",
+    }
     stats = BuildStats(unresolved=1, rewritten=3)
-    stats.unresolved_samples.append((f"{BASE}/team/", f"{BASE}/never-captured/"))
+    stats.unresolved_samples.append(sample)
 
     path = write_build_report(stats, tmp_path)
 
@@ -328,7 +344,7 @@ def test_write_build_report_persists_unresolved_samples(tmp_path: Path):
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["unresolved"] == 1
     assert data["rewritten"] == 3
-    assert data["unresolved_samples"] == [[f"{BASE}/team/", f"{BASE}/never-captured/"]]
+    assert data["unresolved_samples"] == [sample]
 
 
 # --- verification ---------------------------------------------------------
@@ -336,6 +352,8 @@ def test_write_build_report_persists_unresolved_samples(tmp_path: Path):
 # verify_site knows nothing about the manifest or the rewriter: it re-reads
 # the emitted tree and resolves against real files. A check sharing the
 # assumptions of the code it checks agrees with bugs instead of catching them.
+
+import time  # noqa: E402
 
 from wpfreeze.build import verify_site  # noqa: E402
 
@@ -374,6 +392,35 @@ def test_verify_reports_a_missing_target_with_its_source(tmp_path: Path):
     assert broken.source == "a/page.html"
     assert broken.target == "img/gone.png"
     assert broken.reason == "missing"
+
+
+def test_verify_written_after_skips_files_from_before_the_boundary(tmp_path: Path):
+    """A file already sitting in site_dir before this build ran -- placed
+    there by the user for their own purposes, not written by wpfreeze --
+    must not be scanned as if it were this run's own output. Regression
+    test for a real false-positive: a copy of cleanup-todo.html inside
+    site/ was reported as having hundreds of broken references, none of
+    them real, because it was never part of the build being verified."""
+    site = _site(tmp_path, {"stray.html": '<a href="does-not-exist.html">dead</a>'})
+    boundary = time.time() + 1  # after stray.html's write, before anything "new"
+
+    report = verify_site(site, written_after=boundary)
+    assert report.documents == 0
+    assert report.broken == []
+
+    # Without written_after, the same stray file is scanned as normal.
+    report = verify_site(site)
+    assert report.documents == 1
+    assert len(report.broken) == 1
+
+
+def test_verify_written_after_still_checks_files_written_after_the_boundary(tmp_path: Path):
+    boundary = time.time()
+    site = _site(tmp_path, {"page.html": '<a href="does-not-exist.html">dead</a>'})
+
+    report = verify_site(site, written_after=boundary)
+    assert report.documents == 1
+    assert len(report.broken) == 1
 
 
 def test_verify_flags_references_escaping_the_site_root(tmp_path: Path):

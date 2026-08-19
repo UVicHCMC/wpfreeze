@@ -119,6 +119,234 @@ def test_forms_are_kept_when_strip_forms_is_disabled():
     assert stats.forms_removed == 0
 
 
+def test_removed_forms_are_attributed_to_their_page():
+    soup = BeautifulSoup(
+        '<form action="/?s="><input name="s"></form><form action="/x"><input></form>', "lxml"
+    )
+    stats = PolicyStats()
+    apply_policy(soup, Policy(), stats, "https://s/contact/", "/contact.html")
+    assert stats.forms_removed == 2
+    assert stats.forms_removed_pages == {
+        "https://s/contact/": {"count": 2, "output_path": "/contact.html", "categories": {"other": 2}}
+    }
+
+
+def test_forms_removed_without_a_page_url_are_not_attributed():
+    soup = BeautifulSoup('<form action="/x"><input></form>', "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(), stats)
+    assert stats.forms_removed == 1
+    assert stats.forms_removed_pages == {}
+
+
+# --- comment-form wrapper removal -------------------------------------------
+
+
+def test_comment_form_wrapper_is_removed_whole_default_wp_markup():
+    html = (
+        '<div id="respond" class="comment-respond">'
+        '<h3 id="reply-title" class="comment-reply-title">Leave a Reply '
+        '<small><a id="cancel-comment-reply-link" href="#" style="display:none;">Cancel reply</a></small></h3>'
+        '<form action="/wp-comments-post.php" method="post" id="commentform" class="comment-form">'
+        '<input name="comment"></form>'
+        "</div>"
+    )
+    out, stats = _apply(html)
+    assert stats.forms_removed == 1
+    assert "<form" not in out
+    assert "Leave a Reply" not in out
+    assert "Cancel reply" not in out
+    assert "respond" not in out
+
+
+def test_comment_form_wrapper_is_removed_with_themed_caption_text():
+    # A theme overriding comment_form()'s title_reply arg changes only the
+    # heading's text, not the wrapper's id/class -- the whole point of
+    # detecting the wrapper instead of the caption string.
+    html = (
+        '<div id="respond" class="comment-respond">'
+        '<h3 id="reply-title" class="comment-reply-title">Submit a Comment</h3>'
+        '<form action="/wp-comments-post.php" method="post" id="commentform" class="comment-form">'
+        '<input name="comment"></form>'
+        "</div>"
+    )
+    out, stats = _apply(html)
+    assert stats.forms_removed == 1
+    assert "<form" not in out
+    assert "Submit a Comment" not in out
+
+
+def test_comment_form_without_a_wrapper_falls_back_to_form_only_removal():
+    # No id="respond" ancestor -- a non-standard comment implementation, or
+    # just the form's own attributes surviving without the wrapper. Removed,
+    # but nothing outside the form itself is touched (nothing to safely take
+    # with it).
+    html = '<div><h3>Leave a Reply</h3><form id="commentform" class="comment-form"><input></form></div>'
+    out, stats = _apply(html)
+    assert stats.forms_removed == 1
+    assert "<form" not in out
+    assert "Leave a Reply" in out
+
+
+def test_unrelated_form_is_not_categorized_as_comment():
+    html = '<form action="/?s="><input name="s"></form>'
+    soup = BeautifulSoup(html, "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(), stats, "https://s/", "/index.html")
+    assert stats.forms_removed_pages["https://s/"]["categories"] == {"other": 1}
+
+
+def test_comment_form_is_categorized_as_comment():
+    html = (
+        '<div id="respond">'
+        '<form id="commentform" class="comment-form"><input></form>'
+        "</div>"
+    )
+    soup = BeautifulSoup(html, "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(), stats, "https://s/post/", "/post.html")
+    assert stats.forms_removed_pages["https://s/post/"]["categories"] == {"comment": 1}
+
+
+def test_mixed_categories_on_one_page_are_both_counted():
+    html = (
+        '<div id="respond"><form id="commentform" class="comment-form"><input></form></div>'
+        '<form action="/?s="><input name="s"></form>'
+    )
+    soup = BeautifulSoup(html, "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(), stats, "https://s/post/", "/post.html")
+    entry = stats.forms_removed_pages["https://s/post/"]
+    assert entry["count"] == 2
+    assert entry["categories"] == {"comment": 1, "other": 1}
+
+
+def test_wrapper_containing_two_forms_does_not_double_count_or_crash():
+    # Malformed/unusual markup: two <form>s inside one comment-respond
+    # wrapper. Both are removed as a side effect of removing the one
+    # wrapper -- counted as a single removal (the wrapper), not two -- with
+    # no crash from a later loop iteration touching the second form after
+    # it's already been detached by the first.
+    html = (
+        '<div id="respond" class="comment-respond">'
+        '<form id="commentform" class="comment-form"><input></form>'
+        '<form class="comment-form"><input></form>'
+        "</div>"
+    )
+    out, stats = _apply(html)
+    assert stats.forms_removed == 1
+    assert "<form" not in out
+    assert "respond" not in out
+
+
+# --- dead in-page links left by comment-form removal ------------------------
+
+
+def test_comments_number_blurb_is_removed_with_its_dead_link():
+    html = (
+        '<p class="post-meta">'
+        '<span class="published">Feb 1, 2018</span> | '
+        '<a href="../category/news.html">News</a> | '
+        '<span class="comments-number"><a href="1942-part-4.html#respond">0 comments</a></span>'
+        "</p>"
+        '<div id="respond" class="comment-respond">'
+        '<form id="commentform" class="comment-form"><input></form></div>'
+    )
+    out, stats = _apply(html)
+    assert "comments-number" not in out
+    assert "0 comments" not in out
+    assert "#respond" not in out
+    assert stats.comment_count_blurbs_removed == 1
+    assert stats.dead_fragment_links_removed == 0
+    # the separator before the removed blurb shouldn't leave a dangling "|"
+    assert "News</a> |" not in out
+    assert "News</a>" in out
+
+
+def test_dead_fragment_link_without_comments_number_wrapper_is_unwrapped_not_removed():
+    html = (
+        '<p>See <a href="post.html#respond">the discussion</a> below.</p>'
+        '<div id="respond"><form id="commentform" class="comment-form"><input></form></div>'
+    )
+    out, stats = _apply(html)
+    assert "#respond" not in out
+    assert "See the discussion below." in out  # text kept, only the dead <a> dropped
+    assert "<a" not in out
+    assert stats.dead_fragment_links_removed == 1
+    assert stats.comment_count_blurbs_removed == 0
+
+
+def test_links_to_ids_not_removed_are_left_alone():
+    html = (
+        '<a href="#toc">Table of contents</a>'
+        '<div id="respond"><form id="commentform" class="comment-form"><input></form></div>'
+    )
+    out, stats = _apply(html)
+    assert '<a href="#toc">Table of contents</a>' in out
+    assert stats.dead_fragment_links_removed == 0
+    assert stats.comment_count_blurbs_removed == 0
+
+
+def test_no_forms_means_no_fragment_cleanup_runs():
+    html = '<a href="#respond">stray anchor, no comment form on this page</a>'
+    out, stats = _apply(html)
+    assert '<a href="#respond">' in out
+    assert stats.dead_fragment_links_removed == 0
+
+
+def _comments_number_page(count_text: str) -> str:
+    return (
+        '<p class="post-meta">'
+        '<span class="published">Mar 26, 2021</span> | '
+        '<a href="news.html">News</a> | '
+        f'<span class="comments-number"><a href="post.html#respond">{count_text}</a></span>'
+        "</p>"
+        '<div id="respond" class="comment-respond">'
+        '<form id="commentform" class="comment-form"><input></form></div>'
+    )
+
+
+def test_strip_comment_counts_false_keeps_nonzero_count_but_still_fixes_the_link():
+    out, stats = _apply(_comments_number_page("2 comments"), Policy(strip_comment_counts=False))
+    assert '<span class="comments-number">2 comments</span>' in out
+    assert "#respond" not in out
+    assert stats.comment_count_blurbs_removed == 0
+    assert stats.dead_fragment_links_removed == 1
+
+
+def test_strip_comment_counts_false_still_removes_a_zero_count():
+    out, stats = _apply(_comments_number_page("0 comments"), Policy(strip_comment_counts=False))
+    assert "0 comments" not in out
+    assert "comments-number" not in out
+    assert stats.comment_count_blurbs_removed == 1
+    assert stats.dead_fragment_links_removed == 0
+
+
+def test_strip_comment_counts_true_removes_the_blurb_regardless_of_count():
+    out, stats = _apply(_comments_number_page("2 comments"), Policy(strip_comment_counts=True))
+    assert "2 comments" not in out
+    assert stats.comment_count_blurbs_removed == 1
+
+
+def test_strip_comment_counts_false_with_unparseable_text_keeps_it():
+    # No leading digit -- can't tell zero from nonzero, so the safer guess
+    # (keep it) wins over guessing zero and deleting real information.
+    out, stats = _apply(_comments_number_page("No comments yet"), Policy(strip_comment_counts=False))
+    assert "No comments yet" in out
+    assert "#respond" not in out
+    assert stats.comment_count_blurbs_removed == 0
+    assert stats.dead_fragment_links_removed == 1
+
+
+def test_comment_count_helper_parses_leading_digits():
+    from wpfreeze.policy import _comment_count
+
+    assert _comment_count("0 comments") == 0
+    assert _comment_count("2 Comments") == 2
+    assert _comment_count("1 comment") == 1
+    assert _comment_count("No comments yet") is None
+
+
 # --- feeds ----------------------------------------------------------------
 
 

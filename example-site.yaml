@@ -89,7 +89,27 @@ policy:
   # comment and search forms hit endpoints that no longer exist, and mailing-
   # list forms silently hand a reader's email to a third party while looking
   # like they work. The form is removed outright, not disabled in place.
+  # A WordPress core comment form specifically -- detected by its
+  # id="respond"/class="comment-respond" wrapper, not by caption text, so a
+  # themed "Submit a Comment" is caught exactly like the default "Leave a
+  # Reply" -- has its whole wrapper removed as one unit (heading, "Cancel
+  # reply" link, form), not just the <form>. Any in-page link left pointing
+  # at that removed id elsewhere on the page (WordPress's own "N comments"
+  # post-meta link) is also fixed; see strip_comment_counts below for what
+  # happens to the "N comments" text itself. Categorized in the cleanup
+  # checklist's "Content intentionally excised" section as "comment" vs
+  # "other" (search, subscribe, contact, unrecognized).
   strip_forms: true
+
+  # Only meaningful when strip_forms removes a comment form's wrapper. True
+  # (default) removes the "N comments" post-meta blurb outright, regardless
+  # of count -- matches strip_forms's own "no live-web machinery" stance.
+  # False keeps it as plain text for any page with a nonzero count (the
+  # comment thread, if captured, is still real content someone may want the
+  # count for); a "0 comments" blurb is still removed either way, since it's
+  # noise, not information. The dead #respond link itself is always fixed,
+  # regardless of this setting.
+  strip_comment_counts: true
 
   # Remove feed links -- the <link rel="alternate" type="application/rss+xml">
   # (and Atom/RDF) pointers in the document head, which reference endpoints
@@ -129,3 +149,15 @@ policy:
 # itself -- only set it to pin a specific jar (e.g. for reproducibility,
 # or on a machine without network access to GitHub).
 vnu_jar: "./vnu.jar"
+
+# Optional. Destination for `wpfreeze upload-script`, which writes
+# upload.sh -- a small rsync script for pushing the built site (plus
+# cleanup-todo.html and report.html) somewhere a site owner can look at
+# it. This is for a staging/preview copy, not a production deploy: the
+# script uses `rsync -av --delete`, so anything already at the destination
+# that isn't part of this build gets deleted, not just overwritten. Omit
+# this block entirely to leave `upload-script` with nothing to write --
+# generating (and separately, running) the script is always something you
+# do on purpose; `build` never touches this and never runs it.
+# upload:
+#   remote: "user@host:/path/to/destination"
