@@ -206,8 +206,9 @@ function injectStyles() {
   // theme wherever a value would be a guess. The panel needs its own
   // background because it can be dropped over arbitrary theme markup.
   style.textContent = `
-.wpfreeze-search-results{display:none;position:relative;z-index:9999;
-  max-height:60vh;overflow-y:auto;margin:.5em 0;padding:.75em 1em;
+.wpfreeze-search-results{display:none;position:absolute;top:100%;left:0;
+  z-index:9999;width:max(20rem,100%);max-width:min(28rem,calc(100vw - 2rem));
+  max-height:60vh;overflow-y:auto;margin:.5em 0 0;padding:.75em 1em;
   background:#fff;color:#222;border:1px solid rgba(0,0,0,.2);
   border-radius:3px;box-shadow:0 2px 8px rgba(0,0,0,.18);
   font-size:.9rem;line-height:1.4;text-align:left}
@@ -223,15 +224,46 @@ function injectStyles() {
 }
 
 function panelFor(form) {
-  let panel = form.nextElementSibling;
-  if (panel && panel.classList.contains("wpfreeze-search-results")) return panel;
+  let panel = form.querySelector(".wpfreeze-search-results");
+  if (panel) return panel;
+  // Appended INSIDE the form (not as a sibling after it) and the form
+  // itself made the positioning anchor: CSS position:absolute only
+  // anchors to a positioned ANCESTOR, not a sibling, so a panel inserted
+  // after the form could never correctly float relative to it. A header
+  // search widget's own container is often only a couple hundred pixels
+  // wide (a real captured site measured 141px) -- without this the panel
+  // took on that width in normal document flow and pushed the rest of
+  // the page down instead of floating above it. position:relative with
+  // no offset is visually inert for a form that's normally block/
+  // inline-block, so this doesn't change the form's own layout.
+  if (getComputedStyle(form).position === "static") {
+    form.style.position = "relative";
+  }
   panel = document.createElement("div");
   panel.className = "wpfreeze-search-results";
   panel.setAttribute("role", "region");
   panel.setAttribute("aria-live", "polite");
   panel.setAttribute("aria-label", "Search results");
-  form.insertAdjacentElement("afterend", panel);
+  form.appendChild(panel);
   return panel;
+}
+
+function positionPanel(form, panel) {
+  // Flip to right-anchored when the form sits close enough to the right
+  // edge that a left-anchored panel would run off-screen -- a header
+  // search widget is commonly positioned near the right edge (measured
+  // on a real site: 80px of room to the right of the form, well under
+  // the panel's own ~320px minimum width). Re-checked on every open, not
+  // cached, since the viewport can be resized between searches.
+  const rect = form.getBoundingClientRect();
+  const spaceRight = window.innerWidth - rect.left;
+  if (spaceRight < 340) {
+    panel.style.left = "auto";
+    panel.style.right = "0";
+  } else {
+    panel.style.left = "0";
+    panel.style.right = "auto";
+  }
 }
 
 function localHref(url) {
@@ -277,6 +309,7 @@ function render(panel, status, results) {
 
 async function runSearch(form, input) {
   const panel = panelFor(form);
+  positionPanel(form, panel);
   const query = (input.value || "").trim();
   if (!query) {
     render(panel, "Type something to search for.", null);
