@@ -43,7 +43,7 @@ from wpfreeze.extract import decode_static_bundle
 from wpfreeze.manifest import FLAG_ATTACHMENT_PAGE, Manifest, ManifestRecord, Status
 from wpfreeze.normalize import NormalizeStats, apply_normalizations
 from wpfreeze.policy import Policy, PolicyStats, apply_policy
-from wpfreeze.search import SEARCH_ASSET_PATH, SearchStats, apply_search, write_search_asset
+from wpfreeze.search import SEARCH_ASSET_PATH, ContentIssues, SearchStats, apply_search, write_search_asset
 from wpfreeze.urlnorm import PERMALINK_QUERY_KEYS, scope_profile_from_config
 
 if TYPE_CHECKING:
@@ -828,7 +828,10 @@ def format_verify_summary(report: VerifyReport) -> str:
 
 
 def write_build_report(
-    stats: BuildStats, output_dir: Path, verify: "VerifyReport | None" = None
+    stats: BuildStats,
+    output_dir: Path,
+    verify: "VerifyReport | None" = None,
+    content_issues: ContentIssues | None = None,
 ) -> Path:
     """Persist build stats to build-report.json, mirroring
     validate.write_validation_report. Makes this run's findings --
@@ -845,6 +848,14 @@ def write_build_report(
     to know and cheerfully reported the capture clean. None means
     verification did not run (`--no-verify`), which is distinct from
     running and finding nothing.
+
+    `content_issues` is scan_content_issues's result, following the same
+    pattern as `verify`: it is not a BuildStats field (scan_content_issues
+    reads the finished site_dir after build_site returns, not during its
+    per-page loop, and run_search_index needs the identical result shape
+    without ever calling build_site at all -- see
+    CLAUDE-search-content-checks.md sec 2). None means search was
+    disabled, distinct from running and finding nothing.
     """
     path = output_dir / "build-report.json"
     data = asdict(stats)
@@ -863,6 +874,7 @@ def write_build_report(
             ],
         }
     )
+    data["content_issues"] = None if content_issues is None else asdict(content_issues)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return path
 

@@ -554,6 +554,89 @@ def _search_coverage_section(build_report: dict | None) -> tuple[list[str], bool
     return (lines, True)
 
 
+def _thin_content_section(build_report: dict | None) -> tuple[list[str], bool]:
+    """Pages scan_content_issues found indexed but holding almost no text
+    -- a blind spot pages_without_body_match can't see, since the selector
+    DID match. See CLAUDE-search-content-checks.md sec 4a. `content_issues`
+    is None when search is disabled or scan_content_issues hasn't run
+    (an older build-report.json); an empty list when it ran and found
+    nothing to flag -- both produce no section, deliberately not
+    distinguished here the same way the other search sections don't.
+    """
+    if build_report is None:
+        return ([], False)
+    content_issues = build_report.get("content_issues")
+    if not content_issues:
+        return ([], False)
+    thin_pages = content_issues.get("thin_pages") or []
+    if not thin_pages:
+        return ([], False)
+
+    lines = [
+        "## Pages with thin content",
+        "",
+        f"{len(thin_pages)} page(s) matched a body selector but hold almost no text once "
+        "indexed -- present in search, but adding noise rather than findable content:",
+        "",
+    ]
+    for entry in sorted(thin_pages, key=lambda e: (e.get("word_count", 0), e.get("page", ""))):
+        output_path = entry.get("page", "")
+        word_count = entry.get("word_count", 0)
+        page_label = _linked(f"`{output_path}`", _site_link(output_path))
+        lines.append(f"- {page_label} ({word_count} word(s))")
+    lines.append("")
+
+    return (lines, True)
+
+
+def _echoed_content_section(build_report: dict | None) -> tuple[list[str], bool]:
+    """Pages scan_content_issues found mostly duplicating other pages --
+    typically a WordPress archive/category/blog-listing page (native or
+    hand-built) whose indexed text is assembled from other pages' content,
+    so one piece of content competes with itself in search results. See
+    CLAUDE-search-content-checks.md sec 4b for the echo-fraction algorithm.
+    """
+    if build_report is None:
+        return ([], False)
+    content_issues = build_report.get("content_issues")
+    if not content_issues:
+        return ([], False)
+    echoed_pages = content_issues.get("echoed_pages") or []
+    if not echoed_pages:
+        return ([], False)
+
+    lines = [
+        "## Pages that mostly duplicate other pages",
+        "",
+        f"{len(echoed_pages)} page(s) have indexed text that is mostly shared with other "
+        "pages -- usually an archive/category/blog-listing page assembled from other pages' "
+        "content, native WordPress template or hand-built. Leaving these indexed means one "
+        "piece of content competes with itself in results. If a page here can't be excluded "
+        "with `search.body_selectors`/`ignore_selectors` (a hand-built listing page is often "
+        "structurally identical to a real one), add its path to `search.exclude_pages`:",
+        "",
+    ]
+    for entry in sorted(echoed_pages, key=lambda e: -(e.get("echo_fraction") or 0)):
+        output_path = entry.get("page", "")
+        fraction = entry.get("echo_fraction") or 0
+        sources = entry.get("sources") or []
+        sample = entry.get("sample", "")
+        page_label = _linked(f"`{output_path}`", _site_link(output_path))
+        source_labels = ", ".join(_linked(f"`{s}`", _site_link(s)) for s in sources[:3])
+        detail = f"{fraction * 100:.0f}% shared"
+        if source_labels:
+            detail += f" with {source_labels}"
+            if len(sources) > 3:
+                detail += f" (+{len(sources) - 3} more)"
+        line = f"- {page_label} -- {detail}"
+        if sample:
+            line += f': "{sample}"'
+        lines.append(line)
+    lines.append("")
+
+    return (lines, True)
+
+
 def _markup_quirks_section(vnu_report: dict | None) -> list[str]:
     if vnu_report is None:
         return [
@@ -615,6 +698,8 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
     excised_lines, excised_needs_attention = _excised_content_section(build_report)
     kept_search_lines, kept_search_needs_attention = _search_forms_kept_section(build_report)
     coverage_lines, coverage_needs_attention = _search_coverage_section(build_report)
+    thin_content_lines, thin_content_needs_attention = _thin_content_section(build_report)
+    echoed_content_lines, echoed_content_needs_attention = _echoed_content_section(build_report)
     markup_lines = _markup_quirks_section(vnu_report)
     markup_needs_attention = bool(vnu_report and vnu_report.get("issues"))
     broken_needs_attention = (
@@ -623,6 +708,8 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
         or excised_needs_attention
         or kept_search_needs_attention
         or coverage_needs_attention
+        or thin_content_needs_attention
+        or echoed_content_needs_attention
     )
 
     # An all-clear may only be given for checks that actually ran. A section
@@ -673,6 +760,8 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
     lines.extend(excised_lines)
     lines.extend(kept_search_lines)
     lines.extend(coverage_lines)
+    lines.extend(thin_content_lines)
+    lines.extend(echoed_content_lines)
     lines.extend(markup_lines)
     return "\n".join(lines).rstrip() + "\n"
 

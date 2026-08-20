@@ -444,6 +444,133 @@ def test_search_coverage_section_absent_when_both_lists_empty(tmp_path: Path):
     assert "Pages not covered by search" not in content
 
 
+def test_thin_content_section_lists_pages_with_word_counts(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {},
+            "search": {"enabled": True},
+            "content_issues": {
+                "pages_scanned": 2,
+                "thin_pages": [{"page": "/stub.html", "word_count": 3}],
+                "echoed_pages": [],
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "## Pages with thin content" in content
+    assert "[`/stub.html`](site/stub.html)" in content
+    assert "3 word(s)" in content
+    assert "worth a look before you call it done" in content
+
+
+def test_thin_content_section_absent_when_no_thin_pages(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {},
+            "search": {"enabled": True},
+            "content_issues": {"pages_scanned": 2, "thin_pages": [], "echoed_pages": []},
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "Pages with thin content" not in content
+
+
+def test_thin_content_section_absent_when_content_issues_missing(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {"unresolved": 0, "unresolved_samples": [], "policy": {}, "search": {"enabled": True}},
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "Pages with thin content" not in content
+
+
+def test_echoed_content_section_lists_pages_with_fraction_sources_and_sample(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {},
+            "search": {"enabled": True},
+            "content_issues": {
+                "pages_scanned": 3,
+                "thin_pages": [],
+                "echoed_pages": [
+                    {
+                        "page": "/blog.html",
+                        "echo_fraction": 0.75,
+                        "shingle_count": 40,
+                        "sources": ["/post-1.html", "/post-2.html"],
+                        "sample": "a shared excerpt of real text",
+                    }
+                ],
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "## Pages that mostly duplicate other pages" in content
+    assert "[`/blog.html`](site/blog.html)" in content
+    assert "75% shared" in content
+    assert "[`/post-1.html`](site/post-1.html)" in content
+    assert "a shared excerpt of real text" in content
+    assert "search.exclude_pages" in content
+    assert "worth a look before you call it done" in content
+
+
+def test_echoed_content_section_absent_when_no_echoed_pages(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {},
+            "search": {"enabled": True},
+            "content_issues": {"pages_scanned": 1, "thin_pages": [], "echoed_pages": []},
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "Pages that mostly duplicate other pages" not in content
+
+
+def test_echoed_content_section_sources_beyond_three_are_summarized(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {},
+            "search": {"enabled": True},
+            "content_issues": {
+                "pages_scanned": 5,
+                "thin_pages": [],
+                "echoed_pages": [
+                    {
+                        "page": "/blog.html",
+                        "echo_fraction": 0.6,
+                        "shingle_count": 10,
+                        "sources": ["/a.html", "/b.html", "/c.html", "/d.html"],
+                        "sample": "",
+                    }
+                ],
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "+1 more" in content
+
+
 def test_excised_form_page_links_to_local_copy(tmp_path: Path):
     _write(
         tmp_path,

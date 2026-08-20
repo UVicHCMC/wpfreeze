@@ -8,7 +8,7 @@ authors = [{ name = "Greg Newton" }]
 requires-python = ">=3.12"
 dependencies = [
     "requests",
-    "beautifulsoup4",
+    "beautifulsoup4>=4.9",  # extract_indexed_text (search.py) relies on Script/Stylesheet exclusion from get_text(), added in 4.9
     "lxml",
     "html5lib",
     "PyYAML",

@@ -47,7 +47,13 @@ from wpfreeze.policy import Policy
 from wpfreeze.report import write_report_html, write_report_json
 from wpfreeze.rescan import format_rescan_summary, rescan
 from wpfreeze.runlock import RunLock, RunLockHeld
-from wpfreeze.search import SearchUnavailable, format_search_summary, run_pagefind_index
+from wpfreeze.search import (
+    SearchUnavailable,
+    format_content_issues_summary,
+    format_search_summary,
+    run_pagefind_index,
+    scan_content_issues,
+)
 from wpfreeze.upload import write_upload_script
 from wpfreeze.urlnorm import SiteProfile, scope_profile_from_config
 from wpfreeze.validate import (
@@ -83,6 +89,34 @@ class UploadSettings:
     remote: str | None = None
 
 
+# load_config's default for `search.body_selectors` when a site's config
+# omits the key entirely -- WP core's own body_class()/the_content()
+# conventions (wp-singular vs. archive/category/blog, wrapped in
+# .entry-content), which hold for most non-page-builder themes. Real-world
+# discovery, not a guess made in the abstract: found by comparing an
+# untuned site-a.example index against a tuned one -- the untuned
+# default let WordPress's own archive/category/blog-listing templates
+# (which re-embed each post's full .entry-content as a teaser, also
+# wrapped in its own <article>) compete with the real page in results,
+# e.g. a "grants" query returning the same post's excerpt 5 times over
+# under different archive-page titles. `body.wp-singular` is the load-
+# bearing half -- it is WP core's own singular/archive distinction and
+# excludes those listing pages outright; `.entry-content` narrows further
+# within a matching page and also happens to exclude WordPress's own
+# comment thread (`#comments` sits outside it). An explicit
+# `body_selectors: []` in a site's config opts back into the old
+# whole-<body> behaviour; leaving the key out entirely gets this instead.
+# NOT a live per-site detection scheme -- CLAUDE-search.md sec 13
+# explicitly rules that out ("same class of problem as guessing a
+# theme's content container by name") and asks for exactly this instead:
+# "a structural default plus an explicit per-site escape hatch, with the
+# checklist telling the owner when the default is hurting them." A page-
+# builder theme (Divi, Elementor) that never emits `.entry-content` still
+# fails safely -- the page just matches nothing and shows up in the
+# cleanup checklist's "Pages not covered by search", not silently.
+DEFAULT_BODY_SELECTORS: tuple[str, ...] = ("body.wp-singular .entry-content",)
+
+
 @dataclass(frozen=True)
 class SearchSettings:
     # Master switch for offline search (Pagefind). Off by default -- see
@@ -96,7 +130,11 @@ class SearchSettings:
     # index. That is the only per-page exclusion mechanism available (it
     # is how category/tag/attachment chaff gets kept out), and also the
     # footgun: a too-narrow selector empties the index quietly. The build
-    # reports the miss count; see search.SearchStats.
+    # reports the miss count; see search.SearchStats. Bare-constructed
+    # default is the empty tuple (whole-<body> fallback) -- load_config
+    # applies DEFAULT_BODY_SELECTORS instead when a config omits the key,
+    # so this dataclass default only governs direct construction (tests,
+    # or callers that bypass load_config).
     body_selectors: tuple[str, ...] = ()
     # CSS selectors to exclude from indexing even inside indexed content
     # (e.g. a repeated "related posts" widget). Passed straight to
@@ -107,6 +145,17 @@ class SearchSettings:
     # otherwise silently returns no results from whichever pages fell
     # into the un-forced index.
     force_language: str | None = None
+    # Exact output paths (e.g. "/blog.html", matching pages_without_body_
+    # match's own format -- not a URL, not a glob) to drop from the index
+    # outright, regardless of body_selectors. For pages body_selectors
+    # structurally cannot exclude -- a hand-built page-builder "archive"
+    # page that is wp-singular with a real .entry-content, indistinguishable
+    # by selector from a page that must stay indexed. No load-time
+    # validation: like body_selectors/ignore_selectors, an entry that
+    # matches nothing is a silent no-op, self-correcting because the page
+    # keeps surfacing in scan_content_issues's echo report. See
+    # CLAUDE-search-content-checks.md sec 8a.
+    exclude_pages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,11 +197,18 @@ def load_config(path: Path) -> SiteConfig:
     policy = Policy.from_config(raw.get("policy"))
 
     search_raw = raw.get("search") or {}
+    body_selectors_raw = search_raw.get("body_selectors")
+    # Key absent entirely -> DEFAULT_BODY_SELECTORS. Key present, even as
+    # an explicit empty list, is a deliberate opt-out and must be honoured
+    # as literally "nothing" (whole-<body> fallback), not silently
+    # promoted to the default.
+    body_selectors = DEFAULT_BODY_SELECTORS if body_selectors_raw is None else tuple(body_selectors_raw or [])
     search = SearchSettings(
         enabled=bool(search_raw.get("enabled", False)),
-        body_selectors=tuple(search_raw.get("body_selectors", []) or []),
+        body_selectors=body_selectors,
         ignore_selectors=tuple(search_raw.get("ignore_selectors", []) or []),
         force_language=search_raw.get("force_language"),
+        exclude_pages=tuple(search_raw.get("exclude_pages", []) or []),
     )
     if search.enabled and policy.strip_forms and policy.strip_search_forms:
         raise ConfigError(
@@ -645,6 +701,7 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool, write_tod
     # alongside the rewriting stats, or the cleanup checklist (regenerated
     # moments later) has no way to see it.
     search_result = None
+    content_issues = None
     if config.search.enabled:
         try:
             search_result = run_pagefind_index(target, config.search)
@@ -656,8 +713,12 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool, write_tod
         stats.search.languages = list(search_result.languages)
         stats.search.index_error = search_result.error
         print(format_search_summary(stats.search, search_result))
+        # Reads the markup build_site just wrote, independent of whether
+        # indexing itself succeeded -- runs regardless of search_result.ok.
+        content_issues = scan_content_issues(target, config.search)
+        print(format_content_issues_summary(content_issues))
 
-    write_build_report(stats, config.output_dir, verify_report)
+    write_build_report(stats, config.output_dir, verify_report, content_issues)
 
     if write_todo:
         _announce_cleanup_todo(config.output_dir)
@@ -753,13 +814,16 @@ def run_upload_script(config: SiteConfig, site_dir: Path | None) -> int:
 def run_search_index(config: SiteConfig, site_dir: Path | None) -> int:
     """Re-index an already-built site with Pagefind, without a full
     `wpfreeze build`. `build` already runs this automatically when
-    `search.enabled` is set -- this command exists for re-indexing after a
-    selector change (search.body_selectors/ignore_selectors) without
-    re-running the whole build. Unlike `upload-script`, this is not purely
-    deferrable: a built site with search's markup wired in and no index
-    behind it is broken, not just unpreviewed. It stays gated behind the
-    explicit `search.enabled` (plus the ConfigError in load_config), so
-    nobody gets it by accident.
+    `search.enabled` is set -- this command exists for re-indexing after an
+    `ignore_selectors`/`force_language` change without re-running the whole
+    build. It only re-runs the indexer, not the markup-tagging step
+    (apply_search, inside build_site's page loop) -- a `body_selectors` or
+    `exclude_pages` change needs `build` to actually take effect; running
+    this command alone would index the *old* tagging. Unlike
+    `upload-script`, this is not purely deferrable: a built site with
+    search's markup wired in and no index behind it is broken, not just
+    unpreviewed. It stays gated behind the explicit `search.enabled` (plus
+    the ConfigError in load_config), so nobody gets it by accident.
     """
     if not config.search.enabled:
         print("`search: enabled: true` is not set in the config; nothing to index.")
@@ -784,6 +848,16 @@ def run_search_index(config: SiteConfig, site_dir: Path | None) -> int:
         print(f"Search index: {result.pages_indexed} page(s), language(s): {langs}")
     else:
         print(f"Search index FAILED: {result.error}")
+
+    # scan_content_issues re-reads the finished site_dir, same as
+    # run_pagefind_index does -- it needs no per-page build state, so it
+    # runs here too and picks up any ignore_selectors change immediately.
+    # Console-only: cleanup-todo.{md,html} is a build artefact this
+    # command never touches, so the checklist is not refreshed here.
+    content_issues = scan_content_issues(target, config.search)
+    print(format_content_issues_summary(content_issues))
+    print("(cleanup-todo.md/.html not refreshed -- run `wpfreeze build` to update it)")
+
     return 0 if result.ok else 1
 
 

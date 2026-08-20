@@ -197,20 +197,26 @@ vnu_jar: "./vnu.jar"
 # search:
 #   enabled: false
 #
-#   CSS selectors marking where a page's REAL content lives, e.g.:
-#     body_selectors: ["article .entry-content"]
-#   This does two things, and the second is the one worth reading
-#   carefully: it narrows what Pagefind indexes on a matching page, AND
-#   it means any page matching NONE of the selectors is dropped from the
-#   index entirely (Pagefind's own behaviour, not something wpfreeze
-#   adds). That's deliberate -- it's the only way to keep category/tag
-#   archives and attachment pages out of search results -- but a
-#   too-narrow selector silently empties part of the index. The build
-#   reports the miss count and the cleanup checklist lists every affected
-#   page, so this doesn't fail silently. Left at the default [], Pagefind
-#   indexes the whole <body> of every page instead -- it works, but every
-#   result carries the theme's nav/sidebar/footer text.
-#   body_selectors: []
+#   CSS selectors marking where a page's REAL content lives. This does
+#   two things, and the second is the one worth reading carefully: it
+#   narrows what Pagefind indexes on a matching page, AND it means any
+#   page matching NONE of the selectors is dropped from the index
+#   entirely (Pagefind's own behaviour, not something wpfreeze adds).
+#   That's deliberate -- it's the only way to keep category/tag archives
+#   and attachment pages out of search results -- but a too-narrow
+#   selector silently empties part of the index. The build reports the
+#   miss count and the cleanup checklist lists every affected page, so
+#   this doesn't fail silently.
+#
+#   Omitting this key entirely (as below) defaults to
+#   ["body.wp-singular .entry-content"] -- WordPress core's own
+#   singular/archive distinction plus its content wrapper, which most
+#   non-page-builder themes follow. Set body_selectors: [] explicitly to
+#   opt back into indexing the whole <body> of every page instead (every
+#   result then carries the theme's nav/sidebar/footer text, and archive
+#   pages compete with real content in results). See "Offline search" in
+#   README.md for why this default exists.
+#   # body_selectors defaults to ["body.wp-singular .entry-content"]
 #
 #   CSS selectors to exclude from indexing even inside otherwise-indexed
 #   content -- a repeated "related posts" widget, say.
@@ -221,3 +227,12 @@ vnu_jar: "./vnu.jar"
 #   page, which otherwise silently returns no results from whichever
 #   pages fell into the un-forced index. e.g. "en".
 #   force_language: null
+#
+#   Exact output paths to drop from the index outright (e.g.
+#   ["/blog.html"] -- not a URL, not a glob), for pages body_selectors
+#   can't exclude: a hand-built page-builder "archive" page is often
+#   structurally identical to a real content page (same body/entry-
+#   content classes), so the selector can't tell them apart. `build`
+#   reports exactly these pages under "Pages that mostly duplicate other
+#   pages" if left indexed -- paste their paths here.
+#   exclude_pages: []

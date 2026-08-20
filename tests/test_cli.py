@@ -120,9 +120,24 @@ def test_load_config_search_defaults(tmp_path: Path):
     path = _write_yaml(tmp_path / "site.yaml", {"base_url": "https://example.com/", "output_dir": "out"})
     config = load_config(path)
     assert config.search.enabled is False
-    assert config.search.body_selectors == ()
+    assert config.search.body_selectors == ("body.wp-singular .entry-content",)
     assert config.search.ignore_selectors == ()
     assert config.search.force_language is None
+    assert config.search.exclude_pages == ()
+
+
+def test_load_config_search_body_selectors_explicit_empty_list_opts_out(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {
+            "base_url": "https://example.com/",
+            "output_dir": "out",
+            "policy": {"strip_search_forms": False},
+            "search": {"enabled": True, "body_selectors": []},
+        },
+    )
+    config = load_config(path)
+    assert config.search.body_selectors == ()
 
 
 def test_load_config_search_settings_plumb_through(tmp_path: Path):
@@ -137,6 +152,7 @@ def test_load_config_search_settings_plumb_through(tmp_path: Path):
                 "body_selectors": [".entry-content"],
                 "ignore_selectors": [".related-posts"],
                 "force_language": "en",
+                "exclude_pages": ["/blog.html", "/projects.html"],
             },
         },
     )
@@ -145,6 +161,7 @@ def test_load_config_search_settings_plumb_through(tmp_path: Path):
     assert config.search.body_selectors == (".entry-content",)
     assert config.search.ignore_selectors == (".related-posts",)
     assert config.search.force_language == "en"
+    assert config.search.exclude_pages == ("/blog.html", "/projects.html")
 
 
 def test_search_enabled_with_default_policy_raises_config_error(tmp_path: Path):
@@ -726,6 +743,28 @@ def test_run_build_indexes_automatically_when_search_enabled(tmp_path: Path, mon
     assert "Search:" in capsys.readouterr().out
 
 
+def test_run_build_reports_content_issues_in_summary_and_report(tmp_path: Path, monkeypatch, capsys):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_build
+
+    output_dir = tmp_path / "out"
+    # _minimal_capture's page ("hi") has no wp-singular class, so the
+    # default body_selectors matches nothing anywhere -- sitewide tagging
+    # is off, and the whole-body fallback ("hi", 1 word) is what
+    # scan_content_issues actually sees, same as a real untagged build.
+    config = dataclasses.replace(_minimal_capture(output_dir), search=SearchSettings(enabled=True))
+    _mock_pagefind_index(monkeypatch, ok=True, pages_indexed=1, languages=("en",))
+
+    run_build(config, None, verify=False)
+
+    out = capsys.readouterr().out
+    assert "thin content" in out
+    assert "echoed content" in out
+    build_report = json.loads((output_dir / "build-report.json").read_text(encoding="utf-8"))
+    assert build_report["content_issues"]["thin_pages"] == [{"page": "/index.html", "word_count": 1}]
+
+
 def test_run_build_does_not_index_when_search_disabled(tmp_path: Path, monkeypatch):
     from wpfreeze.cli import run_build
 
@@ -817,6 +856,29 @@ def test_search_index_reindexes_an_already_built_site(tmp_path: Path, monkeypatc
     assert exit_code == 0
     assert len(calls) == 1
     assert "Search index: 1 page(s)" in capsys.readouterr().out
+
+
+def test_search_index_reports_content_issues_and_notes_checklist_not_refreshed(
+    tmp_path: Path, monkeypatch, capsys
+):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_build, run_search_index
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(_minimal_capture(output_dir), search=SearchSettings(enabled=True))
+    _mock_pagefind_index(monkeypatch, ok=True, pages_indexed=1, languages=("en",))
+    run_build(config, None, verify=False)
+
+    _mock_pagefind_index(monkeypatch, ok=True, pages_indexed=1, languages=("en",))
+    capsys.readouterr()  # discard run_build's own output
+    exit_code = run_search_index(config, None)
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "thin content" in out
+    assert "echoed content" in out
+    assert "not refreshed" in out
 
 
 def test_search_index_returns_1_on_a_failed_index(tmp_path: Path, monkeypatch, capsys):

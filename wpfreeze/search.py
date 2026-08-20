@@ -8,30 +8,43 @@ lets a site owner keep the form rather than have it stripped; this module
 makes the kept form *work*, without changing its appearance or adding any
 visible UI until someone actually searches.
 
-Three pieces, run in this order by `wpfreeze build`:
+Five pieces, run in this order by `wpfreeze build`:
 
 1. `apply_search` -- per page, tag the site's own search form(s) with
    `data-wpfreeze-search` (reusing `policy._is_search_form`'s exact
    fingerprint so the Python and JS sides agree by construction, not by
    coincidence), mark indexable content with `data-pagefind-body` per
-   `search.body_selectors`, and inject a `<script type="module">` loader.
+   `search.body_selectors` (skipping pages listed in
+   `search.exclude_pages` entirely), and inject a `<script type="module">`
+   loader.
 2. `write_search_asset` -- writes the fixed runtime JS once per build.
 3. `run_pagefind_index` -- shells out to the `pagefind` Python package to
    build the actual index over the finished `site/` tree.
+4. `scan_content_issues` -- re-parses the finished `site/` tree to flag
+   two things `pages_without_body_match` can't see: a page that matched a
+   selector but holds almost no text ("thin"), and a page whose indexed
+   text is mostly *other* pages' text -- a WordPress archive/listing page
+   echoing post teasers, most often. Read-only reporting, same as
+   `pages_without_body_match`; never changes what gets indexed.
 
-See CLAUDE-search.md for the full design, including why `body_selectors`
-is a page-*exclusion* mechanism and not just a region-narrower, and why
-the script tag has to be injected after link rewriting rather than
-before it.
+See CLAUDE-search.md for the offline-search design, and
+CLAUDE-search-content-checks.md for scan_content_issues's own design
+(algorithm, calibrated constants, why pairwise containment was tried and
+rejected) -- including why `body_selectors` is a page-*exclusion*
+mechanism and not just a region-narrower, and why the script tag has to
+be injected after link rewriting rather than before it.
 """
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import logging
+import re
 import shutil
 import subprocess
 import sys
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -51,6 +64,18 @@ logger = logging.getLogger(__name__)
 SEARCH_ASSET_PATH = "/assets/pagefind-search.js"
 BUNDLE_SUBDIR = "pagefind"
 
+# scan_content_issues's constants -- calibrated against two real sites
+# (site-a.example, site-b.example), not guessed in the abstract.
+# See CLAUDE-search-content-checks.md sec 4c for the measured distribution
+# behind these numbers (a clean gap between ~0.30 and ~0.50 on both,
+# unrelated, sites) and sec 8 for why this is fixed-constant reporting,
+# not a config knob, in v1.
+SHINGLE_SIZE = 5
+MIN_WORDS = 25
+ECHO_THRESHOLD = 0.5
+
+_PUNCT_RE = re.compile(r"[^\w\s]")
+
 
 class SearchUnavailable(Exception):
     """The `pagefind` package is missing, or the indexer subprocess could
@@ -68,6 +93,12 @@ class SearchStats:
     pages_seen: int = 0
     pages_with_body_match: int = 0
     pages_without_body_match: list[str] = field(default_factory=list)  # output paths
+    # Pages skipped entirely by search.exclude_pages -- kept separate from
+    # pages_without_body_match on purpose: that list means "the selector
+    # should have matched and didn't, go look"; this one means "the owner
+    # already decided about this page, nothing to review". See
+    # CLAUDE-search-content-checks.md sec 8a.
+    pages_excluded_by_config: list[str] = field(default_factory=list)  # output paths
     forms_tagged: int = 0
     pages_without_form: list[str] = field(default_factory=list)  # output paths
     indexed_pages: int = 0
@@ -82,6 +113,58 @@ class SearchIndexResult:
     pages_indexed: int = 0
     languages: tuple[str, ...] = ()
     error: str = ""
+
+
+@dataclass(frozen=True)
+class ThinContentPage:
+    """A page scan_content_issues found indexed but holding almost no
+    text -- matched a selector (so pages_without_body_match can't see it)
+    but has fewer than MIN_WORDS words after ignore_selectors removal."""
+
+    page: str  # output path
+    word_count: int
+
+
+@dataclass(frozen=True)
+class EchoedPage:
+    """A page whose indexed text is mostly shared with other pages --
+    typically a WordPress archive/category/blog-listing page (native or
+    hand-built) that re-embeds other pages' content as teasers. See
+    CLAUDE-search-content-checks.md sec 4b for the corpus-wide echo-
+    fraction algorithm and why pairwise containment was tried and
+    rejected (it missed the truncated-teaser case entirely)."""
+
+    page: str  # output path -- the aggregator/duplicate page
+    echo_fraction: float
+    shingle_count: int  # denominator, for context in the report
+    sources: list[str] = field(default_factory=list)  # output paths, most-contributing first
+    # Longest contiguous echoed word run -- normalized (lowercased,
+    # punctuation stripped), NOT the original text verbatim. Normalization
+    # isn't token-preserving ("Al-Fazia," -> two normalized tokens), so
+    # there's no cheap map back to the source string; good enough to let
+    # an owner recognize the duplicated content, not attempted as true
+    # verbatim. See _longest_echoed_run.
+    sample: str = ""
+
+
+@dataclass
+class ContentIssues:
+    """scan_content_issues's result. Deliberately NOT a field on
+    SearchStats: run_search_index re-indexes an already-built site
+    without running build_site's per-page loop at all, so it never has a
+    SearchStats to extend. See CLAUDE-search-content-checks.md sec 2."""
+
+    # Pages that were actually indexed (thin + shingle-eligible) --
+    # deliberately excludes pages extract_indexed_text returned None for
+    # (not indexed at all; that's pages_without_body_match's business).
+    # This is the denominator the design doc's sec 4c calibration note
+    # needs: ">15% of pages flagged is evidence the threshold is wrong,
+    # not that 15% of pages are broken" is unusable without it, which is
+    # why format_content_issues_summary reports counts against this total
+    # rather than bare counts.
+    pages_scanned: int = 0
+    thin_pages: list[ThinContentPage] = field(default_factory=list)
+    echoed_pages: list[EchoedPage] = field(default_factory=list)
 
 
 _ASSET_TEMPLATE = """\
@@ -288,20 +371,31 @@ def apply_search(
     if not tagged_here:
         stats.pages_without_form.append(page_output)
 
-    matched_here = False
-    for selector in settings.body_selectors:
-        for element in soup.select(selector):
-            element["data-pagefind-body"] = ""
-            matched_here = True
-    if settings.body_selectors:
-        if matched_here:
-            stats.pages_with_body_match += 1
-        else:
-            stats.pages_without_body_match.append(page_output)
+    if page_output in settings.exclude_pages:
+        # Skip the body_selectors loop entirely: no data-pagefind-body
+        # means this page drops out of the index the same way a genuine
+        # selector-mismatch page already does (sitewide tagging). No new
+        # exclusion mechanism -- this just opts a page out of the existing
+        # one. Does not touch the form-tagging above: an excluded page can
+        # still host a working search box, only its own content stops
+        # being indexed. See CLAUDE-search-content-checks.md sec 8a.
+        stats.pages_excluded_by_config.append(page_output)
     else:
-        # No selectors configured: Pagefind indexes the whole <body> of
-        # every page, so every page counts as "matched" for reporting.
-        stats.pages_with_body_match += 1
+        matched_here = False
+        for selector in settings.body_selectors:
+            for element in soup.select(selector):
+                element["data-pagefind-body"] = ""
+                matched_here = True
+        if settings.body_selectors:
+            if matched_here:
+                stats.pages_with_body_match += 1
+            else:
+                stats.pages_without_body_match.append(page_output)
+        else:
+            # No selectors configured: Pagefind indexes the whole <body>
+            # of every page, so every page counts as "matched" for
+            # reporting.
+            stats.pages_with_body_match += 1
 
     script_tag = soup.new_tag("script", type="module", src=script_src)
     body = soup.find("body")
@@ -382,6 +476,9 @@ def format_search_summary(stats: SearchStats, result: SearchIndexResult | None) 
         f"  content marked     : {stats.pages_with_body_match} page(s) matched a body "
         f"selector" + (f", {missing_body} did not (not searchable)" if missing_body else "")
     )
+    excluded = len(stats.pages_excluded_by_config)
+    if excluded:
+        lines.append(f"  excluded by config : {excluded} page(s) (search.exclude_pages)")
     if result is None:
         lines.append("  index               : not built")
     elif result.ok:
@@ -389,4 +486,232 @@ def format_search_summary(stats: SearchStats, result: SearchIndexResult | None) 
         lines.append(f"  index               : {result.pages_indexed} page(s), language(s): {langs}")
     else:
         lines.append(f"  index               : FAILED -- {result.error}")
+    return "\n".join(lines)
+
+
+def _normalize_words(text: str) -> list[str]:
+    return _PUNCT_RE.sub(" ", text.lower()).split()
+
+
+def _shingles(words: list[str], k: int) -> set[tuple[str, ...]]:
+    return {tuple(words[i : i + k]) for i in range(len(words) - k + 1)}
+
+
+def _longest_echoed_run(words: list[str], echoed: set[tuple[str, ...]], k: int, max_chars: int = 200) -> str:
+    """The longest contiguous run of words whose every k-word shingle is
+    in `echoed`, joined back into text -- the sample shown in the report.
+    A set intersection alone can't produce this (it has no notion of
+    adjacency); this walks the page's own ordered word sequence instead.
+
+    `words` is the caller's *normalized* word list (see _normalize_words),
+    so the returned sample is normalized too -- lowercased, punctuation
+    stripped -- not the original page text verbatim. See EchoedPage.sample
+    for why that's an accepted limitation, not an oversight."""
+    flags = [tuple(words[i : i + k]) in echoed for i in range(len(words) - k + 1)]
+    best_start = best_len = run_start = run_len = 0
+    for i, ok in enumerate(flags):
+        if ok:
+            if run_len == 0:
+                run_start = i
+            run_len += 1
+            if run_len > best_len:
+                best_start, best_len = run_start, run_len
+        else:
+            run_len = 0
+    if best_len == 0:
+        return ""
+    sample = " ".join(words[best_start : best_start + best_len + k - 1])
+    return sample if len(sample) <= max_chars else sample[:max_chars].rstrip() + "…"
+
+
+def extract_indexed_text(
+    soup: BeautifulSoup, settings: "SearchSettings", body_tagged_sitewide: bool
+) -> str | None:
+    """The text Pagefind will actually index for this page: the
+    data-pagefind-body region(s) when the site uses them, else the whole
+    <body>, minus anything settings.ignore_selectors would exclude.
+    (ignore_selectors is mirrored here because --exclude-selectors only
+    ever reaches the real indexer -- a shared 'related posts' widget the
+    owner already excluded via ignore_selectors must not produce a false
+    echo flag.)
+
+    Returns None when the page is not indexed at all -- sitewide tagging
+    is on (see scan_content_issues) and this page has no tagged region.
+    That's pages_without_body_match's business, not this function's.
+    Returns "" (not None) for a page that IS indexed but whose region
+    holds no text after ignore_selectors removal: that's thin content,
+    and the two cases must not be conflated by the caller.
+
+    Operates on a deep copy of the matched region(s), so ignore_selectors
+    removal never mutates the parsed soup -- this function only reads.
+
+    get_text() excluding <script>/<style> content (rather than dumping
+    their contents in as words) depends on bs4 classifying those as
+    Script/Stylesheet NavigableString subclasses, added in bs4 4.9 --
+    pinned in pyproject.toml. Confirmed directly against bs4 4.12.3 rather
+    than assumed from changelog wording.
+    """
+    if body_tagged_sitewide:
+        elements = soup.select("[data-pagefind-body]")
+        if not elements:
+            return None
+    else:
+        body = soup.find("body")
+        elements = [body] if body is not None else [soup]
+
+    parts = []
+    for element in elements:
+        clone = copy.copy(element)
+        for ignore_selector in settings.ignore_selectors:
+            for excluded in clone.select(ignore_selector):
+                excluded.decompose()
+        text = clone.get_text(separator=" ", strip=True)
+        if text:
+            parts.append(text)
+    return " ".join(parts)
+
+
+def _detect_sitewide_tagging(html_paths: list[Path]) -> bool:
+    """Whether ANY page site-wide carries data-pagefind-body -- Pagefind's
+    own sitewide rule (CLAUDE-search.md sec 2): if any page has the
+    attribute, every page site-wide is restricted to tagged regions, and
+    an untagged page is dropped from the index entirely rather than
+    falling back to whole-body.
+
+    A cheap substring pre-filter on raw file text (no parsing) rules out
+    files that plainly can't match, since a real site either tags
+    everywhere or nowhere -- but the substring alone is not proof: a page
+    whose *visible text* happens to mention "data-pagefind-body" (this
+    file's own documentation, say) would false-positive on substring
+    matching alone. Only files containing the substring get parsed, and
+    only the real attribute selector decides -- confirmed via the
+    existing soup.select_one check, same as before. Never holds more than
+    one parsed soup at a time; a full corpus held simultaneously measured
+    at ~11x the raw HTML on real captures.
+    """
+    for path in html_paths:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if "data-pagefind-body" not in text:
+            continue
+        # html.parser, not html5lib (which build.py itself writes pages
+        # with) -- deliberate, not an oversight: this only ever re-parses
+        # build.py's own already-well-formed html5lib output, so the
+        # stricter/slower parser buys nothing here, and this function
+        # re-parses every file in the site at least once already.
+        soup = BeautifulSoup(text, "html.parser")
+        if soup.select_one("[data-pagefind-body]") is not None:
+            return True
+    return False
+
+
+def scan_content_issues(
+    site_dir: Path,
+    settings: "SearchSettings",
+    *,
+    min_words: int = MIN_WORDS,
+    shingle_size: int = SHINGLE_SIZE,
+    echo_threshold: float = ECHO_THRESHOLD,
+) -> ContentIssues:
+    """Re-parses every HTML file already written to site_dir to see what
+    Pagefind will actually index per page -- the same source of truth
+    run_pagefind_index indexes from, not an in-memory approximation of
+    it. Called from run_build (after build_site writes the site) and from
+    run_search_index, so re-indexing after an ignore_selectors tweak gets
+    fresh detection with no rebuild. (body_selectors/exclude_pages changes
+    still need apply_search to re-tag markup, so those still need a
+    rebuild -- same existing constraint as indexing itself.)
+
+    See CLAUDE-search-content-checks.md for the full design: sec 2 for why
+    this reads the finished site_dir rather than in-memory build state and
+    the sitewide-tagging correctness trap handled below, sec 4 for the
+    thin-content and echo-fraction algorithms.
+    """
+    html_paths = sorted(p for p in site_dir.rglob("*.html") if p.is_file())
+
+    body_tagged_sitewide = _detect_sitewide_tagging(html_paths)
+
+    # Second pass: extract per page, one soup at a time -- never holding
+    # more than one page's parsed DOM alongside the (much smaller)
+    # accumulated word lists, unlike an earlier version of this function
+    # that parsed every file up front and held every soup simultaneously.
+    thin_pages: list[ThinContentPage] = []
+    words_by_page: dict[str, list[str]] = {}
+    for path in html_paths:
+        try:
+            # html.parser, not html5lib -- see _detect_sitewide_tagging's
+            # comment on the same choice above.
+            soup = BeautifulSoup(path.read_text(encoding="utf-8"), "html.parser")
+        except (OSError, UnicodeDecodeError):
+            continue
+        output_path = "/" + path.relative_to(site_dir).as_posix()
+        text = extract_indexed_text(soup, settings, body_tagged_sitewide)
+        if text is None:
+            continue  # not indexed at all -- pages_without_body_match's business
+        words = _normalize_words(text)
+        if len(words) < min_words:
+            thin_pages.append(ThinContentPage(page=output_path, word_count=len(words)))
+            continue
+        words_by_page[output_path] = words
+
+    shingles_by_page = {page: _shingles(words, shingle_size) for page, words in words_by_page.items()}
+    index: dict[tuple[str, ...], list[str]] = defaultdict(list)
+    for page, shingles in shingles_by_page.items():
+        for shingle in shingles:
+            index[shingle].append(page)
+
+    echoed_pages: list[EchoedPage] = []
+    for page, shingles in shingles_by_page.items():
+        if not shingles:
+            # Guarded belt-and-suspenders: MIN_WORDS > SHINGLE_SIZE means
+            # this shouldn't happen via the thin-content filter above, but
+            # a caller passing custom min_words/shingle_size could still
+            # hit it, and a page with no shingles can't be "echoed".
+            continue
+        echoed = {shingle for shingle in shingles if len(index[shingle]) > 1}
+        fraction = len(echoed) / len(shingles)
+        if fraction < echo_threshold:
+            continue
+        source_counts: dict[str, int] = defaultdict(int)
+        for shingle in echoed:
+            for other in index[shingle]:
+                if other != page:
+                    source_counts[other] += 1
+        sources = [p for p, _ in sorted(source_counts.items(), key=lambda kv: -kv[1])]
+        sample = _longest_echoed_run(words_by_page[page], echoed, shingle_size)
+        echoed_pages.append(
+            EchoedPage(
+                page=page,
+                echo_fraction=fraction,
+                shingle_count=len(shingles),
+                sources=sources,
+                sample=sample,
+            )
+        )
+
+    return ContentIssues(
+        pages_scanned=len(words_by_page) + len(thin_pages),
+        thin_pages=thin_pages,
+        echoed_pages=echoed_pages,
+    )
+
+
+def format_content_issues_summary(issues: ContentIssues) -> str:
+    """Two more lines in the same style/column width as
+    format_search_summary -- callers print them as a continuation of that
+    block (no repeated "Search:" header), see cli.py's run_build.
+
+    Both counts are reported against issues.pages_scanned (not bare
+    counts) because the design doc's sec 4c calibration guidance --
+    ">15% of pages flagged is evidence the threshold is wrong, not that
+    15% of pages are broken" -- is unusable without the denominator.
+    """
+    scanned = issues.pages_scanned
+    lines = [f"  thin content       : {len(issues.thin_pages)} of {scanned} page(s) scanned, under {MIN_WORDS} words"]
+    lines.append(
+        f"  echoed content     : {len(issues.echoed_pages)} of {scanned} page(s) scanned, "
+        "mostly duplicating other pages"
+    )
     return "\n".join(lines)

@@ -210,10 +210,12 @@ wpfreeze search-index  --config site.yaml [--site-dir DIR]
   the config; writes nothing and exits non-zero without either.
 - **`search-index`** (re-)builds the Pagefind search index over an
   already-built site. `build` already does this automatically whenever
-  `search.enabled` is set — this command exists for re-indexing after a
-  selector change (`search.body_selectors`/`ignore_selectors`) without a
-  full rebuild. Requires both a built `site/` and `search.enabled: true`
-  in the config; see "Offline search" below.
+  `search.enabled` is set — this command exists for re-indexing after an
+  `ignore_selectors`/`force_language` change without a full rebuild (it
+  only re-runs the indexer, not the markup tagging step, so a
+  `body_selectors`/`exclude_pages` change needs `build` to actually take
+  effect). Requires both a built `site/` and `search.enabled: true` in the
+  config; see "Offline search" below.
 
 **Exit codes**: `0` = complete, `1` = complete with gaps (see `report.html`'s
 "Action required" section — expected content that couldn't be recovered
@@ -424,20 +426,32 @@ search-index` re-runs just the indexing step, for tuning selectors
 without a full rebuild.
 
 **`search.body_selectors`** — a list of CSS selectors marking where a
-page's real content lives (e.g. `["article .entry-content"]`) — does two
-things at once, and the second is easy to miss: it narrows *what* gets
-indexed on a matching page, but it also means **any page matching none of
-the selectors is dropped from the index entirely** (that's Pagefind's own
-behaviour, not something wpfreeze adds). That's a feature, not a bug — it
-is the only way to keep category/tag archives and attachment pages out of
-search results — but a too-narrow selector, or one that a subset of
-templates don't use, silently empties part of the index. The build
-reports the miss count, and the cleanup checklist lists every affected
-page under "Pages not covered by search", so the failure is visible
-rather than a mystery. Leaving `body_selectors` at its default `[]`
-indexes the whole `<body>` of every page instead — it works, but every
-result carries the theme's nav/sidebar/footer text, and archive pages
-compete with real content in the results.
+page's real content lives — does two things at once, and the second is
+easy to miss: it narrows *what* gets indexed on a matching page, but it
+also means **any page matching none of the selectors is dropped from the
+index entirely** (that's Pagefind's own behaviour, not something wpfreeze
+adds). That's a feature, not a bug — it is the only way to keep
+category/tag archives and attachment pages out of search results — but a
+too-narrow selector, or one that a subset of templates don't use, silently
+empties part of the index. The build reports the miss count, and the
+cleanup checklist lists every affected page under "Pages not covered by
+search", so the failure is visible rather than a mystery.
+
+Omitting `body_selectors` from the config entirely defaults to
+`["body.wp-singular .entry-content"]` — WordPress core's own
+`body_class()`/`the_content()` conventions, which most non-page-builder
+themes follow. This was found necessary against a real site, not assumed:
+indexing the whole `<body>` let WordPress's own archive/category/blog-
+listing templates (which re-embed each post's `.entry-content` as a
+teaser) compete with the real page in results — a search could return the
+same post 4-5 times over under different archive-page titles.
+`body.wp-singular` excludes those listing pages outright (it's WP core's
+own singular-vs-archive body class); `.entry-content` narrows further and
+also excludes WordPress's own comment thread. A page-builder theme that
+never emits `.entry-content` still fails safely — those pages just show up
+in "Pages not covered by search" rather than silently mismatching. Set
+`body_selectors: []` explicitly to opt back into the old whole-`<body>`
+behaviour, or your own selector(s) to override the default outright.
 
 **`search.ignore_selectors`** excludes elements from indexing even inside
 otherwise-indexed content (a repeated "related posts" widget, say).
@@ -445,6 +459,39 @@ otherwise-indexed content (a repeated "related posts" widget, say).
 split into one index — needed if the theme is inconsistent about
 emitting `lang`, which otherwise silently returns no results from
 whichever pages fell into the wrong index.
+
+**`search.exclude_pages`** drops specific pages from the index outright,
+by exact output path (e.g. `["/blog.html"]`, not a URL and not a glob) —
+for the case `body_selectors` structurally can't handle: a hand-built
+page-builder "archive" or "blog" page that is otherwise indistinguishable
+by selector from a real content page, so it stays indexed and echoes
+other pages' content into search results (see the two checks below,
+which will name exactly this kind of page). No load-time validation, same
+as `body_selectors`/`ignore_selectors` — a path that matches nothing is a
+silent no-op, which is self-correcting because the page keeps showing up
+in the report until the path is right.
+
+**Two more checks run automatically alongside indexing**, reported the
+same way as the "not covered by search" gap above — informational only,
+never changing what gets indexed:
+
+- **Thin content** — a page matched a selector but holds almost no text
+  once indexed (under 25 words), so it's present in search but adds noise
+  rather than findable content. A blind spot the coverage check above
+  can't see, since the selector *did* match.
+- **Echoed content** — a page's indexed text is mostly shared with other
+  pages, almost always because it's an archive/category/blog-listing page
+  (WordPress-native or hand-built) whose content is assembled from other
+  pages' teasers. Left indexed, one real piece of content competes with
+  itself in results. The checklist names the page, its likely sources, and
+  a sample of the shared text; if `body_selectors`/`ignore_selectors` can't
+  exclude it (the hand-built-listing-page case), add it to
+  `search.exclude_pages`.
+
+`wpfreeze search-index` re-runs both checks too (they only need the
+already-built markup, same as re-indexing itself), but reports them to
+the console only — the cleanup checklist is a `build` artefact and isn't
+regenerated by `search-index`.
 
 Indexing needs the `pagefind` Python package, which is *not* installed by
 a plain `wpfreeze` install (see "Installation" above for the `pipx
