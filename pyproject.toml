@@ -23,6 +23,9 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP :: Site Management",
 ]
 
+[project.optional-dependencies]
+search = ["pagefind[extended]"]
+
 [project.scripts]
 wpfreeze = "wpfreeze.cli:main"
 

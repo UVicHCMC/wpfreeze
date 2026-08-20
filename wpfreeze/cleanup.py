@@ -348,9 +348,11 @@ def _form_category_lines(
         para = (
             f"**{label}** -- {total} across {len(pages)} page(s), removed like any other form -- it "
             "can't submit anywhere useful on a static archive either. If you're planning to wire up "
-            "a replacement (a static index, a hosted search service) rather than just lose search "
-            "entirely, set `strip_search_forms: false` in the config and re-run `wpfreeze build` to "
-            "leave these in place as a starting point instead. Full list:"
+            "a replacement rather than just lose search entirely, set `strip_search_forms: false` "
+            "in the config and re-run `wpfreeze build` to leave these in place as a starting point. "
+            "Or set `search: enabled: true` (alongside `strip_search_forms: false`) and `build` will "
+            "wire these forms up itself, indexed with a local Pagefind index -- see \"Offline search\" "
+            "in the README. Full list:"
         )
     elif category == "other":
         para = (
@@ -442,9 +444,14 @@ def _search_forms_kept_section(build_report: dict | None) -> tuple[list[str], bo
     populated when `strip_search_forms: false` is set (see policy.py's
     search_forms_kept_pages). Deliberately not part of "Content
     intentionally excised": nothing was removed here, so reporting it
-    there would say something false. Always worth a look: "left in place"
-    doesn't mean "still works" -- see policy.py's own strip_search_forms
-    comment for the caveat this section repeats.
+    there would say something false.
+
+    Two outcomes: with `search.enabled: true` and a successful index
+    (search.index_ok in the same build report), these forms are actually
+    wired up and working -- say so, and there's nothing to flag. Otherwise
+    "left in place" doesn't mean "still works" -- see policy.py's own
+    strip_search_forms comment for the caveat this section repeats, and
+    flag it for a look.
     """
     if build_report is None:
         return ([], False)
@@ -458,6 +465,20 @@ def _search_forms_kept_section(build_report: dict | None) -> tuple[list[str], bo
         return info.get("count", 0) if isinstance(info, dict) else info
 
     total = sum(_count(info) for info in kept_pages.values())
+    search = build_report.get("search") or {}
+    if search.get("index_ok"):
+        indexed_pages = search.get("indexed_pages", 0)
+        lines = [
+            "## Search forms left in place",
+            "",
+            f"{total} search form(s) across {len(kept_pages)} page(s) were left untouched "
+            "(`strip_search_forms: false`) and are wired up to a local Pagefind index "
+            f"covering {indexed_pages} page(s) (`search: enabled: true`) -- these are "
+            "working search boxes, not just raw material. Nothing to do here.",
+            "",
+        ]
+        return (lines, False)
+
     lines = [
         "## Search forms left in place",
         "",
@@ -465,7 +486,9 @@ def _search_forms_kept_section(build_report: dict | None) -> tuple[list[str], bo
         "(`strip_search_forms: false`) instead of being removed. This does not make them "
         "functional -- the form's `action` still points at the local homepage once rewritten, "
         "so submitting it as-is does nothing useful. It's raw material for wiring up a "
-        "replacement (a static index, a hosted search service), not a working search box:",
+        "replacement -- set `search: enabled: true` and `wpfreeze build` will index the site "
+        "with Pagefind and wire these forms up itself (see \"Offline search\" in the README) -- "
+        "not a working search box on its own:",
         "",
     ]
     for page, info in sorted(kept_pages.items(), key=lambda kv: (-_count(kv[1]), kv[0])):
@@ -474,6 +497,59 @@ def _search_forms_kept_section(build_report: dict | None) -> tuple[list[str], bo
         count = _count(info)
         lines.append(f"- {page_label}" + (f" ({count} form(s))" if count > 1 else ""))
     lines.append("")
+
+    return (lines, True)
+
+
+def _search_coverage_section(build_report: dict | None) -> tuple[list[str], bool]:
+    """Pages search.enabled left out of reach, in one of two distinct ways
+    -- explained in prose so a reader knows which fix applies:
+
+    - not indexed at all (no `data-pagefind-body` match against
+      `search.body_selectors`) -- usually a too-narrow selector, or an
+      archive/attachment page the owner meant to exclude;
+    - indexed, but with no search form on the page to reach it from -- a
+      template that omits the theme's search widget.
+
+    Emitted only when search is enabled and at least one list is
+    non-empty; a page can appear in both.
+    """
+    if build_report is None:
+        return ([], False)
+
+    search = build_report.get("search") or {}
+    if not search.get("enabled"):
+        return ([], False)
+
+    missing_body = search.get("pages_without_body_match") or []
+    missing_form = search.get("pages_without_form") or []
+    if not missing_body and not missing_form:
+        return ([], False)
+
+    lines = ["## Pages not covered by search", ""]
+    if missing_body:
+        lines.append(
+            f"**Absent from the index** -- {len(missing_body)} page(s) matched none of "
+            "`search.body_selectors`, so Pagefind never indexed them: nobody can find them "
+            "by searching. Usually a too-narrow selector, or an archive/attachment page you "
+            "meant to exclude on purpose. If this list looks wrong, check `body_selectors` "
+            "against these pages' actual markup:"
+        )
+        lines.append("")
+        for output_path in sorted(missing_body):
+            lines.append(f"- {_linked(f'`{output_path}`', _site_link(output_path))}")
+        lines.append("")
+    if missing_form:
+        lines.append(
+            f"**In the index but unreachable** -- {len(missing_form)} page(s) have no "
+            "recognized search form, so even though their content is indexed there's nothing "
+            "on the page to search from. Usually a template that omits the theme's search "
+            "widget:"
+        )
+        lines.append("")
+        for output_path in sorted(missing_form):
+            lines.append(f"- {_linked(f'`{output_path}`', _site_link(output_path))}")
+        lines.append("")
 
     return (lines, True)
 
@@ -538,10 +614,15 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
     verify_lines, verify_needs_attention = _verification_section(build_report)
     excised_lines, excised_needs_attention = _excised_content_section(build_report)
     kept_search_lines, kept_search_needs_attention = _search_forms_kept_section(build_report)
+    coverage_lines, coverage_needs_attention = _search_coverage_section(build_report)
     markup_lines = _markup_quirks_section(vnu_report)
     markup_needs_attention = bool(vnu_report and vnu_report.get("issues"))
     broken_needs_attention = (
-        broken_needs_attention or verify_needs_attention or excised_needs_attention or kept_search_needs_attention
+        broken_needs_attention
+        or verify_needs_attention
+        or excised_needs_attention
+        or kept_search_needs_attention
+        or coverage_needs_attention
     )
 
     # An all-clear may only be given for checks that actually ran. A section
@@ -591,6 +672,7 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
     lines.extend(verify_lines)
     lines.extend(excised_lines)
     lines.extend(kept_search_lines)
+    lines.extend(coverage_lines)
     lines.extend(markup_lines)
     return "\n".join(lines).rstrip() + "\n"
 

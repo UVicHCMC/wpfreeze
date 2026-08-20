@@ -116,6 +116,88 @@ def test_load_config_wayback_settings(tmp_path: Path):
     assert config.wayback.prefer_snapshots_near == date(2022, 6, 15)
 
 
+def test_load_config_search_defaults(tmp_path: Path):
+    path = _write_yaml(tmp_path / "site.yaml", {"base_url": "https://example.com/", "output_dir": "out"})
+    config = load_config(path)
+    assert config.search.enabled is False
+    assert config.search.body_selectors == ()
+    assert config.search.ignore_selectors == ()
+    assert config.search.force_language is None
+
+
+def test_load_config_search_settings_plumb_through(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {
+            "base_url": "https://example.com/",
+            "output_dir": "out",
+            "policy": {"strip_search_forms": False},
+            "search": {
+                "enabled": True,
+                "body_selectors": [".entry-content"],
+                "ignore_selectors": [".related-posts"],
+                "force_language": "en",
+            },
+        },
+    )
+    config = load_config(path)
+    assert config.search.enabled is True
+    assert config.search.body_selectors == (".entry-content",)
+    assert config.search.ignore_selectors == (".related-posts",)
+    assert config.search.force_language == "en"
+
+
+def test_search_enabled_with_default_policy_raises_config_error(tmp_path: Path):
+    # strip_forms and strip_search_forms both default True, so a search
+    # form never survives the build -- nothing left to wire up.
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {"base_url": "https://example.com/", "output_dir": "out", "search": {"enabled": True}},
+    )
+    with pytest.raises(ConfigError, match="strip_search_forms"):
+        load_config(path)
+
+
+def test_search_enabled_with_strip_search_forms_false_loads(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {
+            "base_url": "https://example.com/",
+            "output_dir": "out",
+            "policy": {"strip_search_forms": False},
+            "search": {"enabled": True},
+        },
+    )
+    config = load_config(path)
+    assert config.search.enabled is True
+
+
+def test_search_enabled_with_strip_forms_false_also_loads(tmp_path: Path):
+    # strip_forms: false leaves search forms alive too, independently of
+    # strip_search_forms -- the case the first draft of this validation
+    # would have wrongly rejected.
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {
+            "base_url": "https://example.com/",
+            "output_dir": "out",
+            "policy": {"strip_forms": False},
+            "search": {"enabled": True},
+        },
+    )
+    config = load_config(path)
+    assert config.search.enabled is True
+
+
+def test_search_disabled_never_raises_regardless_of_policy(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {"base_url": "https://example.com/", "output_dir": "out", "search": {"enabled": False}},
+    )
+    config = load_config(path)  # must not raise
+    assert config.search.enabled is False
+
+
 def test_example_site_yaml_parses():
     repo_root = Path(__file__).resolve().parent.parent
     config = load_config(repo_root / "example-site.yaml")
@@ -607,6 +689,151 @@ def test_run_build_no_todo_flag_skips_cleanup_todo_but_still_writes_build_report
     assert (output_dir / "build-report.json").exists()
     assert not (output_dir / "cleanup-todo.md").exists()
     assert not (output_dir / "cleanup-todo.html").exists()
+
+
+def _mock_pagefind_index(monkeypatch, *, ok: bool = True, pages_indexed: int = 1,
+                          languages: tuple[str, ...] = ("en",), error: str = "", raises: Exception | None = None):
+    from wpfreeze.search import SearchIndexResult
+
+    calls = []
+
+    def _fake(site_dir, settings, timeout=1800.0):
+        calls.append((site_dir, settings))
+        if raises is not None:
+            raise raises
+        return SearchIndexResult(ok=ok, pages_indexed=pages_indexed, languages=languages, error=error)
+
+    monkeypatch.setattr("wpfreeze.cli.run_pagefind_index", _fake)
+    return calls
+
+
+def test_run_build_indexes_automatically_when_search_enabled(tmp_path: Path, monkeypatch, capsys):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_build
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(_minimal_capture(output_dir), search=SearchSettings(enabled=True))
+    calls = _mock_pagefind_index(monkeypatch, ok=True, pages_indexed=1, languages=("en",))
+
+    exit_code = run_build(config, None, verify=False)
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    build_report = json.loads((output_dir / "build-report.json").read_text(encoding="utf-8"))
+    assert build_report["search"]["index_ok"] is True
+    assert build_report["search"]["indexed_pages"] == 1
+    assert "Search:" in capsys.readouterr().out
+
+
+def test_run_build_does_not_index_when_search_disabled(tmp_path: Path, monkeypatch):
+    from wpfreeze.cli import run_build
+
+    output_dir = tmp_path / "out"
+    config = _minimal_capture(output_dir)
+    calls = _mock_pagefind_index(monkeypatch)
+
+    run_build(config, None, verify=False)
+
+    assert calls == []
+
+
+def test_run_build_fails_when_search_index_fails(tmp_path: Path, monkeypatch):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_build
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(_minimal_capture(output_dir), search=SearchSettings(enabled=True))
+    _mock_pagefind_index(monkeypatch, ok=False, error="boom")
+
+    exit_code = run_build(config, None, verify=False)
+
+    assert exit_code == 1
+    build_report = json.loads((output_dir / "build-report.json").read_text(encoding="utf-8"))
+    assert build_report["search"]["index_ok"] is False
+    assert build_report["search"]["index_error"] == "boom"
+
+
+def test_run_build_returns_2_when_pagefind_unavailable(tmp_path: Path, monkeypatch, capsys):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_build
+    from wpfreeze.search import SearchUnavailable
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(_minimal_capture(output_dir), search=SearchSettings(enabled=True))
+    _mock_pagefind_index(monkeypatch, raises=SearchUnavailable("pagefind not installed"))
+
+    exit_code = run_build(config, None, verify=False)
+
+    assert exit_code == 2
+    assert "pagefind not installed" in capsys.readouterr().out
+
+
+def test_search_index_without_search_enabled_errors(tmp_path: Path, capsys):
+    from wpfreeze.cli import run_search_index
+
+    output_dir = tmp_path / "out"
+    config = _minimal_capture(output_dir)
+
+    exit_code = run_search_index(config, None)
+
+    assert exit_code == 2
+    assert "nothing to index" in capsys.readouterr().out
+
+
+def test_search_index_without_a_built_site_errors(tmp_path: Path, capsys):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_search_index
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True)
+    config = dataclasses.replace(
+        SiteConfig(base_url="https://example.com/", output_dir=output_dir), search=SearchSettings(enabled=True)
+    )
+    # No run_build call -- output_dir/site never gets created.
+
+    exit_code = run_search_index(config, None)
+
+    assert exit_code == 2
+    assert "run `wpfreeze build` first" in capsys.readouterr().out
+
+
+def test_search_index_reindexes_an_already_built_site(tmp_path: Path, monkeypatch, capsys):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_build, run_search_index
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(_minimal_capture(output_dir), search=SearchSettings(enabled=True))
+    _mock_pagefind_index(monkeypatch, ok=True, pages_indexed=1, languages=("en",))
+    run_build(config, None, verify=False)  # so the built site exists
+
+    calls = _mock_pagefind_index(monkeypatch, ok=True, pages_indexed=1, languages=("en",))
+    exit_code = run_search_index(config, None)
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert "Search index: 1 page(s)" in capsys.readouterr().out
+
+
+def test_search_index_returns_1_on_a_failed_index(tmp_path: Path, monkeypatch, capsys):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_build, run_search_index
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(_minimal_capture(output_dir), search=SearchSettings(enabled=True))
+    _mock_pagefind_index(monkeypatch, ok=True)
+    run_build(config, None, verify=False)
+
+    _mock_pagefind_index(monkeypatch, ok=False, error="index exploded")
+    exit_code = run_search_index(config, None)
+
+    assert exit_code == 1
+    assert "index exploded" in capsys.readouterr().out
 
 
 def test_run_validate_writes_cleanup_todo(tmp_path: Path, monkeypatch):

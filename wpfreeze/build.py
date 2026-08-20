@@ -33,6 +33,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from posixpath import relpath as posix_relpath
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
@@ -42,7 +43,11 @@ from wpfreeze.extract import decode_static_bundle
 from wpfreeze.manifest import FLAG_ATTACHMENT_PAGE, Manifest, ManifestRecord, Status
 from wpfreeze.normalize import NormalizeStats, apply_normalizations
 from wpfreeze.policy import Policy, PolicyStats, apply_policy
+from wpfreeze.search import SEARCH_ASSET_PATH, SearchStats, apply_search, write_search_asset
 from wpfreeze.urlnorm import PERMALINK_QUERY_KEYS, scope_profile_from_config
+
+if TYPE_CHECKING:
+    from wpfreeze.cli import SearchSettings
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +114,7 @@ class BuildStats:
     policy: PolicyStats = field(default_factory=PolicyStats)
     normalize: NormalizeStats = field(default_factory=NormalizeStats)
     dedupe: DedupeStats = field(default_factory=DedupeStats)
+    search: SearchStats = field(default_factory=SearchStats)
     unresolved_samples: list[dict] = field(default_factory=list)
 
     @property
@@ -554,6 +560,7 @@ def build_site(
     policy: Policy | None = None,
     base_url: str | None = None,
     extra_hosts: tuple[str, ...] | list[str] = (),
+    search: SearchSettings | None = None,
 ) -> BuildStats:
     """Emit the rewritten site under `site_dir`.
 
@@ -569,8 +576,13 @@ def build_site(
     unresolved references on a multisite subdirectory install -- see
     `LinkRewriter.__init__`. Omit it (older manifests) to fall back to a
     plain host comparison.
+
+    `search` wires the site's own search form to a local Pagefind index
+    (see wpfreeze/search.py); None or `search.enabled = False` leaves
+    every page byte-for-byte identical to a build without this feature.
     """
     policy = policy or Policy()
+    search_enabled = bool(search and search.enabled)
     records = build_record_lookup(manifest)
     lookup = {url: record.output_path for url, record in records.items()}
     attachment_media = build_attachment_media_map(manifest, output_dir, lookup)
@@ -579,6 +591,7 @@ def build_site(
     rewriter = LinkRewriter(lookup, stats, bundler, attachment_media, base_url, extra_hosts)
     css_index = InlineCssIndex()
     bundler.rewriter = rewriter
+    stats.search.enabled = search_enabled
     logger.info("build: %d lookup keys, %d attachment redirects", len(lookup), len(attachment_media))
 
     for record in manifest.all():
@@ -621,6 +634,14 @@ def build_site(
             if policy.dedupe_inline_css:
                 for tag, raw_css in raw_styles:
                     css_index.record(raw_css, str(tag), record.output_path, record.url)
+            if search_enabled:
+                # Deliberately AFTER rewrite_soup: the injected <script
+                # src=...> is already a correct relative local path, and
+                # the rewriter would otherwise try (and fail) to resolve
+                # it against the manifest lookup, inflating the
+                # unresolved-reference count. See CLAUDE-search.md sec. 5.
+                script_src = relative_link(record.output_path, SEARCH_ASSET_PATH)
+                apply_search(soup, search, stats.search, script_src, record.output_path)
             destination.write_text(str(soup), encoding="utf-8")
         elif is_css:
             stats.assets += 1
@@ -647,6 +668,14 @@ def build_site(
     if redirects.exists():
         (site_dir / ".htaccess").write_bytes(redirects.read_bytes())
         stats.redirects_copied = True
+
+    if search_enabled:
+        # Written once per build, after every page (not per-record): the
+        # content is fixed, not templated, and every script tag above
+        # already points at this same location. Must land before
+        # build_site returns so verify_site finds the file those tags
+        # point at.
+        write_search_asset(site_dir)
 
     return stats
 

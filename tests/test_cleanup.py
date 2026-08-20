@@ -308,6 +308,7 @@ def test_search_forms_are_their_own_category_not_other(tmp_path: Path):
     content = build_cleanup_todo(tmp_path)
     assert "**Search forms**" in content
     assert "strip_search_forms: false" in content
+    assert "search: enabled: true" in content
     assert "[`https://s/purpose/`](site/purpose.html)" in content
     # search is a recognized, deliberate removal like comment forms, but
     # unlike comment forms it still pushes "worth a look" (no wrapper
@@ -345,6 +346,102 @@ def test_search_forms_kept_in_place_absent_when_none_kept(tmp_path: Path):
     _write(tmp_path, "build-report.json", {"unresolved": 0, "unresolved_samples": [], "policy": {}})
     content = build_cleanup_todo(tmp_path)
     assert "Search forms left in place" not in content
+
+
+def test_search_forms_kept_in_place_reworded_when_index_ok(tmp_path: Path):
+    """With a successful Pagefind index behind them, the kept forms are
+    actually working search boxes -- the "raw material... not a working
+    search box" wording (asserted above for the search.enabled=False case)
+    would now be false, and the section should stop asking for a look."""
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "search_forms_kept_pages": {
+                    "https://s/purpose/": {"count": 1, "output_path": "/purpose.html"},
+                }
+            },
+            "search": {"enabled": True, "index_ok": True, "indexed_pages": 42},
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "## Search forms left in place" in content
+    assert "wired up to a local Pagefind index covering 42 page(s)" in content
+    assert "working search boxes, not just raw material" in content
+    assert "does not make them functional" not in content
+    assert "worth a look before you call it done" not in content
+
+
+def test_search_forms_kept_in_place_original_wording_when_index_not_ok(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "search_forms_kept_pages": {
+                    "https://s/purpose/": {"count": 1, "output_path": "/purpose.html"},
+                }
+            },
+            "search": {"enabled": True, "index_ok": False},
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "does not make them functional" in content
+    assert "worth a look before you call it done" in content
+
+
+def test_search_coverage_section_lists_both_categories(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {},
+            "search": {
+                "enabled": True,
+                "pages_without_body_match": ["/category/news.html"],
+                "pages_without_form": ["/landing.html"],
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "## Pages not covered by search" in content
+    assert "Absent from the index" in content
+    assert "[`/category/news.html`](site/category/news.html)" in content
+    assert "In the index but unreachable" in content
+    assert "[`/landing.html`](site/landing.html)" in content
+    assert "worth a look before you call it done" in content
+
+
+def test_search_coverage_section_absent_when_search_disabled(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {},
+            "search": {"enabled": False, "pages_without_body_match": ["/x.html"]},
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "Pages not covered by search" not in content
+
+
+def test_search_coverage_section_absent_when_both_lists_empty(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {"unresolved": 0, "unresolved_samples": [], "policy": {}, "search": {"enabled": True}},
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "Pages not covered by search" not in content
 
 
 def test_excised_form_page_links_to_local_copy(tmp_path: Path):

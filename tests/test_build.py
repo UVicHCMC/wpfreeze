@@ -12,6 +12,7 @@ from wpfreeze.build import (
     relative_link,
     write_build_report,
 )
+from wpfreeze.cli import SearchSettings
 from wpfreeze.manifest import Manifest, Status
 
 BASE = "https://example.com"
@@ -319,6 +320,80 @@ def test_build_site_never_writes_into_the_capture(tmp_path: Path):
     build_site(manifest, output_dir, site_dir)
 
     assert (output_dir / home.local_path).read_bytes() == original
+
+
+# --- search wiring ----------------------------------------------------
+
+
+def _search_site(tmp_path: Path):
+    """A two-level-deep site with a search form on both pages, for
+    exercising apply_search's placement inside build_site."""
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    post = _fetched(manifest, f"{BASE}/blog/post-1/", "/blog/post-1.html")
+
+    _write(
+        output_dir,
+        home,
+        b'<form role="search"><input name="s"></form>'
+        b'<article class="entry-content">home content</article>',
+    )
+    _write(
+        output_dir,
+        post,
+        b'<form role="search"><input name="s"></form>'
+        b'<article class="entry-content">post content</article>',
+    )
+    return manifest, output_dir, site_dir
+
+
+def test_search_enabled_adds_a_module_script_tag_at_correct_relative_depth(tmp_path: Path):
+    manifest, output_dir, site_dir = _search_site(tmp_path)
+
+    build_site(manifest, output_dir, site_dir, search=SearchSettings(enabled=True))
+
+    home_html = (site_dir / "index.html").read_text()
+    post_html = (site_dir / "blog/post-1.html").read_text()
+    assert '<script src="assets/pagefind-search.js" type="module">' in home_html
+    assert '<script src="../assets/pagefind-search.js" type="module">' in post_html
+
+
+def test_search_enabled_writes_the_runtime_asset(tmp_path: Path):
+    manifest, output_dir, site_dir = _search_site(tmp_path)
+
+    build_site(manifest, output_dir, site_dir, search=SearchSettings(enabled=True))
+
+    assert (site_dir / "assets/pagefind-search.js").exists()
+
+
+def test_search_enabled_does_not_inflate_unresolved_or_break_verification(tmp_path: Path):
+    """The regression test for the ordering hazard in CLAUDE-search.md
+    section 5: injecting the script tag before rewrite_soup would make the
+    rewriter treat it as an unresolvable reference. Compare stats.unresolved
+    directly against the same build with search off."""
+    from wpfreeze.build import verify_site as _verify_site
+
+    manifest_off, output_dir_off, site_dir_off = _search_site(tmp_path / "off")
+    stats_off = build_site(manifest_off, output_dir_off, site_dir_off)
+
+    manifest_on, output_dir_on, site_dir_on = _search_site(tmp_path / "on")
+    stats_on = build_site(manifest_on, output_dir_on, site_dir_on, search=SearchSettings(enabled=True))
+
+    assert stats_on.unresolved == stats_off.unresolved == 0
+    assert _verify_site(site_dir_on).ok
+
+
+def test_search_disabled_output_is_byte_for_byte_identical_to_no_search_param(tmp_path: Path):
+    manifest_a, output_dir_a, site_dir_a = _search_site(tmp_path / "a")
+    build_site(manifest_a, output_dir_a, site_dir_a)
+
+    manifest_b, output_dir_b, site_dir_b = _search_site(tmp_path / "b")
+    build_site(manifest_b, output_dir_b, site_dir_b, search=SearchSettings(enabled=False))
+
+    assert (site_dir_a / "index.html").read_bytes() == (site_dir_b / "index.html").read_bytes()
+    assert not (site_dir_b / "assets/pagefind-search.js").exists()
 
 
 def test_write_build_report_persists_unresolved_samples(tmp_path: Path):

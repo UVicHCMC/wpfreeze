@@ -47,6 +47,7 @@ from wpfreeze.policy import Policy
 from wpfreeze.report import write_report_html, write_report_json
 from wpfreeze.rescan import format_rescan_summary, rescan
 from wpfreeze.runlock import RunLock, RunLockHeld
+from wpfreeze.search import SearchUnavailable, format_search_summary, run_pagefind_index
 from wpfreeze.upload import write_upload_script
 from wpfreeze.urlnorm import SiteProfile, scope_profile_from_config
 from wpfreeze.validate import (
@@ -83,6 +84,32 @@ class UploadSettings:
 
 
 @dataclass(frozen=True)
+class SearchSettings:
+    # Master switch for offline search (Pagefind). Off by default -- see
+    # CLAUDE-search.md. Requires a search form to actually survive the
+    # build; see load_config's own check just below.
+    enabled: bool = False
+    # CSS selectors marking a page's real content for indexing. Beyond
+    # narrowing *what* gets indexed on a matching page, setting this to
+    # anything non-empty makes Pagefind index ONLY pages that match at
+    # least one selector -- every other page silently drops out of the
+    # index. That is the only per-page exclusion mechanism available (it
+    # is how category/tag/attachment chaff gets kept out), and also the
+    # footgun: a too-narrow selector empties the index quietly. The build
+    # reports the miss count; see search.SearchStats.
+    body_selectors: tuple[str, ...] = ()
+    # CSS selectors to exclude from indexing even inside indexed content
+    # (e.g. a repeated "related posts" widget). Passed straight to
+    # Pagefind's --exclude-selectors -- no markup mutation needed.
+    ignore_selectors: tuple[str, ...] = ()
+    # Collapses Pagefind's per-<html lang> index split into one index.
+    # Needed when a theme is inconsistent about emitting `lang`, which
+    # otherwise silently returns no results from whichever pages fell
+    # into the un-forced index.
+    force_language: str | None = None
+
+
+@dataclass(frozen=True)
 class SiteConfig:
     base_url: str
     output_dir: Path
@@ -97,6 +124,7 @@ class SiteConfig:
     policy: Policy = field(default_factory=Policy)  # content stripping for `build`
     vnu_jar: Path | None = None  # optional: pin a specific vnu.jar; unset auto-downloads/caches the latest
     upload: UploadSettings = field(default_factory=UploadSettings)  # upload.sh destination; see `upload-script`
+    search: SearchSettings = field(default_factory=SearchSettings)  # offline search (Pagefind); see `search-index`
 
 
 def _parse_date(value) -> date:
@@ -117,6 +145,22 @@ def load_config(path: Path) -> SiteConfig:
 
     xml_backup_raw = raw.get("xml_backup")
 
+    policy = Policy.from_config(raw.get("policy"))
+
+    search_raw = raw.get("search") or {}
+    search = SearchSettings(
+        enabled=bool(search_raw.get("enabled", False)),
+        body_selectors=tuple(search_raw.get("body_selectors", []) or []),
+        ignore_selectors=tuple(search_raw.get("ignore_selectors", []) or []),
+        force_language=search_raw.get("force_language"),
+    )
+    if search.enabled and policy.strip_forms and policy.strip_search_forms:
+        raise ConfigError(
+            "search.enabled: true requires the site's search forms to survive the "
+            "build; set policy.strip_search_forms: false (or policy.strip_forms: "
+            "false) -- otherwise there is no form left to wire up."
+        )
+
     return SiteConfig(
         base_url=raw["base_url"].rstrip("/") + "/",
         output_dir=Path(raw["output_dir"]),
@@ -131,9 +175,10 @@ def load_config(path: Path) -> SiteConfig:
             prefer_snapshots_near=_parse_date(prefer_near_raw) if prefer_near_raw else date.today(),
         ),
         xml_backup=Path(xml_backup_raw) if xml_backup_raw else None,
-        policy=Policy.from_config(raw.get("policy")),
+        policy=policy,
         vnu_jar=Path(raw["vnu_jar"]) if raw.get("vnu_jar") else None,
         upload=UploadSettings(remote=(raw.get("upload") or {}).get("remote")),
+        search=search,
     )
 
 
@@ -580,7 +625,7 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool, write_tod
     # purposes, say) -- see verify_site's written_after docstring.
     build_started = time.time()
     stats = build_site(
-        manifest, config.output_dir, target, config.policy, config.base_url, config.extra_hosts
+        manifest, config.output_dir, target, config.policy, config.base_url, config.extra_hosts, config.search
     )
     print(format_build_summary(stats))
     print(f"Site written to {target}")
@@ -594,15 +639,35 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool, write_tod
         verify_report = verify_site(target, written_after=build_started)
         print(format_verify_summary(verify_report))
         broken = len(verify_report.broken)
+
+    # After verify, before write_build_report: the index result has to
+    # land in build-report.json (via stats.search, folded into asdict(stats))
+    # alongside the rewriting stats, or the cleanup checklist (regenerated
+    # moments later) has no way to see it.
+    search_result = None
+    if config.search.enabled:
+        try:
+            search_result = run_pagefind_index(target, config.search)
+        except SearchUnavailable as exc:
+            print(f"Search index could not be built: {exc}")
+            return 2
+        stats.search.index_ok = search_result.ok
+        stats.search.indexed_pages = search_result.pages_indexed
+        stats.search.languages = list(search_result.languages)
+        stats.search.index_error = search_result.error
+        print(format_search_summary(stats.search, search_result))
+
     write_build_report(stats, config.output_dir, verify_report)
 
     if write_todo:
         _announce_cleanup_todo(config.output_dir)
 
-    # Unresolved references and broken local links are both real (if
-    # partial) failures to finish the job, and mirror acquire's "complete
-    # with gaps" exit code.
-    return 1 if (stats.unresolved or broken) else 0
+    # Unresolved references, broken local links, and a failed search index
+    # are all real (if partial) failures to finish the job, and mirror
+    # acquire's "complete with gaps" exit code. A site shipped with a
+    # hijacked search form and no index behind it is a failed build, not a
+    # warning.
+    return 1 if (stats.unresolved or broken or (search_result is not None and not search_result.ok)) else 0
 
 
 def run_validate(config: SiteConfig, site_dir: Path | None, write_todo: bool = True) -> int:
@@ -683,6 +748,43 @@ def run_upload_script(config: SiteConfig, site_dir: Path | None) -> int:
     path = write_upload_script(config.output_dir, config.upload.remote, site_rel)
     print(f"Upload script: {path}")
     return 0
+
+
+def run_search_index(config: SiteConfig, site_dir: Path | None) -> int:
+    """Re-index an already-built site with Pagefind, without a full
+    `wpfreeze build`. `build` already runs this automatically when
+    `search.enabled` is set -- this command exists for re-indexing after a
+    selector change (search.body_selectors/ignore_selectors) without
+    re-running the whole build. Unlike `upload-script`, this is not purely
+    deferrable: a built site with search's markup wired in and no index
+    behind it is broken, not just unpreviewed. It stays gated behind the
+    explicit `search.enabled` (plus the ConfigError in load_config), so
+    nobody gets it by accident.
+    """
+    if not config.search.enabled:
+        print("`search: enabled: true` is not set in the config; nothing to index.")
+        return 2
+
+    target = site_dir or (config.output_dir / "site")
+    if not target.exists():
+        print(f"No built site found at {target}; run `wpfreeze build` first.")
+        return 2
+
+    try:
+        result = run_pagefind_index(target, config.search)
+    except SearchUnavailable as exc:
+        print(f"Search index could not be built: {exc}")
+        return 2
+
+    # Not format_search_summary: that also reports per-page form/content
+    # coverage computed during build_site's own loop, which this command
+    # doesn't re-run (the markup is already there from the last `build`).
+    if result.ok:
+        langs = ", ".join(result.languages) if result.languages else "unknown"
+        print(f"Search index: {result.pages_indexed} page(s), language(s): {langs}")
+    else:
+        print(f"Search index FAILED: {result.error}")
+    return 0 if result.ok else 1
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -770,6 +872,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     upload_script_p.add_argument("--config", required=True, type=Path)
     upload_script_p.add_argument(
+        "--site-dir", type=Path, default=None, help="site directory to reference (default: <output_dir>/site)"
+    )
+
+    search_index_p = subparsers.add_parser(
+        "search-index",
+        help="(re-)build the Pagefind search index over an already-built site (needs `search: "
+        "enabled: true`) -- `build` already does this automatically; use this to re-index after "
+        "a selector change without a full rebuild",
+    )
+    search_index_p.add_argument("--config", required=True, type=Path)
+    search_index_p.add_argument(
         "--site-dir", type=Path, default=None, help="site directory to reference (default: <output_dir>/site)"
     )
 
@@ -880,6 +993,8 @@ def _dispatch(argv: list[str] | None) -> int:
         return run_rescan(config, apply=args.apply, profile_from_config=args.profile_from_config)
     if args.command == "upload-script":
         return run_upload_script(config, args.site_dir)
+    if args.command == "search-index":
+        return run_search_index(config, args.site_dir)
 
     return 2
 

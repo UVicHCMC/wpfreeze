@@ -116,13 +116,14 @@ policy:
   # (role="search", or a name="s" input -- WordPress's own conventions,
   # theme-independent). True (default) removes it like any other form.
   # False leaves it completely untouched, for a site owner planning to
-  # wire up a replacement (a static index, a hosted search service) rather
-  # than just lose search entirely -- pages with one left this way are
-  # listed in the cleanup checklist's "Search forms left in place" section.
-  # This does NOT make the form functional: its action attribute still
-  # gets rewritten like any other reference, so submitting it as-is just
-  # navigates to the local homepage with an ignored ?s= query string. It's
-  # raw material to repurpose, not a working search box.
+  # wire up a replacement rather than just lose search entirely -- pages
+  # with one left this way are listed in the cleanup checklist's "Search
+  # forms left in place" section. This does NOT make the form functional
+  # on its own: its action attribute still gets rewritten like any other
+  # reference, so submitting it as-is just navigates to the local homepage
+  # with an ignored ?s= query string. It's raw material to repurpose --
+  # unless you also turn on `search:` below, in which case `build` does
+  # the wiring itself.
   strip_search_forms: true
 
   # Remove feed links -- the <link rel="alternate" type="application/rss+xml">
@@ -182,3 +183,41 @@ vnu_jar: "./vnu.jar"
 # do on purpose; `build` never touches this and never runs it.
 # upload:
 #   remote: "user@host:/path/to/destination"
+
+# Optional. Gives the archived site a working search box again --
+# `wpfreeze build` indexes the site with Pagefind and wires the theme's
+# own existing search form to the local index, with no new visible UI
+# and no server. Needs the `pagefind` package (`pipx inject wpfreeze
+# 'pagefind[extended]'` for a pipx install) and requires the search form
+# to actually survive the build -- `strip_search_forms: false` (or
+# `strip_forms: false`) above -- otherwise wpfreeze refuses to start with
+# a ConfigError rather than silently building a site with nothing to wire
+# up. See "Offline search" in README.md for the full picture, including
+# why body_selectors is worth reading carefully before you set it.
+# search:
+#   enabled: false
+#
+#   CSS selectors marking where a page's REAL content lives, e.g.:
+#     body_selectors: ["article .entry-content"]
+#   This does two things, and the second is the one worth reading
+#   carefully: it narrows what Pagefind indexes on a matching page, AND
+#   it means any page matching NONE of the selectors is dropped from the
+#   index entirely (Pagefind's own behaviour, not something wpfreeze
+#   adds). That's deliberate -- it's the only way to keep category/tag
+#   archives and attachment pages out of search results -- but a
+#   too-narrow selector silently empties part of the index. The build
+#   reports the miss count and the cleanup checklist lists every affected
+#   page, so this doesn't fail silently. Left at the default [], Pagefind
+#   indexes the whole <body> of every page instead -- it works, but every
+#   result carries the theme's nav/sidebar/footer text.
+#   body_selectors: []
+#
+#   CSS selectors to exclude from indexing even inside otherwise-indexed
+#   content -- a repeated "related posts" widget, say.
+#   ignore_selectors: []
+#
+#   Collapses Pagefind's per-<html lang> index split into a single index.
+#   Needed if the theme is inconsistent about emitting `lang` on every
+#   page, which otherwise silently returns no results from whichever
+#   pages fell into the un-forced index. e.g. "en".
+#   force_language: null

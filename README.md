@@ -1,3 +1,4 @@
+![wpfreeze logo](local/media/wpfreeze.png)
 # wpfreeze
 
 Acquires a complete, verified local copy of a WordPress site's pages and
@@ -30,6 +31,13 @@ web scraper and makes no attempt to be polite to sites it doesn't own.
   builds image URLs in JS, a JS-only navigation path) is neither captured nor
   rewritten. This is a deliberate scope decision — no headless browser — and
   it's reported in the build's own known-limitations, not silently ignored.
+- **Optionally does**: give the archived site a working search box again.
+  The original WordPress search is dead on any static copy; with
+  `search.enabled`, `build` indexes the site with
+  [Pagefind](https://pagefind.app) and wires the theme's *own* existing
+  search form to the local index — no new UI, no server, no third-party
+  service, nothing leaves the browser. Opt-in and off by default; see
+  "Offline search" below.
 
 ## Requirements
 
@@ -66,6 +74,15 @@ pipx install git+https://github.com/<you>/wpfreeze.git
 
 (Replace the URL with wherever this repo actually ends up — there's no
 public host configured yet.)
+
+Offline search (see "Offline search" below) needs one more package, which
+a plain `pipx install` does not pull in — `pipx`'s isolated environment
+needs `pipx inject`, not `pip install`, to add a package to an app it
+already manages:
+
+```bash
+pipx inject wpfreeze 'pagefind[extended]'   # only if you want offline search
+```
 
 If you'd rather not use `pipx`, a plain `pip install git+https://...` works
 identically, just without the automatic environment isolation.
@@ -149,6 +166,7 @@ wpfreeze report        --config site.yaml [--html-only | --json-only]
 wpfreeze status        --config site.yaml
 wpfreeze rescan        --config site.yaml [--apply] [--profile-from-config]
 wpfreeze upload-script --config site.yaml [--site-dir DIR]
+wpfreeze search-index  --config site.yaml [--site-dir DIR]
 ```
 
 - **`acquire`** runs (or resumes) the full pipeline: inventory discovery,
@@ -165,7 +183,8 @@ wpfreeze upload-script --config site.yaml [--site-dir DIR]
   safe to re-run. It self-verifies afterward — every local reference is
   resolved against a file on disk — unless `--no-verify` is passed. Also
   (re)generates the cleanup checklist (see "The cleanup checklist" below)
-  unless `--no-todo` is passed.
+  unless `--no-todo` is passed, and, when `search.enabled` is set in the
+  config, builds the offline search index (see "Offline search" below).
 - **`validate`** checks the built site's HTML/CSS with the [Nu Html
   Checker](https://validator.github.io/validator/) and writes
   `vnu-report.json`. Informational only — these are defects in the
@@ -189,6 +208,12 @@ wpfreeze upload-script --config site.yaml [--site-dir DIR]
   somewhere a site owner can preview it — see "Previewing a build
   somewhere" below. Requires both a built `site/` and `upload.remote` in
   the config; writes nothing and exits non-zero without either.
+- **`search-index`** (re-)builds the Pagefind search index over an
+  already-built site. `build` already does this automatically whenever
+  `search.enabled` is set — this command exists for re-indexing after a
+  selector change (`search.body_selectors`/`ignore_selectors`) without a
+  full rebuild. Requires both a built `site/` and `search.enabled: true`
+  in the config; see "Offline search" below.
 
 **Exit codes**: `0` = complete, `1` = complete with gaps (see `report.html`'s
 "Action required" section — expected content that couldn't be recovered
@@ -211,6 +236,8 @@ report.html        single self-contained static report (open it in a browser)
 report.json        the manifest plus summary statistics
 logs/              one file per run, full DEBUG-level detail
 site/              servable static site (only after `wpfreeze build`)
+site/pagefind/     search index -- only when `search: enabled: true` (see "Offline search")
+site/assets/pagefind-search.js  the search-wiring script -- same condition
 build-report.json  build's own stats -- unresolved refs, verification, what policy stripped
 vnu-report.json    HTML/CSS issues from `wpfreeze validate`
 diagnostics.json   capture-integrity summary from `wpfreeze diagnose`
@@ -368,6 +395,75 @@ so anything already at the destination that isn't part of this build gets
 before running it. It copies `site/`'s contents plus `cleanup-todo.html`
 and `report.html` (not the `.md`/`.json` versions).
 
+## Offline search
+
+A static archive's WordPress search form is dead by default — its
+`action` gets rewritten like any other reference and just navigates to
+the local homepage with an ignored `?s=` query string. Setting
+`search.enabled: true` makes `wpfreeze build` give it back a real,
+fully client-side search, powered by [Pagefind](https://pagefind.app):
+the theme's *own* existing search form is wired up as-is, with no new
+visible UI until someone actually searches. It needs the form to survive
+the build in the first place, so `policy.strip_search_forms: false` (or
+`policy.strip_forms: false`) has to be set too — `wpfreeze` refuses to
+start with a `ConfigError` if you enable search without it, rather than
+silently building a site with no search box to wire up:
+
+```yaml
+policy:
+  strip_search_forms: false
+search:
+  enabled: true
+```
+
+`build` then does two things: writes `site/assets/pagefind-search.js`
+(the wiring script) and a `<script>` tag on every page, and runs
+Pagefind's indexer over the finished site, writing `site/pagefind/`. Both
+also happen automatically every time you re-run `build`; `wpfreeze
+search-index` re-runs just the indexing step, for tuning selectors
+without a full rebuild.
+
+**`search.body_selectors`** — a list of CSS selectors marking where a
+page's real content lives (e.g. `["article .entry-content"]`) — does two
+things at once, and the second is easy to miss: it narrows *what* gets
+indexed on a matching page, but it also means **any page matching none of
+the selectors is dropped from the index entirely** (that's Pagefind's own
+behaviour, not something wpfreeze adds). That's a feature, not a bug — it
+is the only way to keep category/tag archives and attachment pages out of
+search results — but a too-narrow selector, or one that a subset of
+templates don't use, silently empties part of the index. The build
+reports the miss count, and the cleanup checklist lists every affected
+page under "Pages not covered by search", so the failure is visible
+rather than a mystery. Leaving `body_selectors` at its default `[]`
+indexes the whole `<body>` of every page instead — it works, but every
+result carries the theme's nav/sidebar/footer text, and archive pages
+compete with real content in the results.
+
+**`search.ignore_selectors`** excludes elements from indexing even inside
+otherwise-indexed content (a repeated "related posts" widget, say).
+**`search.force_language`** collapses Pagefind's per-`<html lang>` index
+split into one index — needed if the theme is inconsistent about
+emitting `lang`, which otherwise silently returns no results from
+whichever pages fell into the wrong index.
+
+Indexing needs the `pagefind` Python package, which is *not* installed by
+a plain `wpfreeze` install (see "Installation" above for the `pipx
+inject` command) — `build`/`search-index` fail with an actionable message
+naming the install command if it's missing, not a bare traceback.
+
+**Search does not work over `file://`.** The rest of a built site opens
+fine straight from a file manager; search specifically does not, because
+both the module import and the index's own `fetch()` calls are blocked
+under `file://`. It needs to be served over real HTTP — even the
+simplest local server is enough:
+
+```bash
+cd <output_dir>/site && python3 -m http.server
+```
+
+If a search box looks broken while you're browsing the site locally by
+double-clicking `index.html`, this is almost always why.
+
 ## Behaviour worth knowing about
 
 - **Rate limiting is per-host, global across all workers**, not multiplied
@@ -410,6 +506,9 @@ and `report.html` (not the `.md`/`.json` versions).
   site").
 - No scheduling or recurring collection — each `acquire` is a single
   (resumable) run against one site config, not a cron-style repeating job.
+- Offline search (`search.enabled`) does not work when the built site is
+  opened via `file://` — it needs to be served over real HTTP (see
+  "Offline search").
 
 ## License
 
