@@ -12,6 +12,8 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 
 import requests
@@ -34,9 +36,41 @@ _LOCKOUT_STATUSES = {401, 403}
 # individually private pages -- ordinary auth-gated content doesn't
 # usually cluster into a long unbroken run against a crawler that's
 # hitting many different URLs. See RateLimiter.note_response.
+#
+# 429 uses the same cooldown/cooldown_max escalation but NOT the same
+# threshold: a 429 is the server's own unambiguous "you are being rate
+# limited" signal (unlike 401/403, which could just be one legitimately
+# private page), so it backs the whole host off starting from the very
+# first occurrence rather than waiting for a run of them. See
+# RateLimiter.note_response and the project notes' 2026-08-20 entry -- found via
+# a real crawl of site-b.example, where `rate_limit: 0.0` plus
+# concurrency=2 tripped the host's rate limiting on ~31% of its pages,
+# and the pre-existing lockout mechanism (401/403-only) never noticed
+# because nothing tracked repeated 429s at all.
 DEFAULT_LOCKOUT_THRESHOLD = 5
 DEFAULT_LOCKOUT_COOLDOWN = 60.0
 DEFAULT_LOCKOUT_COOLDOWN_MAX = 1800.0
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header (RFC 9110 sec 10.2.3): either an integer
+    number of seconds, or an HTTP-date. Returns None if absent or
+    unparseable -- callers fall back to their own default cooldown rather
+    than trusting a header that isn't actually usable."""
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        dt = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
 
 
 @dataclass(frozen=True)
@@ -74,18 +108,32 @@ class RateLimiter:
     `rate_limit` is the minimum spacing between requests to the same host,
     enforced across *all* callers regardless of how many workers are
     concurrently fetching -- concurrency parallelizes across hosts, not
-    within one.
+    within one. Note that `rate_limit: 0.0` in a site's config disables
+    only *this* spacing; it does not disable the 429/lockout backoff
+    below, which is deliberately not configurable off (see note_response).
 
-    Also tracks consecutive 401/403 responses per host via note_response.
-    A run reaching `lockout_threshold` pushes that host's next-allowed
-    time forward by a cooldown (doubling on each further lockout episode
-    for the same host, capped at `lockout_cooldown_max`) -- backing the
-    *host* off, not just the one fetch that tripped it, since concurrent
-    workers on the same host would otherwise keep hammering it for the
-    duration of the cooldown regardless. This reuses `wait`'s existing
-    per-host `_next_allowed` bookkeeping rather than a separate blocking
-    mechanism, so every future `wait(host)` call -- from any worker --
-    naturally respects it.
+    Also tracks two kinds of trouble per host via note_response, both
+    pushing that host's next-allowed time forward by a cooldown (doubling
+    on each further episode of the *same* kind for the same host, capped
+    at `lockout_cooldown_max`) -- backing the *host* off, not just the one
+    fetch that tripped it, since concurrent workers on the same host would
+    otherwise keep hammering it for the duration of the cooldown
+    regardless. This reuses `wait`'s existing per-host `_next_allowed`
+    bookkeeping rather than a separate blocking mechanism, so every future
+    `wait(host)` call -- from any worker, including retries of the same
+    URL still inside its own fetch_with_retries loop -- naturally respects
+    it:
+
+    - A run of `lockout_threshold` consecutive 401/403 responses (a likely
+      site-side lockout, e.g. a security plugin banning this IP, rather
+      than a handful of individually private pages -- ordinary auth-gated
+      content doesn't usually cluster into a long unbroken run against a
+      crawler hitting many different URLs).
+    - Any single 429 (HTTP's own "you are being rate limited" status --
+      unlike 401/403 this needs no run-length threshold, because there is
+      no ambiguous "maybe it's just one private page" case to guard
+      against). Honours a `Retry-After` header when the server sends one;
+      falls back to the same escalating cooldown otherwise.
     """
 
     def __init__(
@@ -103,6 +151,7 @@ class RateLimiter:
         self._lockout_cooldown_max = lockout_cooldown_max
         self._consecutive_denied: dict[str, int] = {}
         self._lockout_strikes: dict[str, int] = {}
+        self._rate_limit_strikes: dict[str, int] = {}
 
     def wait(self, host: str) -> None:
         with self._lock:
@@ -113,32 +162,61 @@ class RateLimiter:
         if sleep_for > 0:
             time.sleep(sleep_for)
 
-    def note_response(self, host: str, status: int) -> None:
-        """Record a terminal HTTP status for `host`. Anything other than
-        401/403 resets the consecutive-denial count; a run reaching
-        `lockout_threshold` backs the whole host off (see class
-        docstring) and logs a warning -- this is user-visible on the
-        console via the standard "wpfreeze" logger, deliberately loud
+    def _back_off_host(self, host: str, cooldown: float) -> None:
+        """Caller must hold self._lock."""
+        now = time.monotonic()
+        self._next_allowed[host] = max(self._next_allowed.get(host, now), now) + cooldown
+
+    def note_response(self, host: str, status: int, retry_after: float | None = None) -> None:
+        """Record an HTTP status for `host`, called once per attempt (see
+        fetch_with_retries) rather than only on the terminal one, so a 429
+        or a lockout streak backs the host off for concurrent siblings
+        immediately rather than only after this URL's own retries are
+        exhausted. `retry_after` (seconds) is honoured for a 429; for
+        anything else it is ignored. Any status other than 401/403 resets
+        the consecutive-denial count (429 does not reset the *lockout*
+        streak specifically -- the two are tracked independently and don't
+        interact). Backing a host off logs a warning -- user-visible on
+        the console via the standard "wpfreeze" logger, deliberately loud
         (WARNING, not INFO/DEBUG) since it changes the pace of the run."""
+        warn_msg: str | None = None
         with self._lock:
-            if status not in _LOCKOUT_STATUSES:
+            if status == 429:
+                strikes = self._rate_limit_strikes.get(host, 0)
+                self._rate_limit_strikes[host] = strikes + 1
+                if retry_after is not None:
+                    cooldown = retry_after
+                    source = "Retry-After"
+                else:
+                    cooldown = min(self._lockout_cooldown * (2**strikes), self._lockout_cooldown_max)
+                    source = "default backoff"
+                self._back_off_host(host, cooldown)
+                warn_msg = (
+                    f"429 (rate limited) from {host} -- backing off {cooldown:.1f}s "
+                    f"({source}) before {host} is fetched again."
+                )
+            elif status not in _LOCKOUT_STATUSES:
                 self._consecutive_denied[host] = 0
-                return
-            count = self._consecutive_denied.get(host, 0) + 1
-            self._consecutive_denied[host] = count
-            if count < self._lockout_threshold:
-                return
-            self._consecutive_denied[host] = 0
-            strikes = self._lockout_strikes.get(host, 0)
-            self._lockout_strikes[host] = strikes + 1
-            cooldown = min(self._lockout_cooldown * (2**strikes), self._lockout_cooldown_max)
-            now = time.monotonic()
-            self._next_allowed[host] = max(self._next_allowed.get(host, now), now) + cooldown
-        logger.warning(
-            "%d consecutive 401/403 responses from %s -- this looks like a site-side "
-            "lockout (e.g. a security plugin blocking this IP), not individually "
-            "private pages. Backing off %.1fs before %s is fetched again.",
-            count, host, cooldown, host,
+            else:
+                count = self._consecutive_denied.get(host, 0) + 1
+                self._consecutive_denied[host] = count
+                if count >= self._lockout_threshold:
+                    self._consecutive_denied[host] = 0
+                    strikes = self._lockout_strikes.get(host, 0)
+                    self._lockout_strikes[host] = strikes + 1
+                    cooldown = min(self._lockout_cooldown * (2**strikes), self._lockout_cooldown_max)
+                    self._back_off_host(host, cooldown)
+                    warn_msg = self._lockout_message(count, host, cooldown)
+        if warn_msg is not None:
+            logger.warning(warn_msg)
+
+    @staticmethod
+    def _lockout_message(count: int, host: str, cooldown: float) -> str:
+        return (
+            f"{count} consecutive 401/403 responses from {host} -- this looks like a "
+            f"site-side lockout (e.g. a security plugin blocking this IP), not "
+            f"individually private pages. Backing off {cooldown:.1f}s before {host} "
+            f"is fetched again."
         )
 
 
@@ -158,6 +236,15 @@ def fetch_with_retries(
     FetchResult, or WAYBACK_CANDIDATE with a flag explaining why (None for
     a plain 404/410, FLAG_AUTH_GATED for 401/403, FLAG_RETRY_EXHAUSTED for
     a transient error that never recovered, FLAG_ODD_RESPONSE otherwise).
+
+    Every response (not just the terminal one) is reported to
+    rate_limiter.note_response -- a 429 on attempt 1 of 4 must back the
+    host off before attempt 2's own rate_limiter.wait(host) call, not
+    just for other URLs, but for the retries this same call is about to
+    make. Without that, this function's own local exponential backoff
+    (config.backoff_base doubling, a few seconds total) is what a real
+    site's rate limiting exhausted in production -- see fetch.py's
+    RateLimiter docstring.
     """
     host = urlsplit(url).hostname or ""
     attempt = 0
@@ -180,6 +267,8 @@ def fetch_with_retries(
             logger.debug("attempt %d for %s raised %s", attempt, url, error)
         else:
             logger.debug("attempt %d for %s -> %s", attempt, url, response.status_code)
+            retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+            rate_limiter.note_response(host, response.status_code, retry_after=retry_after)
 
         transient = error is not None or _is_transient(response.status_code)
         if not transient:
@@ -200,7 +289,8 @@ def fetch_with_retries(
 
     assert response is not None  # error is None => a response was received
     status = response.status_code
-    rate_limiter.note_response(host, status)
+    # note_response already called per-attempt above (including for this
+    # terminal response) -- not called again here.
 
     if 200 <= status < 300:
         result = FetchResult(

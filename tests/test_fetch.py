@@ -274,3 +274,173 @@ def test_fetch_with_retries_reports_lockout_after_consecutive_auth_gated(caplog)
     start = time.monotonic()
     fetch_with_retries(f"{base}/d", requests.Session(), limiter, FAST_CONFIG)
     assert time.monotonic() - start >= 0.5
+
+
+# ---------------------------------------------------------------------------
+# 429 detection: unlike 401/403, a single occurrence backs the host off --
+# see wpfreeze/fetch.py's RateLimiter docstring for why no threshold applies.
+# ---------------------------------------------------------------------------
+
+
+def test_note_response_backs_off_host_on_single_429(caplog):
+    limiter = RateLimiter(0.0, lockout_cooldown=0.3)
+    with caplog.at_level("WARNING", logger="wpfreeze.fetch"):
+        limiter.note_response("example.com", 429)  # one 429 is enough, no threshold
+
+    assert any("429" in r.message for r in caplog.records)
+    assert any("example.com" in r.message for r in caplog.records)
+
+    start = time.monotonic()
+    limiter.wait("example.com")
+    assert time.monotonic() - start >= 0.25
+
+
+def test_note_response_429_honours_retry_after():
+    limiter = RateLimiter(0.0, lockout_cooldown=100.0)  # would fail the test if used
+    limiter.note_response("example.com", 429, retry_after=0.3)
+
+    start = time.monotonic()
+    limiter.wait("example.com")
+    elapsed = time.monotonic() - start
+    assert 0.2 <= elapsed < 5.0  # honoured the short Retry-After, not the 100s default
+
+
+def test_note_response_429_escalates_default_cooldown_without_retry_after():
+    limiter = RateLimiter(0.0, lockout_cooldown=0.2)
+    limiter.note_response("example.com", 429)  # 1st episode, ~0.2s
+
+    start = time.monotonic()
+    limiter.wait("example.com")
+    first_cooldown = time.monotonic() - start
+    assert first_cooldown >= 0.15
+
+    limiter.note_response("example.com", 429)  # 2nd episode -- should double
+
+    start = time.monotonic()
+    limiter.wait("example.com")
+    second_cooldown = time.monotonic() - start
+    assert second_cooldown >= first_cooldown * 1.5
+
+
+def test_note_response_429_does_not_affect_other_hosts():
+    limiter = RateLimiter(0.0, lockout_cooldown=5.0)
+    limiter.note_response("limited.example.com", 429)
+    start = time.monotonic()
+    limiter.wait("other.example.com")
+    assert time.monotonic() - start < 0.1
+
+
+def test_note_response_429_does_not_break_401_403_streak(caplog):
+    # A 429 arriving between two 403s must not reset the consecutive-401/
+    # 403 count -- that streak and the 429 mechanism are tracked
+    # independently. Proven by checking for the *lockout* message
+    # specifically, not just "something backed off" -- a 429 alone would
+    # also cause a backoff and could mask a broken streak otherwise.
+    limiter = RateLimiter(0.0, lockout_threshold=2, lockout_cooldown=0.2)
+    with caplog.at_level("WARNING", logger="wpfreeze.fetch"):
+        limiter.note_response("example.com", 403)
+        limiter.note_response("example.com", 429)  # must not break the 403 streak
+        limiter.note_response("example.com", 403)  # 2nd consecutive 403 -- crosses threshold
+
+    assert any("lockout" in r.message.lower() for r in caplog.records)
+
+
+def test_note_response_401_403_does_not_affect_429_strikes():
+    # Symmetric to the above: a 401/403 in between must not reset the 429
+    # escalation counter either. Drains each episode's cooldown via wait()
+    # before triggering the next, same pattern as
+    # test_note_response_escalates_cooldown_on_repeated_lockouts -- so the
+    # second measurement isn't muddied by leftover backoff from the first.
+    limiter = RateLimiter(0.0, lockout_cooldown=0.2)
+    limiter.note_response("example.com", 429)  # 1st 429 episode, ~0.2s
+
+    start = time.monotonic()
+    limiter.wait("example.com")
+    first_cooldown = time.monotonic() - start
+    assert first_cooldown >= 0.15
+
+    limiter.note_response("example.com", 401)  # must not reset 429 strikes
+    limiter.note_response("example.com", 429)  # 2nd 429 episode -- should double
+
+    start = time.monotonic()
+    limiter.wait("example.com")
+    second_cooldown = time.monotonic() - start
+    assert second_cooldown >= first_cooldown * 1.5
+
+
+def test_fetch_with_retries_backs_off_host_on_429_for_sibling_urls(caplog):
+    handler = _make_handler(scripts={"/a": [429, 429, 429, 429], "/b": [200]})
+    # 429 escalates every one of /a's own 4 attempts (no threshold, unlike
+    # 401/403) -- capped low so this test doesn't spend 1+2+4+8s draining
+    # an uncapped escalation before it even gets to the /b assertion.
+    limiter = RateLimiter(0.0, lockout_cooldown=0.2, lockout_cooldown_max=0.8)
+    with run_server(handler) as base:
+        with caplog.at_level("WARNING", logger="wpfreeze.fetch"):
+            fetch_with_retries(base + "/a", requests.Session(), limiter, FAST_CONFIG)
+        assert any("429" in r.message for r in caplog.records)
+
+        # /b never returned anything but 200, but it shares the host --
+        # the very first 429 on /a's attempt 1 must already be backing
+        # /b off too, without /b itself ever seeing a 429. /a's last
+        # (4th) attempt leaves a ~0.8s residual cooldown behind (capped
+        # escalation); 0.3s threshold gives comfortable margin against
+        # timing jitter while still proving it's not just noise.
+        start = time.monotonic()
+        outcome = fetch_with_retries(base + "/b", requests.Session(), limiter, FAST_CONFIG)
+    assert time.monotonic() - start >= 0.3
+    assert outcome.category == SUCCESS
+
+
+def test_fetch_with_retries_429_still_exhausts_and_flags_retry_exhausted():
+    handler = _make_handler(scripts={"/limited": [429, 429, 429, 429]})
+    # Tiny cooldown so the test doesn't itself take the full production
+    # 60s default while still exercising the real code path end to end.
+    limiter = RateLimiter(0.0, lockout_cooldown=0.05, lockout_cooldown_max=0.05)
+    with run_server(handler) as base:
+        outcome = fetch_with_retries(base + "/limited", requests.Session(), limiter, FAST_CONFIG)
+    assert outcome.category == WAYBACK_CANDIDATE
+    assert outcome.flag == FLAG_RETRY_EXHAUSTED
+    assert outcome.http_status == 429
+    assert outcome.attempts == FAST_CONFIG.max_attempts
+
+
+@pytest.mark.parametrize(
+    ("header", "expected_min", "expected_max"),
+    [
+        ("2", 1.9, 2.1),
+        ("0", 0.0, 0.1),
+        (None, None, None),
+        ("not-a-number-or-date", None, None),
+    ],
+)
+def test_parse_retry_after_seconds_and_invalid(header, expected_min, expected_max):
+    from wpfreeze.fetch import _parse_retry_after
+
+    result = _parse_retry_after(header)
+    if expected_min is None:
+        assert result is None
+    else:
+        assert expected_min <= result <= expected_max
+
+
+def test_parse_retry_after_http_date_in_future():
+    from email.utils import format_datetime
+    from datetime import datetime, timedelta, timezone
+
+    from wpfreeze.fetch import _parse_retry_after
+
+    future = datetime.now(timezone.utc) + timedelta(seconds=30)
+    result = _parse_retry_after(format_datetime(future, usegmt=True))
+    assert result is not None
+    assert 25.0 <= result <= 30.5
+
+
+def test_parse_retry_after_http_date_in_past_clamps_to_zero():
+    from email.utils import format_datetime
+    from datetime import datetime, timedelta, timezone
+
+    from wpfreeze.fetch import _parse_retry_after
+
+    past = datetime.now(timezone.utc) - timedelta(seconds=30)
+    result = _parse_retry_after(format_datetime(past, usegmt=True))
+    assert result == 0.0
