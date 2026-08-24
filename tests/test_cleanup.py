@@ -345,6 +345,51 @@ def test_password_forms_are_their_own_category_and_do_not_need_attention(tmp_pat
     assert "worth a look before you call it done" not in content
 
 
+def test_newsletter_category_mentions_caption_removal_and_does_not_need_attention(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "forms_removed": 1,
+                "forms_removed_pages": {
+                    "https://s/": {"count": 1, "output_path": "/index.html", "categories": {"newsletter": 1}}
+                },
+                "newsletter_captions_removed": 1,
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "**Newsletter signup forms**" in content
+    assert "[`https://s/`](site/index.html)" in content
+    assert "1 caption(s) removed this way" in content
+    # Auto-cleaned like comment forms (whole module plus caption removed),
+    # so it shouldn't push the headline into "worth a look" on its own.
+    assert "worth a look before you call it done" not in content
+
+
+def test_newsletter_category_without_a_removed_caption_omits_the_count(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "forms_removed": 1,
+                "forms_removed_pages": {
+                    "https://s/": {"count": 1, "output_path": "/index.html", "categories": {"newsletter": 1}}
+                },
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "**Newsletter signup forms**" in content
+    assert "caption(s) removed this way" not in content
+
+
 def test_search_forms_kept_in_place_section(tmp_path: Path):
     _write(
         tmp_path,

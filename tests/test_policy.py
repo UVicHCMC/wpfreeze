@@ -360,6 +360,88 @@ def test_password_form_not_confused_with_search_form():
     assert stats.forms_removed_pages["https://s/"]["categories"] == {"password": 1}
 
 
+# --- newsletter-module fingerprint (Divi) ------------------------------------
+
+
+def _newsletter_module(extra_classes: str = "") -> str:
+    return (
+        f'<div class="et_pb_module et_pb_newsletter {extra_classes}">'
+        '<div class="et_pb_newsletter_description"></div>'
+        '<div class="et_pb_newsletter_form">'
+        '<form method="post" class="et_pb_newsletter_custom_fields">'
+        '<input name="et_pb_signup_email"></form></div></div>'
+    )
+
+
+def test_newsletter_module_and_caption_removed_when_divi_flags_no_description():
+    html = (
+        '<div class="et_pb_module et_pb_text"><div class="et_pb_text_inner">'
+        '<h2><strong>Subscribe to our newsletter to stay up to date.</strong></h2>'
+        "</div></div>"
+        + _newsletter_module(
+            "et_pb_newsletter_description_no_title et_pb_newsletter_description_no_content"
+        )
+    )
+    out, stats = _apply(html)
+    assert stats.forms_removed == 1
+    assert stats.newsletter_captions_removed == 1
+    assert "<form" not in out
+    assert "et_pb_newsletter" not in out
+    assert "Subscribe to our newsletter" not in out
+
+
+def test_newsletter_caption_left_alone_when_module_has_its_own_description():
+    # No et_pb_newsletter_description_no_title/_no_content classes -- Divi's
+    # own signal that this instance already has a title/description of its
+    # own, so the preceding heading is unrelated content, not a caption.
+    html = (
+        '<div class="et_pb_module et_pb_text"><div class="et_pb_text_inner">'
+        "<h2>Unrelated section heading</h2>"
+        "</div></div>"
+        + _newsletter_module()
+    )
+    out, stats = _apply(html)
+    assert stats.forms_removed == 1
+    assert stats.newsletter_captions_removed == 0
+    assert "<form" not in out
+    assert "Unrelated section heading" in out
+
+
+def test_newsletter_caption_sibling_with_real_content_is_not_removed():
+    # Sibling has a heading AND a paragraph -- a real content section, not a
+    # bare caption, so it must survive even though the no-description flags
+    # are set.
+    html = (
+        '<div class="et_pb_module et_pb_text"><div class="et_pb_text_inner">'
+        "<h2>Get Involved</h2><p>Read more about the project here.</p>"
+        "</div></div>"
+        + _newsletter_module(
+            "et_pb_newsletter_description_no_title et_pb_newsletter_description_no_content"
+        )
+    )
+    out, stats = _apply(html)
+    assert stats.forms_removed == 1
+    assert stats.newsletter_captions_removed == 0
+    assert "Get Involved" in out
+    assert "Read more about the project here." in out
+
+
+def test_newsletter_module_without_wrapper_class_falls_back_to_other():
+    html = '<form action="/subscribe" class="et_pb_newsletter_custom_fields"><input name="email"></form>'
+    soup = BeautifulSoup(html, "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(), stats, "https://s/", "/index.html")
+    assert stats.forms_removed_pages["https://s/"]["categories"] == {"other": 1}
+
+
+def test_newsletter_form_is_categorized_as_newsletter():
+    html = _newsletter_module()
+    soup = BeautifulSoup(html, "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(), stats, "https://s/", "/index.html")
+    assert stats.forms_removed_pages["https://s/"]["categories"] == {"newsletter": 1}
+
+
 # --- dead in-page links left by comment-form removal ------------------------
 
 

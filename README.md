@@ -276,15 +276,15 @@ Sections, in order:
   distinct from the above).
 - **Content intentionally excised** — what `build`'s content policy
   removed (see "Building a servable site" below), broken out by category
-  (comment, password, search, other). Forms specifically get a per-page
-  list, since a removed `<form>` can leave a heading or button behind
-  describing nothing; comment and password forms are called out
-  separately and deprioritized — a comment form's caption is removed
-  automatically (see below), and a password form's removal empties a page
-  that had nothing else in it to begin with (WordPress's own
-  password-protected-post prompt — wpfreeze never had access to what's
-  actually behind the password) — so neither needs a manual check the way
-  everything else in this section does.
+  (comment, password, search, newsletter, other). Forms specifically get a
+  per-page list, since a removed `<form>` can leave a heading or button
+  behind describing nothing; comment, password, and newsletter forms are
+  called out separately and deprioritized — a comment or Divi newsletter
+  form's caption is removed automatically (see below), and a password
+  form's removal empties a page that had nothing else in it to begin with
+  (WordPress's own password-protected-post prompt — wpfreeze never had
+  access to what's actually behind the password) — so none of the three
+  needs a manual check the way everything else in this section does.
 - **Search forms left in place** — only appears when `strip_search_forms:
   false` is set. A per-page list of search forms that were deliberately
   *not* removed, for a site owner reimplementing search rather than
@@ -357,6 +357,16 @@ touching the capture, so re-running is always safe. In that tree:
   just raw material to repurpose; see `example-site.yaml` for the exact
   caveat. Pages with one left this way are listed in the cleanup
   checklist's own "Search forms left in place" section.
+- **Divi's newsletter/subscribe module goes with its caption, not just
+  the form.** Detected by the module's own hardcoded `et_pb_newsletter`
+  class (Divi's markup, not something a provider — Mailchimp, Constant
+  Contact, ... — or theme skin changes), so the whole module is removed
+  rather than leaving an empty box behind. When Divi's own "no title, no
+  description" classes confirm the module has no caption of its own, the
+  preceding text module standing in as one is removed too — but only when
+  that sibling is a bare heading with nothing else in it, so a real
+  content section next to an unrelated newsletter module is never
+  mistaken for its caption.
 - **Third-party iframe embeds (YouTube, Vimeo, Google Maps, social
   embeds) are left pointing at the live original**, not downloaded — an
   iframe embeds a whole foreign application that depends on live JS/API

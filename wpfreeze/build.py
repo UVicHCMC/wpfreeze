@@ -914,6 +914,10 @@ def format_build_summary(stats: BuildStats) -> str:
             f"  (also: {p.dead_fragment_links_removed} dead in-page link(s) unwrapped, "
             f"{p.comment_count_blurbs_removed} stale comment-count blurb(s) removed)"
         )
+    if p.newsletter_captions_removed:
+        lines.append(
+            f"  (also: {p.newsletter_captions_removed} newsletter-module caption(s) removed)"
+        )
     d = stats.dedupe
     if d.redundant_bytes_seen:
         lines.append(

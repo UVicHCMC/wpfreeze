@@ -288,15 +288,18 @@ def _verification_section(build_report: dict | None) -> tuple[list[str], bool]:
 # Order to present form categories in, and what to say about each -- see
 # policy.py's _strip_forms/_comment_wrapper for how "comment" is detected
 # and why it's the one category whose caption is removed automatically,
-# _is_password_form for how "password" is detected, and _is_search_form
-# for how "search" is detected. Categories beyond those three (subscribe,
-# contact, ...) don't exist yet; anything not recognized buckets as
-# "other" until they do.
-_FORM_CATEGORY_ORDER = ("comment", "password", "search", "other", "unspecified")
+# _is_password_form for how "password" is detected, _is_search_form for how
+# "search" is detected, and _newsletter_wrapper/_newsletter_caption_sibling
+# for how "newsletter" (Divi's Email Optin module) is detected and why its
+# caption is sometimes removed too. Categories beyond those four (contact,
+# ...) don't exist yet; anything not recognized buckets as "other" until
+# they do.
+_FORM_CATEGORY_ORDER = ("comment", "password", "search", "newsletter", "other", "unspecified")
 _FORM_CATEGORY_LABEL = {
     "comment": "Comment forms",
     "password": "Password-protected pages",
     "search": "Search forms",
+    "newsletter": "Newsletter signup forms",
     "other": "Other forms",
     "unspecified": "Forms (from a build made before categorization existed)",
 }
@@ -329,6 +332,7 @@ def _form_category_lines(
     pages: dict[str, tuple[int, str]],
     dead_fragment_links: int = 0,
     comment_count_blurbs: int = 0,
+    newsletter_captions_removed: int = 0,
 ) -> list[str]:
     total = sum(count for count, _ in pages.values())
     label = _FORM_CATEGORY_LABEL[category]
@@ -366,10 +370,20 @@ def _form_category_lines(
             "wire these forms up itself, indexed with a local Pagefind index -- see \"Offline search\" "
             "in the README. Full list:"
         )
+    elif category == "newsletter":
+        para = (
+            f"**{label}** -- {total} across {len(pages)} page(s): Divi's Email Optin module. The "
+            "whole module (not just the form) was removed, and where Divi's own \"no title, no "
+            "description\" markers confirmed the module had no caption of its own, the preceding "
+            "heading standing in as one was removed too -- lower priority than \"Other forms\" below."
+        )
+        if newsletter_captions_removed:
+            para += f" {newsletter_captions_removed} caption(s) removed this way."
+        para += " Full list:"
     elif category == "other":
         para = (
-            f"**{label}** -- {total} across {len(pages)} page(s): subscribe, contact, or "
-            "unrecognized. Only the form was removed -- a heading, label, or \"Subscribe\" button "
+            f"**{label}** -- {total} across {len(pages)} page(s): contact, other subscribe forms, "
+            "or unrecognized. Only the form was removed -- a heading, label, or \"Subscribe\" button "
             "around it wasn't touched and may now describe nothing. Worth a look:"
         )
     else:
@@ -414,15 +428,19 @@ def _excised_content_section(build_report: dict | None) -> tuple[list[str], bool
     wp_meta = policy.get("wp_meta_links_removed", 0)
     dead_fragment_links = policy.get("dead_fragment_links_removed", 0)
     comment_count_blurbs = policy.get("comment_count_blurbs_removed", 0)
+    newsletter_captions_removed = policy.get("newsletter_captions_removed", 0)
     if not (forms_removed or telemetry or feeds or wp_meta):
         return ([], False)
 
     lines = ["## Content intentionally excised", ""]
     # Comment forms are auto-cleaned (caption + cancel-link removed with
-    # them, see policy.py's _comment_wrapper) and password forms removed
-    # nothing but a dead prompt (see policy.py's _is_password_form) --
-    # neither needs a manual check the way the rest of this section does,
-    # so only some other category should push the "worth a look" headline.
+    # them, see policy.py's _comment_wrapper), password forms removed
+    # nothing but a dead prompt (see policy.py's _is_password_form), and
+    # newsletter forms are auto-cleaned like comment forms (whole module,
+    # plus caption where present, see policy.py's _newsletter_wrapper) --
+    # none of the three needs a manual check the way the rest of this
+    # section does, so only some other category should push the "worth a
+    # look" headline.
     needs_attention = False
     if forms_removed:
         lines.append(
@@ -433,9 +451,14 @@ def _excised_content_section(build_report: dict | None) -> tuple[list[str], bool
         for cat in _FORM_CATEGORY_ORDER:
             pages = _pages_by_category(forms_pages, cat)
             if pages:
-                extra_args = (dead_fragment_links, comment_count_blurbs) if cat == "comment" else (0, 0)
+                if cat == "comment":
+                    extra_args = (dead_fragment_links, comment_count_blurbs, 0)
+                elif cat == "newsletter":
+                    extra_args = (0, 0, newsletter_captions_removed)
+                else:
+                    extra_args = (0, 0, 0)
                 lines.extend(_form_category_lines(cat, pages, *extra_args))
-                if cat not in ("comment", "password"):
+                if cat not in ("comment", "password", "newsletter"):
                     needs_attention = True
 
     other = []

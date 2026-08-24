@@ -240,6 +240,33 @@ _PASSWORD_PROTECTED_MARKER = "data-wpfreeze-password-protected"
 # neither is something a non-search form would plausibly carry.
 _SEARCH_INPUT_NAME = "s"
 
+# --- Newsletter/subscribe-module fingerprint (Divi) --------------------------
+#
+# Divi's Email Optin module hardcodes class="et_pb_newsletter" on its own
+# wrapper regardless of provider (Mailchimp, Constant Contact, ...) or page
+# skin -- same reliability tier as _COMMENT_WRAPPER_CLASSES. Its title and
+# description fields are both optional; when a page author leaves them blank,
+# Divi itself stamps et_pb_newsletter_description_no_title/_no_content on the
+# wrapper (confirmed against real captured markup), which is exactly the
+# situation that pushes an author to add a *separate* text module immediately
+# above the newsletter module as a de facto caption -- since the module's own
+# title is off, that sibling is the only place a heading can come from.
+# Removing only the <form> (the generic "other" path) leaves that caption
+# orphaned above an empty box; removing the whole module wrapper still
+# doesn't reach the caption, since it's a structural sibling, not a
+# descendant. _newsletter_caption_sibling closes that gap -- but only when
+# Divi's own "no title, no content" classes confirm the module rendered
+# nothing of its own, and only when the immediately preceding sibling's
+# entire content is a bare heading (no paragraph, image, link, form, or list
+# -- so a real content section is never mistaken for a caption).
+_NEWSLETTER_WRAPPER_CLASSES: frozenset[str] = frozenset({"et_pb_newsletter"})
+_NEWSLETTER_NO_DESCRIPTION_CLASSES: frozenset[str] = frozenset(
+    {"et_pb_newsletter_description_no_title", "et_pb_newsletter_description_no_content"}
+)
+_NEWSLETTER_WRAPPER_MAX_DEPTH = 5
+_NEWSLETTER_CAPTION_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+_NEWSLETTER_CAPTION_DISQUALIFYING_TAGS = ("p", "img", "a", "form", "ul", "ol", "table")
+
 
 @dataclass
 class Policy:
@@ -330,8 +357,11 @@ class PolicyStats:
     # prompt (see _is_password_form) -- also lower-priority, since the
     # prompt was the page's entire content and there is nothing left to
     # accidentally orphan; "search" forms are recognized but get no
-    # special wrapper handling (see _is_search_form); subscribe, contact,
-    # and anything unrecognized still bucket under "other" for now.
+    # special wrapper handling (see _is_search_form); "newsletter" forms
+    # are Divi's Email Optin module (see _newsletter_wrapper) -- the whole
+    # module goes with the form, and its caption where present (see
+    # newsletter_captions_removed below), so also lower-priority; anything
+    # still unrecognized buckets under "other".
     forms_removed_pages: dict[str, dict] = field(default_factory=dict)
     # In-page anchors that pointed at an id a form-wrapper removal just took
     # with it (WordPress's own "N comments" post-meta link, most commonly,
@@ -340,6 +370,11 @@ class PolicyStats:
     # instead (comment_count_blurbs_removed). See _clean_dead_fragment_links.
     dead_fragment_links_removed: int = 0
     comment_count_blurbs_removed: int = 0
+    # Divi newsletter-module captions removed alongside their form -- see
+    # _newsletter_caption_sibling. Not every "newsletter" removal has one
+    # (only when the heuristic's structural conditions are met), so this can
+    # be smaller than the newsletter category's own form count.
+    newsletter_captions_removed: int = 0
     # Which pages had a search form recognized but left in place, per
     # strip_search_forms: false -- same shape as forms_removed_pages'
     # values, minus "categories" (always search, that's the only reason an
@@ -482,6 +517,39 @@ def _is_search_form(form) -> bool:
     return form.find("input", attrs={"name": _SEARCH_INPUT_NAME}) is not None
 
 
+def _newsletter_wrapper(form):
+    """The nearest ancestor carrying Divi's et_pb_newsletter class, or None
+    -- see the fingerprint note above _NEWSLETTER_WRAPPER_CLASSES. Bounded to
+    _NEWSLETTER_WRAPPER_MAX_DEPTH ancestors, same rationale as
+    _comment_wrapper."""
+    node = form.parent
+    for _ in range(_NEWSLETTER_WRAPPER_MAX_DEPTH):
+        name = getattr(node, "name", None)
+        if name in (None, "[document]", "html"):
+            return None
+        if set(node.get("class") or []) & _NEWSLETTER_WRAPPER_CLASSES:
+            return node
+        node = node.parent
+    return None
+
+
+def _newsletter_caption_sibling(wrapper):
+    """The preceding sibling module standing in as `wrapper`'s caption, or
+    None -- see the fingerprint note above _NEWSLETTER_WRAPPER_CLASSES for
+    the reasoning behind both conditions checked here."""
+    classes = set(wrapper.get("class") or [])
+    if not (classes & _NEWSLETTER_NO_DESCRIPTION_CLASSES):
+        return None
+    sibling = wrapper.find_previous_sibling()
+    if sibling is None or getattr(sibling, "name", None) is None:
+        return None
+    if not sibling.find(_NEWSLETTER_CAPTION_HEADING_TAGS):
+        return None
+    if sibling.find(_NEWSLETTER_CAPTION_DISQUALIFYING_TAGS):
+        return None
+    return sibling
+
+
 def _is_password_form(form) -> bool:
     """True if `form` is WordPress core's password-protected-post prompt --
     see the fingerprint note above _PASSWORD_FORM_CLASS for why the class
@@ -502,6 +570,7 @@ def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page
     removed_ids: set[str] = set()
     kept_search_count = 0
     password_form_removed = False
+    newsletter_captions_removed = 0
 
     for form in soup.find_all("form"):
         if id(form) in handled:
@@ -515,7 +584,8 @@ def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page
         elif _is_search_form(form):
             category = "search"
         else:
-            category = "other"
+            wrapper = _newsletter_wrapper(form)
+            category = "newsletter" if wrapper is not None else "other"
 
         if category == "search" and not policy.strip_search_forms:
             # Left in place, not removed -- see strip_search_forms's own
@@ -545,6 +615,12 @@ def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page
         if category == "password":
             password_form_removed = True
 
+        if category == "newsletter":
+            caption = _newsletter_caption_sibling(target)
+            if caption is not None:
+                caption.decompose()
+                newsletter_captions_removed += 1
+
         target.decompose()
         count += 1
         categories[category] = categories.get(category, 0) + 1
@@ -562,6 +638,9 @@ def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page
 
     if removed_ids:
         _clean_dead_fragment_links(soup, removed_ids, stats, policy.strip_comment_counts)
+
+    if newsletter_captions_removed:
+        stats.newsletter_captions_removed += newsletter_captions_removed
 
     if count:
         stats.forms_removed += count
