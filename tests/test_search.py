@@ -533,6 +533,37 @@ def test_scan_one_under_min_words_is_thin(tmp_path: Path):
     assert issues.thin_pages[0].word_count == MIN_WORDS - 1
 
 
+def test_scan_thin_page_in_acknowledged_thin_pages_is_marked_acknowledged(tmp_path: Path):
+    site_dir = tmp_path / "site"
+    _write_page(site_dir, "/thin.html", "<p>only four words here</p>")
+
+    issues = scan_content_issues(site_dir, SearchSettings(acknowledged_thin_pages=("/thin.html",)))
+
+    assert issues.thin_pages == [ThinContentPage(page="/thin.html", word_count=4, acknowledged=True)]
+
+
+def test_scan_thin_page_not_in_acknowledged_thin_pages_is_not_marked(tmp_path: Path):
+    site_dir = tmp_path / "site"
+    _write_page(site_dir, "/thin.html", "<p>only four words here</p>")
+
+    issues = scan_content_issues(site_dir, SearchSettings(acknowledged_thin_pages=("/other.html",)))
+
+    assert issues.thin_pages[0].acknowledged is False
+
+
+def test_scan_acknowledged_thin_pages_still_counts_toward_pages_scanned(tmp_path: Path):
+    # Acknowledging a page changes whether the checklist nags about it
+    # (cleanup.py's business), not whether scan_content_issues considers
+    # it indexed/scanned -- the sec 4c calibration denominator must stay
+    # meaningful regardless of acknowledgement.
+    site_dir = tmp_path / "site"
+    _write_page(site_dir, "/thin.html", "<p>only four words here</p>")
+
+    issues = scan_content_issues(site_dir, SearchSettings(acknowledged_thin_pages=("/thin.html",)))
+
+    assert issues.pages_scanned == 1
+
+
 def _write_password_protected_page(site_dir: Path, output_path: str) -> None:
     # Mirrors what policy.py's _strip_forms leaves behind after removing a
     # WordPress password prompt: the marker on <body>, and (per the same
@@ -826,3 +857,18 @@ def test_content_issues_summary_reports_counts():
     # wrong" guidance is unusable without the denominator. See
     # CLAUDE-search-content-checks-FIXES.md sec 3.
     assert "1 of 5 page(s) scanned" in summary
+    assert "acknowledged" not in summary
+
+
+def test_content_issues_summary_notes_acknowledged_count():
+    issues = ContentIssues(
+        pages_scanned=5,
+        thin_pages=[
+            ThinContentPage(page="/a.html", word_count=3, acknowledged=True),
+            ThinContentPage(page="/b.html", word_count=4),
+        ],
+    )
+    summary = format_content_issues_summary(issues)
+
+    assert "2 of 5 page(s) scanned" in summary
+    assert "(1 acknowledged)" in summary

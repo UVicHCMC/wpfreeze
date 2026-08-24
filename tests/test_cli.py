@@ -124,6 +124,7 @@ def test_load_config_search_defaults(tmp_path: Path):
     assert config.search.ignore_selectors == ()
     assert config.search.force_language is None
     assert config.search.exclude_pages == ()
+    assert config.search.acknowledged_thin_pages == ()
 
 
 def test_load_config_search_body_selectors_explicit_empty_list_opts_out(tmp_path: Path):
@@ -153,6 +154,7 @@ def test_load_config_search_settings_plumb_through(tmp_path: Path):
                 "ignore_selectors": [".related-posts"],
                 "force_language": "en",
                 "exclude_pages": ["/blog.html", "/projects.html"],
+                "acknowledged_thin_pages": ["/portfolio-item/a.html"],
             },
         },
     )
@@ -162,6 +164,7 @@ def test_load_config_search_settings_plumb_through(tmp_path: Path):
     assert config.search.ignore_selectors == (".related-posts",)
     assert config.search.force_language == "en"
     assert config.search.exclude_pages == ("/blog.html", "/projects.html")
+    assert config.search.acknowledged_thin_pages == ("/portfolio-item/a.html",)
 
 
 def test_search_enabled_with_default_policy_raises_config_error(tmp_path: Path):
@@ -790,7 +793,9 @@ def test_run_build_reports_content_issues_in_summary_and_report(tmp_path: Path, 
     assert "thin content" in out
     assert "echoed content" in out
     build_report = json.loads((output_dir / "build-report.json").read_text(encoding="utf-8"))
-    assert build_report["content_issues"]["thin_pages"] == [{"page": "/index.html", "word_count": 1}]
+    assert build_report["content_issues"]["thin_pages"] == [
+        {"page": "/index.html", "word_count": 1, "acknowledged": False}
+    ]
 
 
 def test_run_build_does_not_index_when_search_disabled(tmp_path: Path, monkeypatch):

@@ -246,3 +246,12 @@ vnu_jar: "./vnu.jar"
 #   reports exactly these pages under "Pages that mostly duplicate other
 #   pages" if left indexed -- paste their paths here.
 #   exclude_pages: []
+#
+#   Exact output paths of pages already reviewed and confirmed
+#   legitimately short by design (a single-image portfolio item, a
+#   glossary entry) rather than broken or truncated. Unlike
+#   exclude_pages, an acknowledged page stays indexed and searchable --
+#   only the cleanup checklist's "needs a look" push for it is
+#   suppressed. Still listed every build under its own "Acknowledged"
+#   heading, never silently dropped from the report.
+#   acknowledged_thin_pages: []

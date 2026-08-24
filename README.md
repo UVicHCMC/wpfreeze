@@ -567,6 +567,16 @@ as `body_selectors`/`ignore_selectors` — a path that matches nothing is a
 silent no-op, which is self-correcting because the page keeps showing up
 in the report until the path is right.
 
+**`search.acknowledged_thin_pages`** marks specific pages (same exact-
+output-path format as `exclude_pages`) as reviewed and confirmed
+legitimately short, rather than broken or truncated — for content that's
+supposed to be brief, like a single-image portfolio item. Unlike
+`exclude_pages`, an acknowledged page is **not** removed from the index:
+it stays fully searchable, only the cleanup checklist's "needs a look"
+push for it is suppressed. It's still listed every build under its own
+"Acknowledged" heading in the "Pages with thin content" section — nothing
+here is ever silently dropped from the report, only deprioritized.
+
 **Two more checks run automatically alongside indexing**, reported the
 same way as the "not covered by search" gap above — informational only,
 never changing what gets indexed:
@@ -574,7 +584,13 @@ never changing what gets indexed:
 - **Thin content** — a page matched a selector but holds almost no text
   once indexed (under 25 words), so it's present in search but adds noise
   rather than findable content. A blind spot the coverage check above
-  can't see, since the selector *did* match.
+  can't see, since the selector *did* match. If a flagged page is
+  genuinely short by design (a single-image portfolio item, a glossary
+  entry) rather than broken, add its exact output path to `search.
+  acknowledged_thin_pages` — unlike `exclude_pages`, it stays indexed and
+  searchable; the checklist just stops pushing "needs a look" for it
+  specifically. Still listed every build, under its own "Acknowledged"
+  heading, so it's never silently hidden.
 - **Echoed content** — a page's indexed text is mostly shared with other
   pages, almost always because it's an archive/category/blog-listing page
   (WordPress-native or hand-built) whose content is assembled from other
@@ -612,6 +628,25 @@ names; read each one:
    indexer, and only a full `build` re-tags markup.
 5. Confirm: the `Search:` summary's new `excluded by config` count, and
    a live search for a term that used to surface the duplicate.
+
+**Resolving a flagged "thin content" page.** Same principle — read before
+acting, don't blanket-acknowledge every page the checklist names:
+
+1. Open the page and confirm it's genuinely, deliberately short (a
+   single-image portfolio item, a one-line glossary entry) rather than
+   broken — a `body_selectors` match that grabbed the wrong element, or
+   real content a plugin hid from extraction, looks thin for a different
+   reason and is worth fixing at the source instead.
+2. Add its exact output path to `search.acknowledged_thin_pages`, then
+   run `wpfreeze search-index --config site.yaml` — unlike
+   `exclude_pages`, this doesn't touch markup tagging, so re-indexing
+   alone is enough to see it reflected in the console's `thin content`
+   line and its `(N acknowledged)` count. The cleanup checklist itself is
+   a `build` artefact, though (`search-index` never refreshes it) — run
+   `wpfreeze build` too before checking `cleanup-todo.html`.
+3. Confirm: the page still appears in "Pages with thin content", now
+   under "Acknowledged" instead of the unacknowledged list above it, and
+   no longer pushes the checklist's "worth a look" headline on its own.
 
 Indexing needs the `pagefind` Python package, which is *not* installed by
 a plain `wpfreeze` install (see "Installation" above for the `pipx

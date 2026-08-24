@@ -168,6 +168,18 @@ class SearchSettings:
     # keeps surfacing in scan_content_issues's echo report. See
     # CLAUDE-search-content-checks.md sec 8a.
     exclude_pages: tuple[str, ...] = ()
+    # Exact output paths (same format as exclude_pages) of pages already
+    # reviewed and confirmed to be legitimately short by design -- a
+    # single-image portfolio item, a glossary entry -- rather than broken
+    # or truncated content. Unlike exclude_pages, an acknowledged page
+    # stays indexed and searchable; only the cleanup checklist's "needs a
+    # look" push for it is suppressed. scan_content_issues still reports
+    # it under "Pages with thin content" (audit trail, not a silent
+    # dismissal), just no longer counted toward that section's
+    # needs_attention. No load-time validation, same self-correcting
+    # precedent as exclude_pages: an entry that no longer matches a real
+    # thin page is simply unused, not an error.
+    acknowledged_thin_pages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -221,6 +233,7 @@ def load_config(path: Path) -> SiteConfig:
         ignore_selectors=tuple(search_raw.get("ignore_selectors", []) or []),
         force_language=search_raw.get("force_language"),
         exclude_pages=tuple(search_raw.get("exclude_pages", []) or []),
+        acknowledged_thin_pages=tuple(search_raw.get("acknowledged_thin_pages", []) or []),
     )
     if search.enabled and policy.strip_forms and policy.strip_search_forms:
         raise ConfigError(

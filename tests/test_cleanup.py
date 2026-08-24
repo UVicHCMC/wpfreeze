@@ -541,6 +541,60 @@ def test_thin_content_section_lists_pages_with_word_counts(tmp_path: Path):
     assert "worth a look before you call it done" in content
 
 
+def test_thin_content_section_splits_acknowledged_from_unacknowledged(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {},
+            "search": {"enabled": True},
+            "content_issues": {
+                "pages_scanned": 2,
+                "thin_pages": [
+                    {"page": "/stub.html", "word_count": 3, "acknowledged": False},
+                    {"page": "/portfolio/a.html", "word_count": 2, "acknowledged": True},
+                ],
+                "echoed_pages": [],
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "## Pages with thin content" in content
+    assert "[`/stub.html`](site/stub.html)" in content
+    assert "[`/portfolio/a.html`](site/portfolio/a.html)" in content
+    assert "**Acknowledged**" in content
+    assert "1 acknowledged, not counted below." in content
+    # An unacknowledged thin page still exists, so this should push the
+    # headline into "worth a look".
+    assert "worth a look before you call it done" in content
+
+
+def test_thin_content_section_all_acknowledged_does_not_need_attention(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {},
+            "search": {"enabled": True},
+            "content_issues": {
+                "pages_scanned": 1,
+                "thin_pages": [{"page": "/portfolio/a.html", "word_count": 2, "acknowledged": True}],
+                "echoed_pages": [],
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "## Pages with thin content" in content
+    assert "**Acknowledged**" in content
+    assert "[`/portfolio/a.html`](site/portfolio/a.html)" in content
+    # Nothing unacknowledged -- shouldn't push "worth a look" on its own.
+    assert "worth a look before you call it done" not in content
+
+
 def test_thin_content_section_absent_when_no_thin_pages(tmp_path: Path):
     _write(
         tmp_path,

@@ -593,6 +593,16 @@ def _search_coverage_section(build_report: dict | None) -> tuple[list[str], bool
     return (lines, True)
 
 
+def _thin_content_lines(entries: list[dict]) -> list[str]:
+    lines = []
+    for entry in sorted(entries, key=lambda e: (e.get("word_count", 0), e.get("page", ""))):
+        output_path = entry.get("page", "")
+        word_count = entry.get("word_count", 0)
+        page_label = _linked(f"`{output_path}`", _site_link(output_path))
+        lines.append(f"- {page_label} ({word_count} word(s))")
+    return lines
+
+
 def _thin_content_section(build_report: dict | None) -> tuple[list[str], bool]:
     """Pages scan_content_issues found indexed but holding almost no text
     -- a blind spot pages_without_body_match can't see, since the selector
@@ -601,6 +611,12 @@ def _thin_content_section(build_report: dict | None) -> tuple[list[str], bool]:
     (an older build-report.json); an empty list when it ran and found
     nothing to flag -- both produce no section, deliberately not
     distinguished here the same way the other search sections don't.
+
+    A page listed in search.acknowledged_thin_pages (entry["acknowledged"]
+    -- absent/False on an older build-report.json, same self-correcting
+    precedent as everywhere else this checklist reads report JSON written
+    by a prior version) still appears here -- nothing is ever silently
+    dropped from this list -- but doesn't count toward needs_attention.
     """
     if build_report is None:
         return ([], False)
@@ -611,21 +627,31 @@ def _thin_content_section(build_report: dict | None) -> tuple[list[str], bool]:
     if not thin_pages:
         return ([], False)
 
-    lines = [
-        "## Pages with thin content",
-        "",
-        f"{len(thin_pages)} page(s) matched a body selector but hold almost no text once "
-        "indexed -- present in search, but adding noise rather than findable content:",
-        "",
-    ]
-    for entry in sorted(thin_pages, key=lambda e: (e.get("word_count", 0), e.get("page", ""))):
-        output_path = entry.get("page", "")
-        word_count = entry.get("word_count", 0)
-        page_label = _linked(f"`{output_path}`", _site_link(output_path))
-        lines.append(f"- {page_label} ({word_count} word(s))")
-    lines.append("")
+    unacknowledged = [e for e in thin_pages if not e.get("acknowledged")]
+    acknowledged = [e for e in thin_pages if e.get("acknowledged")]
 
-    return (lines, True)
+    lines = ["## Pages with thin content", ""]
+    if unacknowledged:
+        note = f" {len(acknowledged)} acknowledged, not counted below." if acknowledged else ""
+        lines.append(
+            f"{len(unacknowledged)} page(s) matched a body selector but hold almost no text once "
+            f"indexed -- present in search, but adding noise rather than findable content.{note}"
+        )
+        lines.append("")
+        lines.extend(_thin_content_lines(unacknowledged))
+        lines.append("")
+    if acknowledged:
+        lines.append(
+            f"**Acknowledged** -- {len(acknowledged)} page(s) confirmed as legitimately short by "
+            "design (see `search.acknowledged_thin_pages`), not "
+            + ("also " if unacknowledged else "")
+            + "worth another look:"
+        )
+        lines.append("")
+        lines.extend(_thin_content_lines(acknowledged))
+        lines.append("")
+
+    return (lines, bool(unacknowledged))
 
 
 def _echoed_content_section(build_report: dict | None) -> tuple[list[str], bool]:

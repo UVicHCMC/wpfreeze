@@ -123,6 +123,12 @@ class ThinContentPage:
 
     page: str  # output path
     word_count: int
+    # True when `page` is listed in search.acknowledged_thin_pages -- a
+    # site owner has already confirmed this page's shortness is by
+    # design, not broken content. Still reported (see ContentIssues'
+    # own docstring on why nothing here is ever silently dropped), but
+    # cleanup.py's checklist stops counting it toward "needs a look".
+    acknowledged: bool = False
 
 
 @dataclass(frozen=True)
@@ -696,7 +702,8 @@ def scan_content_issues(
             continue  # not indexed at all -- pages_without_body_match's business
         words = _normalize_words(text)
         if len(words) < min_words:
-            thin_pages.append(ThinContentPage(page=output_path, word_count=len(words)))
+            acknowledged = output_path in settings.acknowledged_thin_pages
+            thin_pages.append(ThinContentPage(page=output_path, word_count=len(words), acknowledged=acknowledged))
             continue
         words_by_page[output_path] = words
 
@@ -753,7 +760,12 @@ def format_content_issues_summary(issues: ContentIssues) -> str:
     15% of pages are broken" -- is unusable without the denominator.
     """
     scanned = issues.pages_scanned
-    lines = [f"  thin content       : {len(issues.thin_pages)} of {scanned} page(s) scanned, under {MIN_WORDS} words"]
+    acknowledged = sum(1 for p in issues.thin_pages if p.acknowledged)
+    ack_note = f" ({acknowledged} acknowledged)" if acknowledged else ""
+    lines = [
+        f"  thin content       : {len(issues.thin_pages)} of {scanned} page(s) scanned, "
+        f"under {MIN_WORDS} words{ack_note}"
+    ]
     lines.append(
         f"  echoed content     : {len(issues.echoed_pages)} of {scanned} page(s) scanned, "
         "mostly duplicating other pages"

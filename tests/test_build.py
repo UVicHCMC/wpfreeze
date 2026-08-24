@@ -891,7 +891,7 @@ def test_write_build_report_persists_content_issues(tmp_path: Path):
     data = json.loads(write_build_report(BuildStats(), tmp_path, content_issues=issues).read_text())
 
     assert data["content_issues"]["pages_scanned"] == 2
-    assert data["content_issues"]["thin_pages"] == [{"page": "/a.html", "word_count": 3}]
+    assert data["content_issues"]["thin_pages"] == [{"page": "/a.html", "word_count": 3, "acknowledged": False}]
     assert data["content_issues"]["echoed_pages"][0]["page"] == "/b.html"
 
 
