@@ -172,17 +172,27 @@ policy:
 # or on a machine without network access to GitHub).
 vnu_jar: "./vnu.jar"
 
-# Optional. Destination for `wpfreeze upload-script`, which writes
-# upload.sh -- a small rsync script for pushing the built site (plus
-# cleanup-todo.html and report.html) somewhere a site owner can look at
-# it. This is for a staging/preview copy, not a production deploy: the
-# script uses `rsync -av --delete`, so anything already at the destination
-# that isn't part of this build gets deleted, not just overwritten. Omit
-# this block entirely to leave `upload-script` with nothing to write --
-# generating (and separately, running) the script is always something you
-# do on purpose; `build` never touches this and never runs it.
+# Optional. Destinations for `wpfreeze upload-script`, which writes
+# upload.sh -- one script covering three modes (see "Previewing a build
+# somewhere" in the README for the full walkthrough):
+#   ./upload.sh          sync site + reports (cleanup-todo.html,
+#                         report.html, broken-external-links.html) to
+#                         `remote` below -- a staging/preview copy.
+#   ./upload.sh --local  assemble the same bundle under <output_dir>/
+#                         preview/, no network -- for browsing off disk.
+#   ./upload.sh --prod   sync the site *only* (no reports) to `prod_remote`
+#                         below, after a y/N confirmation prompt -- the one
+#                         mode meant for the real, live site.
+# Both remotes are independent -- set either, both, or neither. Either mode
+# that needs a remote errors clearly at run time if its own remote isn't
+# set; `--local` needs neither. The staging and prod modes both use
+# `rsync -av --delete`, so anything already at that destination that isn't
+# part of this build gets deleted, not just overwritten. Generating (and
+# separately, running) the script is always something you do on purpose;
+# `build` never touches this and never runs it.
 # upload:
-#   remote: "user@host:/path/to/destination"
+#   remote: "user@host:/path/to/staging"
+#   prod_remote: "user@host:/path/to/production"
 
 # Optional. Gives the archived site a working search box again --
 # `wpfreeze build` indexes the site with Pagefind and wires the theme's

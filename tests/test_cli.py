@@ -663,7 +663,9 @@ def test_upload_script_writes_when_remote_configured(tmp_path: Path, capsys):
     assert f"Upload script: {upload_path}" in capsys.readouterr().out
 
 
-def test_upload_script_without_remote_configured_errors(tmp_path: Path, capsys):
+def test_upload_script_writes_even_without_a_remote_configured(tmp_path: Path, capsys):
+    # Unlike the old single-remote behavior, this is no longer a refusal --
+    # --local needs neither remote, so the script is always worth writing.
     from wpfreeze.cli import run_build, run_upload_script
 
     output_dir = tmp_path / "out"
@@ -672,9 +674,35 @@ def test_upload_script_without_remote_configured_errors(tmp_path: Path, capsys):
 
     exit_code = run_upload_script(config, None)
 
-    assert exit_code == 2
-    assert not (output_dir / "upload.sh").exists()
-    assert "nothing to write" in capsys.readouterr().out
+    upload_path = output_dir / "upload.sh"
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert upload_path.exists()
+    assert "no upload.remote set" in out
+    assert "no upload.prod_remote set" in out
+
+
+def test_upload_script_writes_prod_remote_alongside_staging_remote(tmp_path: Path, capsys):
+    import dataclasses
+
+    from wpfreeze.cli import UploadSettings, run_build, run_upload_script
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(
+        _minimal_capture(output_dir),
+        upload=UploadSettings(remote="user@staging:/path", prod_remote="user@prod:/path"),
+    )
+    run_build(config, None, verify=False)
+
+    exit_code = run_upload_script(config, None)
+
+    content = (output_dir / "upload.sh").read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert 'REMOTE="user@staging:/path"' in content
+    assert 'PROD_REMOTE="user@prod:/path"' in content
+    assert "no upload.remote set" not in out
+    assert "no upload.prod_remote set" not in out
 
 
 def test_upload_script_without_a_built_site_errors(tmp_path: Path, capsys):

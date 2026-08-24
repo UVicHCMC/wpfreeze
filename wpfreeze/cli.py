@@ -82,11 +82,23 @@ class WaybackSettings:
 
 @dataclass(frozen=True)
 class UploadSettings:
-    # rsync destination for upload.sh, e.g. "user@host:/var/www/html" -- a
-    # staging/preview location, not a production deploy target. None (the
-    # default) means `wpfreeze upload-script` has nothing to write; it is
-    # never used by `build`, which has no upload-related side effects.
+    # rsync destinations for upload.sh -- e.g. "user@host:/var/www/html".
+    # Neither is used by `build`, which has no upload-related side effects;
+    # both are read only by `wpfreeze upload-script`/`upload.sh` itself.
+    #
+    # `remote` is the staging/preview destination: upload.sh's default,
+    # no-flag invocation syncs the built site plus its human-facing reports
+    # (report.html, cleanup-todo.html, broken-external-links.html) there,
+    # for a site owner to read alongside the pages they describe.
     remote: str | None = None
+    # `prod_remote` is the real production destination: upload.sh --prod
+    # syncs the built site *only* -- no reports -- there, after a
+    # confirmation prompt (see upload.py's _TEMPLATE for why the asymmetry:
+    # reports are meant for review, never for the live site). Independent
+    # of `remote` -- either, both, or neither can be set; upload.sh always
+    # gets written regardless (see run_upload_script), since its --local
+    # mode needs no remote at all.
+    prod_remote: str | None = None
 
 
 # load_config's default for `search.body_selectors` when a site's config
@@ -233,7 +245,10 @@ def load_config(path: Path) -> SiteConfig:
         xml_backup=Path(xml_backup_raw) if xml_backup_raw else None,
         policy=policy,
         vnu_jar=Path(raw["vnu_jar"]) if raw.get("vnu_jar") else None,
-        upload=UploadSettings(remote=(raw.get("upload") or {}).get("remote")),
+        upload=UploadSettings(
+            remote=(raw.get("upload") or {}).get("remote"),
+            prod_remote=(raw.get("upload") or {}).get("prod_remote"),
+        ),
         search=search,
     )
 
@@ -780,17 +795,17 @@ def _announce_cleanup_todo(output_dir: Path) -> None:
 
 
 def run_upload_script(config: SiteConfig, site_dir: Path | None) -> int:
-    """Write upload.sh so a site owner can preview the built site somewhere
-    (staging, not a production deploy) -- explicit and separate from
-    `build` on purpose: nothing about generating or running this script
-    happens automatically just because `upload.remote` is set in the
-    config. Running the script itself is a further, separate step the user
-    takes by hand; this command only ever writes it.
+    """Write upload.sh so a site owner can get the built site somewhere --
+    a staging remote, a local preview, or (deliberately, separately) a real
+    production deploy, see upload.py's own module docstring for the three
+    modes -- explicit and separate from `build` on purpose: nothing about
+    generating or running this script happens automatically just because a
+    remote is set in the config. Running the script itself, in whichever
+    mode, is a further, separate step the user takes by hand; this command
+    only ever writes it. Written unconditionally, even with neither
+    `upload.remote` nor `upload.prod_remote` set -- the script's --local
+    mode needs neither.
     """
-    if not config.upload.remote:
-        print("No `upload: remote:` set in the config; nothing to write.")
-        return 2
-
     target = site_dir or (config.output_dir / "site")
     if not target.exists():
         print(f"No built site found at {target}; run `wpfreeze build` first.")
@@ -806,8 +821,12 @@ def run_upload_script(config: SiteConfig, site_dir: Path | None) -> int:
         print(f"{target} is not inside {config.output_dir}; can't write a script relative to it.")
         return 2
 
-    path = write_upload_script(config.output_dir, config.upload.remote, site_rel)
+    path = write_upload_script(config.output_dir, config.upload.remote, config.upload.prod_remote, site_rel)
     print(f"Upload script: {path}")
+    if not config.upload.remote:
+        print("  (no upload.remote set -- the default/staging mode will error until it is)")
+    if not config.upload.prod_remote:
+        print("  (no upload.prod_remote set -- --prod will error until it is)")
     return 0
 
 
@@ -941,8 +960,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     upload_script_p = subparsers.add_parser(
         "upload-script",
-        help="write upload.sh for pushing the built site to a staging/preview location "
-        "(needs `upload: remote:` in the config) -- writes the script only, never runs it",
+        help="write upload.sh: staging sync by default, --local for a no-network preview folder, "
+        "--prod for a reports-free production sync -- writes the script only, never runs it",
     )
     upload_script_p.add_argument("--config", required=True, type=Path)
     upload_script_p.add_argument(

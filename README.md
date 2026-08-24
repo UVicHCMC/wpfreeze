@@ -257,10 +257,11 @@ wpfreeze search-index  --config site.yaml [--site-dir DIR]
   closes the gap where a link-extraction fix can't reach content acquired
   before the fix existed, without a full re-crawl. Reports what it would
   queue by default; `--apply` actually writes it to `manifest.json`.
-- **`upload-script`** writes `upload.sh` for pushing the built site
-  somewhere a site owner can preview it — see "Previewing a build
-  somewhere" below. Requires both a built `site/` and `upload.remote` in
-  the config; writes nothing and exits non-zero without either.
+- **`upload-script`** writes `upload.sh`, one script covering staging,
+  local-preview, and production — see "Previewing a build somewhere"
+  below. Requires a built `site/`; writes the script regardless of whether
+  `upload.remote`/`upload.prod_remote` are set (its `--local` mode needs
+  neither), but exits non-zero with no `site/` to reference.
 - **`search-index`** (re-)builds the Pagefind search index over an
   already-built site. `build` already does this automatically whenever
   `search.enabled` is set — this command exists for re-indexing after an
@@ -299,6 +300,7 @@ diagnostics.json   capture-integrity summary from `wpfreeze diagnose`
 cleanup-todo.md    human-readable punch list synthesized from the three reports above
 cleanup-todo.html  the same, styled like report.html, with clickable links -- see below
 upload.sh          only after `wpfreeze upload-script` -- see "Previewing a build somewhere"
+preview/           only after `upload.sh --local` -- site + reports, assembled for local browsing
 ```
 
 `report.html` and `cleanup-todo.html` have no external dependencies — no
@@ -453,24 +455,43 @@ internals.
 ## Previewing a build somewhere
 
 `wpfreeze upload-script` writes `upload.sh` into `output_dir` — a small,
-hand-editable `rsync` script for pushing the built site somewhere a site
-owner can look at it. It's for a staging/preview copy, not a production
-deploy, and needs `upload.remote` set in the config (see
-[`example-site.yaml`](example-site.yaml)):
+hand-editable script covering three ways to get a build somewhere it can
+be looked at, one script, one mode per invocation:
 
 ```bash
 wpfreeze upload-script --config site.yaml
-cd <output_dir> && ./upload.sh
+cd <output_dir>
+./upload.sh           # staging: site + reports, to upload.remote
+./upload.sh --local   # local preview: site + reports, under ./preview/, no network
+./upload.sh --prod    # production: site only, to upload.prod_remote, after a y/N confirmation
 ```
 
-Both steps are always explicit. `build` never generates or runs this
-script itself just because a config happens to have `upload.remote` set —
-generating it, and separately, actually running it, are things you do on
-purpose when you're ready. The script itself runs `rsync -av --delete`,
-so anything already at the destination that isn't part of this build gets
+Both the `wpfreeze upload-script` step and actually running `upload.sh`
+(in whichever mode) are always explicit — `build` never generates or runs
+any of this itself just because a config has a remote set.
+
+**Staging (no flag)** and **`--local`** both bundle `site/`'s contents
+with the reports a site owner would want to read alongside it —
+`cleanup-todo.html`, `report.html`, and `broken-external-links.html` when
+present (not the `.md`/`.json` versions) — so post-build, pre-production
+review can happen either on a shared staging host or straight off disk
+(`cd preview && python3 -m http.server`), same bundle either way. Staging
+needs `upload.remote` set in the config; `--local` needs nothing set at
+all.
+
+**`--prod`** is different on purpose: it syncs `site/` *only* — no
+reports, they're for review, never for the live site — to
+`upload.prod_remote`, and pauses for a `y/N` confirmation first, since
+it's the one mode meant to touch a real, live production host. Both
+`--prod` and the staging mode run `rsync -av --delete`, so anything
+already at that destination that isn't part of this build gets
 **deleted**, not just overwritten — worth being sure of what's there
-before running it. It copies `site/`'s contents plus `cleanup-todo.html`
-and `report.html` (not the `.md`/`.json` versions).
+before confirming. Neither remote is required to write the script itself
+— an unconfigured mode just errors clearly, naming which config key to
+add, when you actually try to run it.
+
+See [`example-site.yaml`](example-site.yaml) for both `upload.remote` and
+`upload.prod_remote`.
 
 ## Offline search
 
