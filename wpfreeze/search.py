@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING
 
 from bs4 import BeautifulSoup
 
-from wpfreeze.policy import _is_search_form
+from wpfreeze.policy import _PASSWORD_PROTECTED_MARKER, _is_search_form
 
 if TYPE_CHECKING:
     from wpfreeze.cli import SearchSettings
@@ -156,8 +156,10 @@ class ContentIssues:
 
     # Pages that were actually indexed (thin + shingle-eligible) --
     # deliberately excludes pages extract_indexed_text returned None for
-    # (not indexed at all; that's pages_without_body_match's business).
-    # This is the denominator the design doc's sec 4c calibration note
+    # (not indexed at all; that's pages_without_body_match's business) and
+    # pages policy.py emptied by removing a WordPress password prompt
+    # (already reported under "Password-protected pages"; see
+    # _PASSWORD_PROTECTED_MARKER). This is the denominator the design doc's sec 4c calibration note
     # needs: ">15% of pages flagged is evidence the threshold is wrong,
     # not that 15% of pages are broken" is unusable without it, which is
     # why format_content_issues_summary reports counts against this total
@@ -680,6 +682,15 @@ def scan_content_issues(
         except (OSError, UnicodeDecodeError):
             continue
         output_path = "/" + path.relative_to(site_dir).as_posix()
+        body = soup.find("body")
+        if body is not None and body.has_attr(_PASSWORD_PROTECTED_MARKER):
+            # policy.py's _strip_forms removed a WordPress password prompt
+            # here -- the prompt WAS this page's entire content, so an
+            # empty/near-empty result is correct, not thin. Already
+            # reported, with the same page list, under "Content
+            # intentionally excised" -> "Password-protected pages"; skip
+            # it here rather than double-report it as something to fix.
+            continue
         text = extract_indexed_text(soup, settings, body_tagged_sitewide)
         if text is None:
             continue  # not indexed at all -- pages_without_body_match's business

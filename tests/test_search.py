@@ -533,6 +533,54 @@ def test_scan_one_under_min_words_is_thin(tmp_path: Path):
     assert issues.thin_pages[0].word_count == MIN_WORDS - 1
 
 
+def _write_password_protected_page(site_dir: Path, output_path: str) -> None:
+    # Mirrors what policy.py's _strip_forms leaves behind after removing a
+    # WordPress password prompt: the marker on <body>, and (per the same
+    # removal) nothing left in the content region.
+    path = site_dir / output_path.lstrip("/")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '<html><body data-wpfreeze-password-protected="1"></body></html>',
+        encoding="utf-8",
+    )
+
+
+def test_scan_skips_pages_marked_password_protected_by_policy(tmp_path: Path):
+    site_dir = tmp_path / "site"
+    _write_password_protected_page(site_dir, "/secret.html")
+    _write_page(site_dir, "/ok.html", f"<p>{_words(MIN_WORDS, 'w')}</p>")
+
+    issues = scan_content_issues(site_dir, SearchSettings())
+
+    # Not reported as thin (already reported under "Password-protected
+    # pages" in the excised-content section) and not counted in the
+    # pages_scanned denominator either -- same treatment as a page
+    # extract_indexed_text returns None for.
+    assert issues.thin_pages == []
+    assert issues.pages_scanned == 1
+
+
+def test_scan_password_protected_page_skipped_even_if_it_somehow_has_text(tmp_path: Path):
+    # Belt and suspenders: the marker alone is enough to skip the page,
+    # regardless of what's in its body -- this should never happen in
+    # practice (the marker is only set when the form removal left the page
+    # empty), but the skip must not depend on emptiness to be correct.
+    site_dir = tmp_path / "site"
+    site_dir.mkdir()
+    path = site_dir / "secret.html"
+    path.write_text(
+        f'<html><body data-wpfreeze-password-protected="1">'
+        f'<p>{_words(MIN_WORDS, "w")}</p></body></html>',
+        encoding="utf-8",
+    )
+
+    issues = scan_content_issues(site_dir, SearchSettings())
+
+    assert issues.thin_pages == []
+    assert issues.echoed_pages == []
+    assert issues.pages_scanned == 0
+
+
 def test_scan_respects_sitewide_tagging_not_per_page(tmp_path: Path):
     # One page tagged anywhere makes Pagefind's rule sitewide: an untagged
     # page is NOT indexed at all (thin or otherwise), not whole-body

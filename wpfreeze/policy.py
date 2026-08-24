@@ -203,6 +203,30 @@ _COMMENT_WRAPPER_MAX_DEPTH = 5
 # match this by accident.
 _META_SEPARATOR_RE = re.compile(r"^\s*[|/•·]\s*$")
 
+# --- Password-protected-post fingerprint ------------------------------------
+#
+# WordPress core's get_the_password_form() (wp-includes/post-template.php)
+# hardcodes class="post-password-form" on the <form> it emits in place of a
+# post's real content whenever that post is password-protected -- themes
+# can restyle it but the class is baked into core, same reliability as
+# _COMMENT_WRAPPER_IDS above. Unlike every other form category, removing
+# this one (dead on a static archive like any other -- there's no live
+# wp-login.php/wp-pass.php to post to) does not leave behind a stripped
+# husk of otherwise-real content: the password prompt IS the entire
+# `.entry-content` on these pages, because wpfreeze never had access to
+# what's actually behind the password in the first place. That distinction
+# is why it gets its own category rather than falling into "other", and why
+# _strip_forms marks the page (see _PASSWORD_PROTECTED_MARKER) so
+# search.py's scan_content_issues can tell "genuinely thin" apart from
+# "we correctly deleted the only thing here".
+_PASSWORD_FORM_CLASS = "post-password-form"
+# data-* attribute set on <body> when a password form is removed from the
+# page -- survives to the built HTML (harmless, invisible) so
+# scan_content_issues, which re-parses the finished site/ tree long after
+# PolicyStats goes out of scope, can recognize these pages without
+# re-deriving the fingerprint itself.
+_PASSWORD_PROTECTED_MARKER = "data-wpfreeze-password-protected"
+
 # --- Search-form fingerprints -----------------------------------------------
 #
 # Unlike comment forms, WordPress core doesn't hardcode a wrapper around a
@@ -302,9 +326,12 @@ class PolicyStats:
     # {"count": int, "output_path": str, "categories": {"comment": int, ...}}.
     # "comment" forms had their caption/cancel-link wrapper removed with
     # them (see _comment_wrapper) and so are lower-priority to check by
-    # hand; "search" forms are recognized but get no special wrapper
-    # handling (see _is_search_form); subscribe, contact, and anything
-    # unrecognized still bucket under "other" for now.
+    # hand; "password" forms are WordPress's password-protected-post
+    # prompt (see _is_password_form) -- also lower-priority, since the
+    # prompt was the page's entire content and there is nothing left to
+    # accidentally orphan; "search" forms are recognized but get no
+    # special wrapper handling (see _is_search_form); subscribe, contact,
+    # and anything unrecognized still bucket under "other" for now.
     forms_removed_pages: dict[str, dict] = field(default_factory=dict)
     # In-page anchors that pointed at an id a form-wrapper removal just took
     # with it (WordPress's own "N comments" post-meta link, most commonly,
@@ -455,6 +482,13 @@ def _is_search_form(form) -> bool:
     return form.find("input", attrs={"name": _SEARCH_INPUT_NAME}) is not None
 
 
+def _is_password_form(form) -> bool:
+    """True if `form` is WordPress core's password-protected-post prompt --
+    see the fingerprint note above _PASSWORD_FORM_CLASS for why the class
+    alone is reliable regardless of theme."""
+    return _PASSWORD_FORM_CLASS in (form.get("class") or [])
+
+
 def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page_url: str, page_output: str) -> None:
     # On a static archive no <form> submits usefully: comment and search
     # forms hit dead endpoints, and subscribe forms leak to a third party.
@@ -467,6 +501,7 @@ def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page
     categories: dict[str, int] = {}
     removed_ids: set[str] = set()
     kept_search_count = 0
+    password_form_removed = False
 
     for form in soup.find_all("form"):
         if id(form) in handled:
@@ -475,6 +510,8 @@ def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page
         wrapper = _comment_wrapper(form)
         if wrapper is not None or _is_comment_form(form):
             category = "comment"
+        elif _is_password_form(form):
+            category = "password"
         elif _is_search_form(form):
             category = "search"
         else:
@@ -505,9 +542,23 @@ def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page
             if node_id:
                 removed_ids.add(node_id)
 
+        if category == "password":
+            password_form_removed = True
+
         target.decompose()
         count += 1
         categories[category] = categories.get(category, 0) + 1
+
+    if password_form_removed:
+        # See _PASSWORD_PROTECTED_MARKER: the password prompt just removed
+        # was the entire content of this page, not a stripped-down remnant
+        # of real content -- mark it so a much later, independent pass
+        # (search.py's scan_content_issues, re-parsing the finished site/
+        # tree) can tell the difference rather than reporting "thin
+        # content" for something wpfreeze correctly, deliberately emptied.
+        body = soup.find("body")
+        if body is not None:
+            body[_PASSWORD_PROTECTED_MARKER] = "1"
 
     if removed_ids:
         _clean_dead_fragment_links(soup, removed_ids, stats, policy.strip_comment_counts)

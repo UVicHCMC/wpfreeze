@@ -316,6 +316,35 @@ def test_search_forms_are_their_own_category_not_other(tmp_path: Path):
     assert "worth a look before you call it done" in content
 
 
+def test_password_forms_are_their_own_category_and_do_not_need_attention(tmp_path: Path):
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved": 0,
+            "unresolved_samples": [],
+            "policy": {
+                "forms_removed": 1,
+                "forms_removed_pages": {
+                    "https://s/secret/": {
+                        "count": 1,
+                        "output_path": "/secret.html",
+                        "categories": {"password": 1},
+                    }
+                },
+            },
+        },
+    )
+    content = build_cleanup_todo(tmp_path)
+    assert "**Password-protected pages**" in content
+    assert "[`https://s/secret/`](site/secret.html)" in content
+    assert "not thin or broken content" in content
+    # Unlike a generic "other"/"search" removal, a password-prompt removal
+    # leaves nothing actionable behind -- should not push the headline into
+    # "worth a look" on its own.
+    assert "worth a look before you call it done" not in content
+
+
 def test_search_forms_kept_in_place_section(tmp_path: Path):
     _write(
         tmp_path,

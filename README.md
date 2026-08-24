@@ -276,11 +276,15 @@ Sections, in order:
   distinct from the above).
 - **Content intentionally excised** — what `build`'s content policy
   removed (see "Building a servable site" below), broken out by category
-  (comment, search, other). Forms specifically get a per-page list, since
-  a removed `<form>` can leave a heading or button behind describing
-  nothing; comment forms are called out separately and deprioritized,
-  since their caption is removed automatically (see below) and doesn't
-  need a manual check the way everything else in this section does.
+  (comment, password, search, other). Forms specifically get a per-page
+  list, since a removed `<form>` can leave a heading or button behind
+  describing nothing; comment and password forms are called out
+  separately and deprioritized — a comment form's caption is removed
+  automatically (see below), and a password form's removal empties a page
+  that had nothing else in it to begin with (WordPress's own
+  password-protected-post prompt — wpfreeze never had access to what's
+  actually behind the password) — so neither needs a manual check the way
+  everything else in this section does.
 - **Search forms left in place** — only appears when `strip_search_forms:
   false` is set. A per-page list of search forms that were deliberately
   *not* removed, for a site owner reimplementing search rather than
@@ -334,6 +338,14 @@ touching the capture, so re-running is always safe. In that tree:
   fixed too; the "N comments" text itself is removed by default, or kept
   for a nonzero count when `strip_comment_counts: false` — see
   `example-site.yaml`.
+- **WordPress's password-protected-post prompt is detected and removed
+  like any other form** — via core's own fixed `class="post-password-form"`
+  (baked into `get_the_password_form()`, theme-independent), and reported
+  in its own "Password-protected pages" checklist category rather than
+  lumped in with generic form removals or (if the page ends up empty, as
+  it always does — the prompt was the page's entire content) misreported
+  as thin content: wpfreeze never captured what's actually behind the
+  password, so there's genuinely nothing to check.
 - **Search forms are recognized and removed like any other form by
   default** — detected by `role="search"` or a `name="s"` input, both
   WordPress's own conventions regardless of theme (unlike class names:

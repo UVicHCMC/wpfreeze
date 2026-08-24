@@ -314,6 +314,52 @@ def test_form_with_neither_signal_is_not_search():
     assert stats.search_forms_kept_pages == {}
 
 
+# --- password-protected-post detection --------------------------------------
+
+
+def test_password_form_is_categorized_as_password_and_removed():
+    html = (
+        '<div class="entry-content">'
+        '<form action="https://s.example/wp-login.php?action=postpass" '
+        'class="post-password-form" method="post">'
+        '<p>This content is password protected.</p>'
+        '</form>'
+        '</div>'
+    )
+    soup = BeautifulSoup(html, "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(), stats, "https://s.example/secret/", "/secret.html")
+    out = str(soup)
+    assert "<form" not in out
+    assert stats.forms_removed_pages["https://s.example/secret/"]["categories"] == {"password": 1}
+
+
+def test_password_form_removal_marks_body_for_content_checks():
+    html = (
+        '<form action="/wp-pass.php" class="post-password-form" method="post">'
+        '<p>Enter password.</p>'
+        '</form>'
+    )
+    out, stats = _apply(html)
+    assert 'data-wpfreeze-password-protected="1"' in out
+
+
+def test_page_without_a_password_form_is_not_marked():
+    out, stats = _apply('<p>Ordinary content, no forms at all.</p>')
+    assert "data-wpfreeze-password-protected" not in out
+
+
+def test_password_form_not_confused_with_search_form():
+    # Belt and suspenders: a password form has neither role="search" nor a
+    # name="s" input, so ordering the checks after comment/before search in
+    # _strip_forms doesn't matter for correctness -- confirm it anyway.
+    html = '<form class="post-password-form" method="post"><input name="post_password"></form>'
+    soup = BeautifulSoup(html, "lxml")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(), stats, "https://s/", "/index.html")
+    assert stats.forms_removed_pages["https://s/"]["categories"] == {"password": 1}
+
+
 # --- dead in-page links left by comment-form removal ------------------------
 
 

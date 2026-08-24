@@ -288,12 +288,14 @@ def _verification_section(build_report: dict | None) -> tuple[list[str], bool]:
 # Order to present form categories in, and what to say about each -- see
 # policy.py's _strip_forms/_comment_wrapper for how "comment" is detected
 # and why it's the one category whose caption is removed automatically,
-# and _is_search_form for how "search" is detected. Categories beyond
-# those two (subscribe, contact, ...) don't exist yet; anything not
-# recognized as either buckets as "other" until they do.
-_FORM_CATEGORY_ORDER = ("comment", "search", "other", "unspecified")
+# _is_password_form for how "password" is detected, and _is_search_form
+# for how "search" is detected. Categories beyond those three (subscribe,
+# contact, ...) don't exist yet; anything not recognized buckets as
+# "other" until they do.
+_FORM_CATEGORY_ORDER = ("comment", "password", "search", "other", "unspecified")
 _FORM_CATEGORY_LABEL = {
     "comment": "Comment forms",
+    "password": "Password-protected pages",
     "search": "Search forms",
     "other": "Other forms",
     "unspecified": "Forms (from a build made before categorization existed)",
@@ -344,6 +346,16 @@ def _form_category_lines(
         if extras:
             para += " Also cleaned up on the same pages: " + ", ".join(extras) + "."
         para += " Full list:"
+    elif category == "password":
+        para = (
+            f"**{label}** -- {total} across {len(pages)} page(s). WordPress itself gates these "
+            "posts behind a password; the prompt was the only thing in the page's content region "
+            "to begin with, so removing it (dead on a static archive -- there's no live "
+            "wp-login.php/wp-pass.php to post to) leaves nothing behind. wpfreeze never had "
+            "access to what's actually behind the password. This is not thin or broken content "
+            "and there's nothing to fix -- these pages are excluded from \"Pages with thin "
+            "content\" below for the same reason. Full list:"
+        )
     elif category == "search":
         para = (
             f"**{label}** -- {total} across {len(pages)} page(s), removed like any other form -- it "
@@ -380,10 +392,13 @@ def _excised_content_section(build_report: dict | None) -> tuple[list[str], bool
     """Content the build policy deliberately removed (see policy.py).
     Forms get a per-category, per-page list -- unlike the other three
     strips, a removed <form> can leave a heading, label, or "Subscribe"
-    button behind with nothing under it any more. Comment forms are the
-    exception: their caption is removed with them (see policy.py's
-    _comment_wrapper), so they're broken out and deprioritized rather than
-    treated the same as everything else. The other three excision types
+    button behind with nothing under it any more. Comment and password
+    forms are the exception: a comment form's caption is removed with it
+    (see policy.py's _comment_wrapper), and a password form's removal
+    empties a page that had nothing else in it to begin with (see
+    policy.py's _is_password_form) -- both are broken out and
+    deprioritized rather than treated the same as everything else. The
+    other three excision types
     (telemetry, feeds, WP protocol-discovery links) are dead <head>/script
     references with nothing rendered either way; a total is enough, listing
     pages would just be noise.
@@ -404,9 +419,10 @@ def _excised_content_section(build_report: dict | None) -> tuple[list[str], bool
 
     lines = ["## Content intentionally excised", ""]
     # Comment forms are auto-cleaned (caption + cancel-link removed with
-    # them, see policy.py's _comment_wrapper) and so don't need a manual
-    # check the way the rest of this section does -- only a non-comment
-    # category should push the "worth a look" headline.
+    # them, see policy.py's _comment_wrapper) and password forms removed
+    # nothing but a dead prompt (see policy.py's _is_password_form) --
+    # neither needs a manual check the way the rest of this section does,
+    # so only some other category should push the "worth a look" headline.
     needs_attention = False
     if forms_removed:
         lines.append(
@@ -419,7 +435,7 @@ def _excised_content_section(build_report: dict | None) -> tuple[list[str], bool
             if pages:
                 extra_args = (dead_fragment_links, comment_count_blurbs) if cat == "comment" else (0, 0)
                 lines.extend(_form_category_lines(cat, pages, *extra_args))
-                if cat != "comment":
+                if cat not in ("comment", "password"):
                     needs_attention = True
 
     other = []
