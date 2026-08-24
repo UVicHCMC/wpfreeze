@@ -101,15 +101,16 @@ pytest
 ## Quickstart
 
 If the current directory has a site config with an existing, resumable
-run (a `manifest.json` already at its `output_dir`), `wpfreeze` offers to
-pick that back up before anything else — say no, or there's nothing to
-resume, and it falls through to the questions below. With more than one
-resumable config around, you get a numbered list to pick from instead.
+run (a `manifest.json` already at its `output_dir`), `wpfreeze wizard`
+offers to pick that back up before anything else — say no, or there's
+nothing to resume, and it falls through to the questions below. With more
+than one resumable config around, you get a numbered list to pick from
+instead.
 
-Otherwise, run `wpfreeze` with no arguments and answer the questions:
+Otherwise, run `wpfreeze wizard` and answer the questions:
 
 ```
-$ wpfreeze
+$ wpfreeze wizard
 What site are we scraping? (base URL): https://www.example.com
 Where should the output go? [./output/www-example-com]:
 How nice are we being to the server?
@@ -154,10 +155,58 @@ attachments) still gets caught, with no database access of any kind
 required. It's entirely optional — most real acquisitions won't have one,
 and omitting it is completely normal, not a degraded mode.
 
+## Running wpfreeze with no arguments
+
+`wpfreeze` with no subcommand is a launcher for whatever's relevant in the
+current directory right now — it is not the setup wizard itself (that's
+the explicit `wpfreeze wizard`, above).
+
+**In a real terminal**, it's an interactive picker: every `*.yaml`/`*.yml`
+config in the directory, numbered, plus a trailing "Starting a new
+site..." entry. Move with the arrow keys or press a row's number; Enter on
+a config expands it in place to show its current status ("Not yet
+acquired.", "Acquired: 519 fetched, 0 pending...", etc.) and the commands
+relevant to that state — each one itself a numbered, selectable row.
+Enter on a command runs it directly, with the right `--config` already
+filled in. Esc/Left collapses a config back down; `q` quits without
+running anything. Selecting "Starting a new site..." launches `wizard`
+the same as typing it.
+
+**Anywhere stdin/stdout isn't a real terminal** — piped output, CI, a
+script capturing `wpfreeze`'s output — the exact same information prints
+as plain, non-interactive text instead, in the same order the picker
+would show it:
+
+```
+$ wpfreeze
+wpfreeze -- static-archive WordPress sites
+
+Found 2 site configs in this directory:
+
+  landscapes.yaml  (https://site-c.example)
+    Acquired: 519 fetched, 0 pending, 519 total. Built: yes.
+    wpfreeze status    --config landscapes.yaml
+    wpfreeze build     --config landscapes.yaml   (safe to re-run any time)
+    wpfreeze validate  --config landscapes.yaml
+
+  new-site.yaml  (https://example.org)
+    Not yet acquired.
+    wpfreeze acquire --config new-site.yaml --dry-run
+    wpfreeze acquire --config new-site.yaml
+
+Starting a new site, or fixing a config that isn't loading? Run `wpfreeze wizard`
+for a guided walkthrough, or see SETUP.md.
+```
+
+Neither mode reads stdin or runs anything unasked — the plain-text form
+never does, and the picker only acts once a command row is actually
+selected and launched.
+
 ## CLI reference
 
 ```
-wpfreeze                                        # no subcommand: interactive wizard
+wpfreeze                                        # no subcommand: interactive picker (plain summary if not a real terminal)
+wpfreeze wizard                                 # guided setup: resume an existing run, or build a new site config
 wpfreeze acquire       --config site.yaml [--resume] [--dry-run]
 wpfreeze build         --config site.yaml [--site-dir DIR] [--no-verify] [--no-todo]
 wpfreeze validate      --config site.yaml [--site-dir DIR] [--no-todo]
@@ -169,6 +218,10 @@ wpfreeze upload-script --config site.yaml [--site-dir DIR]
 wpfreeze search-index  --config site.yaml [--site-dir DIR]
 ```
 
+- **`wizard`** is the guided setup flow described in "Quickstart" above —
+  resume an existing run if one's found, otherwise build a new site config
+  by answering a few questions. Explicit and interactive only; bare
+  `wpfreeze` (no subcommand) is the picker/summary above, not this.
 - **`acquire`** runs (or resumes) the full pipeline: inventory discovery,
   crawl-to-fixpoint, Wayback recovery, analysis, and report generation.
   Refuses to start over an existing `manifest.json` unless `--resume` is

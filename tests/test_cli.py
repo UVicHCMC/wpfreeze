@@ -1055,19 +1055,60 @@ def test_build_validate_offer_skips_validate_when_build_hard_fails(tmp_path: Pat
 # ---------------------------------------------------------------------------
 
 
-def test_main_with_no_args_prints_overview_not_wizard(monkeypatch):
-    """Bare `wpfreeze` is the non-interactive overview, not the interactive
-    wizard -- see print_overview's own docstring for why the split exists.
-    `wizard` (the subcommand) is what launches run_wizard now."""
+def test_main_with_no_args_not_a_tty_prints_overview(monkeypatch):
+    """Bare `wpfreeze` without a real terminal (piped output, CI, a script
+    capturing stdout) falls back to the non-interactive overview -- not
+    the interactive picker, and not the interactive wizard either. `wizard`
+    (the subcommand) is what launches run_wizard now."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
     overview_calls = []
     wizard_calls = []
+    picker_calls = []
     monkeypatch.setattr("wpfreeze.wizard.print_overview", lambda: overview_calls.append("overview") or 0)
     monkeypatch.setattr("wpfreeze.wizard.run_wizard", lambda: wizard_calls.append("wizard") or 0)
+    monkeypatch.setattr("wpfreeze.picker.run_picker", lambda: picker_calls.append("picker") or 0)
 
     assert main([]) == 0
 
     assert overview_calls == ["overview"]
     assert wizard_calls == []
+    assert picker_calls == []
+
+
+def test_main_with_no_args_in_a_real_terminal_launches_the_picker(monkeypatch):
+    """Bare `wpfreeze` with both stdin and stdout attached to a real
+    terminal launches the interactive picker instead of printing the
+    static overview -- see _dispatch's own comment for the isatty gate."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    overview_calls = []
+    picker_calls = []
+    monkeypatch.setattr("wpfreeze.wizard.print_overview", lambda: overview_calls.append("overview") or 0)
+    monkeypatch.setattr("wpfreeze.picker.run_picker", lambda: picker_calls.append("picker") or 0)
+
+    assert main([]) == 0
+
+    assert picker_calls == ["picker"]
+    assert overview_calls == []
+
+
+def test_main_with_no_args_only_one_stream_a_tty_still_falls_back_to_overview(monkeypatch):
+    # Piping stdout while stdin is still a real terminal (or vice versa)
+    # is exactly the "not really interactive" case the `and` in the gate
+    # exists for -- a curses screen with no real place to draw, or reading
+    # keys from a pipe, would just hang or crash.
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    overview_calls = []
+    picker_calls = []
+    monkeypatch.setattr("wpfreeze.wizard.print_overview", lambda: overview_calls.append("overview") or 0)
+    monkeypatch.setattr("wpfreeze.picker.run_picker", lambda: picker_calls.append("picker") or 0)
+
+    assert main([]) == 0
+
+    assert overview_calls == ["overview"]
+    assert picker_calls == []
 
 
 def test_main_wizard_subcommand_launches_the_interactive_wizard(monkeypatch):

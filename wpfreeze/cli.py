@@ -1029,6 +1029,16 @@ def _dispatch(argv: list[str] | None) -> int:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
 
     if not raw_argv:
+        # Interactive picker in a real terminal; the old plain-text
+        # overview otherwise (piped output, CI, a script capturing
+        # `wpfreeze`'s stdout) -- same isatty gate _maybe_offer_diagnostics/
+        # _maybe_offer_build_and_validate already use for "don't block on
+        # input() when nothing's there to answer it".
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            from wpfreeze.picker import run_picker
+
+            return run_picker()
+
         from wpfreeze.wizard import print_overview
 
         return print_overview()

@@ -27,6 +27,7 @@ work on it with no wizard involved.
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 from urllib.parse import urlsplit
@@ -163,57 +164,113 @@ def _describe_manifest(output_dir: Path) -> str:
     return f"{fetched} fetched, {pending} pending/retrying, {total} total"
 
 
-def _print_commands(tell: Callable[[str], None], config_name: str, entries: list[tuple[str, str]]) -> None:
-    """Print one `wpfreeze <subcommand> --config <config_name><suffix>`
-    line per (subcommand, suffix) in `entries`, with subcommand names
-    padded so every line's `--config` column lines up. `suffix` is
-    appended verbatim -- a flag (" --resume"), a parenthetical aside
-    ("   (safe to re-run any time)"), or "" for nothing extra.
+@dataclass(frozen=True)
+class RecommendedCommand:
+    """One `wpfreeze <subcommand> --config <name> ...` a site owner would
+    plausibly run next, given a config's current state. `argv_extra` is
+    real argv (e.g. `("--resume",)`) appended to the invocation -- both
+    `_print_commands` (rendering) and `wpfreeze.picker` (launching) build
+    off the same tuple, so the two can never drift apart the way a single
+    printed suffix string invited. `note` is a display-only aside (e.g.
+    "   (safe to re-run any time)") with no argv meaning at all.
     """
-    width = max(len(cmd) for cmd, _ in entries)
-    for cmd, suffix in entries:
-        tell(f"    wpfreeze {cmd:<{width}} --config {config_name}{suffix}")
+
+    subcommand: str
+    argv_extra: tuple[str, ...] = ()
+    note: str = ""
+
+    def argv(self, config_name: str) -> list[str]:
+        return [self.subcommand, "--config", config_name, *self.argv_extra]
+
+
+@dataclass(frozen=True)
+class ConfigStatus:
+    """One site config's current state and what to do about it -- the
+    shared data both `print_overview` (plain text) and `wpfreeze.picker`
+    (interactive) render from, so the two never describe a config
+    differently."""
+
+    path: Path
+    config: "SiteConfig"
+    status_lines: tuple[str, ...]
+    commands: tuple[RecommendedCommand, ...] = ()
+
+
+def describe_configs(directory: Path = Path(".")) -> tuple[list[ConfigStatus], list[Path]]:
+    """Every parseable site config in `directory`, each with its current
+    status text and recommended next commands, plus the paths that didn't
+    parse -- the full computation bare `wpfreeze` needs, before either
+    `print_overview` or `wpfreeze.picker` decides how to display it. Reads
+    each config's `manifest.json`/`site/` off disk; runs nothing, writes
+    nothing.
+    """
+    valid, invalid = scan_configs(directory)
+    statuses: list[ConfigStatus] = []
+    for path, config in valid:
+        manifest_path = config.output_dir / "manifest.json"
+        site_dir = config.output_dir / "site"
+        if not manifest_path.exists():
+            status_lines = ("Not yet acquired.",)
+            commands = (RecommendedCommand("acquire", ("--dry-run",)), RecommendedCommand("acquire"))
+        else:
+            fetched, pending, total = _manifest_counts(config.output_dir)
+            status_lines = (
+                f"Acquired: {fetched} fetched, {pending} pending, {total} total. "
+                f"Built: {'yes' if site_dir.exists() else 'no'}.",
+            )
+            if pending:
+                commands = (RecommendedCommand("acquire", ("--resume",)),)
+            else:
+                commands_list = [
+                    RecommendedCommand("status"),
+                    RecommendedCommand("build", note="   (safe to re-run any time)"),
+                ]
+                if site_dir.exists():
+                    commands_list.append(RecommendedCommand("validate"))
+                    # upload-script is worth recommending regardless of
+                    # whether either remote is configured now -- its
+                    # --local mode needs neither (see upload.py).
+                    commands_list.append(RecommendedCommand("upload-script"))
+                commands = tuple(commands_list)
+        statuses.append(ConfigStatus(path, config, status_lines, commands))
+    return statuses, invalid
+
+
+def _print_commands(tell: Callable[[str], None], config_name: str, entries: tuple[RecommendedCommand, ...]) -> None:
+    """Print one `wpfreeze <subcommand> --config <config_name> <argv_extra><note>`
+    line per entry, with subcommand names padded so every line's
+    `--config` column lines up.
+    """
+    width = max(len(cmd.subcommand) for cmd in entries)
+    for cmd in entries:
+        extra = f" {' '.join(cmd.argv_extra)}" if cmd.argv_extra else ""
+        tell(f"    wpfreeze {cmd.subcommand:<{width}} --config {config_name}{extra}{cmd.note}")
 
 
 def print_overview(directory: Path = Path("."), tell: Callable[[str], None] = print) -> int:
-    """Bare `wpfreeze` (no subcommand): a non-interactive, side-effect-free
-    summary of every site config in `directory` and the commands relevant
-    to each one's current state, plus a pointer to getting started from
-    scratch. Never reads stdin and never runs anything -- see `run_wizard`
-    (the `wizard` subcommand) for the interactive flow this replaced as
-    the no-args default.
+    """Bare `wpfreeze` (no subcommand) when stdout/stdin isn't a real
+    terminal: a non-interactive, side-effect-free summary of every site
+    config in `directory` and the commands relevant to each one's current
+    state, plus a pointer to getting started from scratch. Never reads
+    stdin and never runs anything. In a real terminal, `wpfreeze.picker`'s
+    interactive picker is used instead -- see `_dispatch` in cli.py -- but
+    both render from the same `describe_configs` data, so this remains a
+    faithful, scriptable equivalent of what the picker shows.
     """
-    valid, invalid = scan_configs(directory)
+    statuses, invalid = describe_configs(directory)
 
     tell("wpfreeze -- static-archive WordPress sites")
     tell("")
 
-    if valid:
-        noun = "config" if len(valid) == 1 else "configs"
-        tell(f"Found {len(valid)} site {noun} in this directory:")
+    if statuses:
+        noun = "config" if len(statuses) == 1 else "configs"
+        tell(f"Found {len(statuses)} site {noun} in this directory:")
         tell("")
-        for path, config in valid:
-            tell(f"  {path.name}  ({config.base_url})")
-            manifest_path = config.output_dir / "manifest.json"
-            site_dir = config.output_dir / "site"
-            if not manifest_path.exists():
-                tell("    Not yet acquired.")
-                _print_commands(tell, path.name, [("acquire", " --dry-run"), ("acquire", "")])
-            else:
-                fetched, pending, total = _manifest_counts(config.output_dir)
-                tell(
-                    f"    Acquired: {fetched} fetched, {pending} pending, {total} total. "
-                    f"Built: {'yes' if site_dir.exists() else 'no'}."
-                )
-                if pending:
-                    _print_commands(tell, path.name, [("acquire", " --resume")])
-                else:
-                    entries = [("status", ""), ("build", "   (safe to re-run any time)")]
-                    if site_dir.exists():
-                        entries.append(("validate", ""))
-                        if config.upload.remote:
-                            entries.append(("upload-script", ""))
-                    _print_commands(tell, path.name, entries)
+        for status in statuses:
+            tell(f"  {status.path.name}  ({status.config.base_url})")
+            for line in status.status_lines:
+                tell(f"    {line}")
+            _print_commands(tell, status.path.name, status.commands)
             tell("")
 
     if invalid:

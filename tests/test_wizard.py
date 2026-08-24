@@ -3,7 +3,9 @@ from pathlib import Path
 import yaml
 
 from wpfreeze.wizard import (
+    RecommendedCommand,
     build_config_dict,
+    describe_configs,
     find_resumable_configs,
     print_overview,
     run_wizard,
@@ -345,7 +347,10 @@ def test_print_overview_complete_not_built(tmp_path):
     assert "wpfreeze upload-script" not in text
 
 
-def test_print_overview_built_without_upload_remote(tmp_path):
+def test_print_overview_built_recommends_upload_script_even_with_no_remote_configured(tmp_path):
+    # upload-script's --local mode needs neither remote (see upload.py), so
+    # it's worth recommending as soon as a site is built, not gated on
+    # upload.remote being set the way it used to be.
     _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
     _write_complete_manifest(tmp_path / "out")
     (tmp_path / "out" / "site").mkdir(parents=True)
@@ -355,10 +360,10 @@ def test_print_overview_built_without_upload_remote(tmp_path):
 
     assert "Built: yes." in text
     assert "wpfreeze validate" in text
-    assert "wpfreeze upload-script" not in text
+    assert "wpfreeze upload-script --config site.yaml" in text
 
 
-def test_print_overview_built_with_upload_remote(tmp_path):
+def test_print_overview_built_with_upload_remote_still_recommends_upload_script(tmp_path):
     site_yaml = tmp_path / "site.yaml"
     site_yaml.write_text(
         yaml.safe_dump(
@@ -410,6 +415,79 @@ def test_print_overview_never_reads_stdin_and_returns_zero(tmp_path):
     _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
     exit_code = print_overview(tmp_path, tell=lambda m: None)
     assert exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# describe_configs / RecommendedCommand: the data both print_overview and
+# wpfreeze.picker render from -- see wizard.py's own docstrings for why the
+# split exists.
+# ---------------------------------------------------------------------------
+
+
+def test_recommended_command_argv_includes_config_and_extra_flags():
+    cmd = RecommendedCommand("acquire", ("--resume",))
+    assert cmd.argv("site.yaml") == ["acquire", "--config", "site.yaml", "--resume"]
+
+
+def test_recommended_command_argv_with_no_extra_flags():
+    cmd = RecommendedCommand("status")
+    assert cmd.argv("site.yaml") == ["status", "--config", "site.yaml"]
+
+
+def test_describe_configs_not_yet_acquired(tmp_path):
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+
+    statuses, invalid = describe_configs(tmp_path)
+
+    assert invalid == []
+    assert len(statuses) == 1
+    status = statuses[0]
+    assert status.path.name == "site.yaml"
+    assert status.status_lines == ("Not yet acquired.",)
+    assert [c.argv("site.yaml") for c in status.commands] == [
+        ["acquire", "--config", "site.yaml", "--dry-run"],
+        ["acquire", "--config", "site.yaml"],
+    ]
+
+
+def test_describe_configs_resumable_run_recommends_resume_only(tmp_path):
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+    _write_fake_manifest(tmp_path / "out")
+
+    statuses, _ = describe_configs(tmp_path)
+
+    assert [c.argv("site.yaml") for c in statuses[0].commands] == [
+        ["acquire", "--config", "site.yaml", "--resume"],
+    ]
+
+
+def test_describe_configs_complete_recommends_status_and_build(tmp_path):
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+    _write_complete_manifest(tmp_path / "out")
+
+    statuses, _ = describe_configs(tmp_path)
+
+    assert [c.subcommand for c in statuses[0].commands] == ["status", "build"]
+
+
+def test_describe_configs_matches_print_overview_output(tmp_path):
+    # Same data, two renderers -- the whole point of the refactor. If these
+    # two ever disagree, the picker and the plain-text fallback would show
+    # different things for the same directory.
+    _write_site_yaml(tmp_path / "site.yaml", "https://example.com/", tmp_path / "out")
+    _write_complete_manifest(tmp_path / "out")
+    (tmp_path / "out" / "site").mkdir(parents=True)
+
+    statuses, _ = describe_configs(tmp_path)
+    lines = _run_overview(tmp_path)
+    text = "\n".join(lines)
+
+    for line in statuses[0].status_lines:
+        assert line in text
+    for cmd in statuses[0].commands:
+        assert f"wpfreeze {cmd.subcommand}" in text
+        if cmd.argv_extra:
+            assert " ".join(cmd.argv_extra) in text
 
 
 # ---------------------------------------------------------------------------
