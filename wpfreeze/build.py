@@ -39,7 +39,14 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from bs4 import BeautifulSoup
 
 from wpfreeze.dedupe import DedupeStats, InlineCssIndex, extract_shared_css
-from wpfreeze.extract import decode_static_bundle
+from wpfreeze.extract import (
+    URL_SHAPED_PATTERNS,
+    decode_static_bundle,
+    is_bare_asset_directory,
+    is_implausibly_long,
+    is_url_shaped,
+    is_wp_admin_infrastructure,
+)
 from wpfreeze.manifest import FLAG_ATTACHMENT_PAGE, Manifest, ManifestRecord, Status
 from wpfreeze.normalize import NormalizeStats, apply_normalizations
 from wpfreeze.policy import Policy, PolicyStats, apply_policy
@@ -55,6 +62,28 @@ _FETCHED_STATUSES = frozenset({Status.FETCHED.value, Status.FETCHED_WAYBACK.valu
 
 # Values that are not references to fetchable resources at all.
 _SKIP_PREFIXES = ("data:", "mailto:", "tel:", "javascript:", "sms:", "about:", "#")
+
+
+def _is_unlikely_rewrite_target(url: str) -> bool:
+    """build.py's own version of extract.py's is_unlikely_real_url, minus
+    its blanket trailing-slash exclusion (is_bare_asset_directory instead
+    of is_bare_asset_directory's stricter sibling, _is_bare_directory_reference).
+
+    Extraction excludes every trailing-slash URL because verifying one
+    means a live fetch, or a Wayback lookup, that might fail expensively --
+    worth avoiding even for the rare genuine directory-index page it
+    misses. This rewriter instead checks a candidate against the manifest
+    lookup it already built in memory, which costs nothing to try and
+    fail, so there's no reason to also exclude trailing-slash page
+    permalinks here -- and excluding them would matter far more: that's
+    the shape almost all of a WordPress site's own permalinks take, and of
+    schema.org JSON-LD's own "@id"/"url" fields quoting them (see
+    is_bare_asset_directory's docstring). Measured on a real capture: this
+    version fixes ~3,300 additional references (mostly JSON-LD
+    self-referential page URLs) with zero new noise in unresolved_samples
+    versus reusing is_unlikely_real_url as-is.
+    """
+    return is_implausibly_long(url) or is_wp_admin_infrastructure(url) or is_bare_asset_directory(url)
 
 # The same attribute surface extract.py discovers over, in editable form.
 _URL_ATTRS: dict[str, tuple[str, ...]] = {
@@ -511,6 +540,73 @@ class LinkRewriter:
 
         return _CSS_URL_RE.sub(substitute, text)
 
+    def _rewrite_json_urls(self, obj, page_url: str, page_output: str, context: str):
+        """Recursively rewrite resolvable URL leaf strings inside a parsed
+        JSON structure (a JSON-LD <script>, or a data-* attribute holding
+        JSON), returning a new structure -- mirrors extract.py's
+        walk_json_for_urls, but substitutes instead of merely collecting.
+
+        Only a leaf string that is url-shaped *in its entirety* is a
+        candidate, same restriction extraction applies: a longer string
+        that merely contains a URL somewhere inside it (a JSON-LD
+        "description" field quoting an escaped `<a href>`, say) is content,
+        not a link, and is left untouched -- see rewrite_url_shaped_strings
+        below for the different, substring-scanning case that handles
+        script/data-* text which isn't valid JSON on its own."""
+        if isinstance(obj, str):
+            if is_url_shaped(obj) and not _is_unlikely_rewrite_target(obj):
+                replacement = self.resolve(obj, page_url, page_output, context)
+                return replacement if replacement is not None else obj
+            return obj
+        if isinstance(obj, dict):
+            return {k: self._rewrite_json_urls(v, page_url, page_output, context) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self._rewrite_json_urls(v, page_url, page_output, context) for v in obj]
+        return obj
+
+    def rewrite_url_shaped_strings(self, text: str, page_url: str, page_output: str, context: str) -> str:
+        """Rewrite resolvable URL-shaped substrings inside `text`, which is
+        not (or not entirely) valid JSON on its own -- a plain <script>
+        body (Divi/Elementor's inline JS config objects), or a data-*
+        attribute value extract.py had to regex-scan rather than parse.
+
+        Uses extract.py's own URL_SHAPED_PATTERNS -- the identical pattern
+        set extraction used to decide what to fetch, so the rewriter never
+        "finds" a reference extraction didn't, or vice versa (see
+        extract.py's is_url_shaped docstring) -- filtered through this
+        module's own _is_unlikely_rewrite_target rather than extraction's
+        is_unlikely_real_url (see that function's docstring for why).
+        Matches are
+        collected from all three patterns up front and applied in one
+        left-to-right pass with overlaps dropped, rather than running each
+        pattern's own .sub() in sequence: a rewritten replacement can
+        itself look url-shaped to a *later* pattern (e.g. a relative
+        .../assets/foo.jpg the first pattern just produced matching the
+        asset-extension pattern), and re-resolving already-rewritten text
+        wastes work and can pollute the unresolved-reference count.
+        """
+        text = text.replace("\\/", "/")
+        matches = sorted(
+            (m for pattern in URL_SHAPED_PATTERNS for m in pattern.finditer(text)),
+            key=lambda m: m.start(),
+        )
+        out = []
+        cursor = 0
+        for match in matches:
+            if match.start() < cursor:
+                continue  # overlaps a match already accepted
+            url = match.group(0)
+            if _is_unlikely_rewrite_target(url):
+                continue
+            replacement = self.resolve(url, page_url, page_output, context)
+            if replacement is None:
+                continue
+            out.append(text[cursor : match.start()])
+            out.append(replacement)
+            cursor = match.end()
+        out.append(text[cursor:])
+        return "".join(out)
+
     def rewrite_html(self, html: str, page_url: str, page_output: str) -> str:
         soup = BeautifulSoup(html, "html5lib")
         self.rewrite_soup(soup, page_url, page_output)
@@ -542,6 +638,47 @@ class LinkRewriter:
         for tag in soup.find_all("style"):
             if tag.string:
                 tag.string = self.rewrite_css(tag.string, page_url, page_output)
+
+        # Structured data and inline builder config: URLs embedded as JSON
+        # (a JSON-LD <script>, or -- Divi's data-et-multi-view -- a data-*
+        # attribute's JSON blob) or as plain JS text (an untyped <script>'s
+        # object-literal config, e.g. Divi/Elementor's ajaxurl/images_uri
+        # vars) never touch _URL_ATTRS above, since they aren't attribute
+        # values at all -- they're text/JSON extract.py already scans for
+        # discovery (see its script/data-* handling), so leaving them
+        # unrewritten here means the built page keeps working links to a
+        # site that no longer exists once the original is gone, even
+        # though the rewriter already has everything it needs to fix them.
+        for tag in soup.find_all("script"):
+            script_text = tag.string or ""
+            if not script_text:
+                continue
+            script_type = (tag.get("type") or "").lower()
+            data = None
+            if not script_type or script_type in ("application/json", "application/ld+json"):
+                try:
+                    data = json.loads(script_text)
+                except (ValueError, TypeError):
+                    data = None
+            if data is not None:
+                rewritten = self._rewrite_json_urls(data, page_url, page_output, "script:json")
+                tag.string = json.dumps(rewritten, separators=(",", ":"))
+            else:
+                tag.string = self.rewrite_url_shaped_strings(script_text, page_url, page_output, "script:regex")
+
+        for tag in soup.find_all(True):
+            for attr_name, attr_value in list(tag.attrs.items()):
+                if not attr_name.startswith("data-") or not isinstance(attr_value, str) or not attr_value:
+                    continue
+                context = f"{tag.name}[{attr_name}]"
+                if "srcset" in attr_name.lower():
+                    tag[attr_name] = self.rewrite_srcset(attr_value, page_url, page_output)
+                elif is_url_shaped(attr_value) and not _is_unlikely_rewrite_target(attr_value):
+                    replacement = self.resolve(attr_value.strip(), page_url, page_output, context)
+                    if replacement:
+                        tag[attr_name] = replacement
+                else:
+                    tag[attr_name] = self.rewrite_url_shaped_strings(attr_value, page_url, page_output, context)
 
 
 def _bare_host(netloc: str) -> str:

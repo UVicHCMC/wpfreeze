@@ -46,7 +46,7 @@ _ASSET_EXT_RE = re.compile(
     r"(?:\?[^\s\"'<>\\*{}]*)?",
     re.IGNORECASE,
 )
-_URL_SHAPED_PATTERNS = (_ABSOLUTE_OR_PROTOCOL_RELATIVE_RE, _WP_PATH_RE, _ASSET_EXT_RE)
+URL_SHAPED_PATTERNS = (_ABSOLUTE_OR_PROTOCOL_RELATIVE_RE, _WP_PATH_RE, _ASSET_EXT_RE)
 
 _CSS_URL_RE = re.compile(r"url\(\s*(['\"]?)([^'\")]+)\1\s*\)", re.IGNORECASE)
 _CSS_IMPORT_PLAIN_RE = re.compile(r"""@import\s+["']([^"']+)["']""", re.IGNORECASE)
@@ -103,9 +103,19 @@ class ExtractedLink:
     context: str  # e.g. "a[href]", "img[srcset]", "script:json" -- for debugging/tests
 
 
-def _is_url_shaped(value: str) -> bool:
+def is_url_shaped(value: str) -> bool:
     """True if `value`, taken as a whole, looks like a URL (as opposed to
-    a URL merely appearing somewhere inside a larger string)."""
+    a URL merely appearing somewhere inside a larger string).
+
+    Public (no leading underscore), along with is_unlikely_real_url,
+    find_url_shaped_strings, and URL_SHAPED_PATTERNS below: build.py's
+    LinkRewriter reuses these exact same heuristics to rewrite the JSON-LD/
+    inline-script/data-* URLs this module discovers, rather than
+    reimplementing them -- see build.py's own comment on SiteProfile.in_scope
+    for why divergence here is a real bug, not a style nitpick: whatever this
+    module decided was a URL is exactly what got fetched during acquire, so
+    the rewriter must recognize the identical set or silently leave some of
+    them pointing at the original site forever."""
     value = value.strip()
     return value.startswith(("http://", "https://", "//", "/"))
 
@@ -140,11 +150,39 @@ def _is_bare_directory_reference(url: str) -> bool:
     must be kept: measured over two real captures, 1,739 extension-less
     URLs outside those trees fetched successfully, while every one inside
     them failed (3 of 3, all 403).
+
+    The blanket trailing-slash rule above (any URL ending in "/") is
+    deliberately broader than the asset-tree check below it -- see
+    is_bare_asset_directory for the narrower version build.py's rewriter
+    uses instead, and why that split exists.
     """
     url = url.rstrip()
     if url.endswith("/"):
         return True
-    path = urlsplit(url).path
+    return is_bare_asset_directory(url)
+
+
+def is_bare_asset_directory(url: str) -> bool:
+    """True for a wp-content/wp-includes URL with no filename, regardless
+    of trailing slash -- the narrower half of _is_bare_directory_reference,
+    split out for build.py's LinkRewriter.
+
+    Extraction excludes *every* trailing-slash URL (see
+    _is_bare_directory_reference) because verifying one means a live fetch,
+    or a Wayback lookup, that might fail expensively -- a cost worth
+    avoiding even for the rare genuine directory-index page it misses.
+    build.py's rewriter faces a different tradeoff: it verifies a candidate
+    against the manifest lookup it already built in memory, which costs
+    nothing to try and fail. Reusing the blanket trailing-slash rule there
+    would silently leave every real, trailing-slash page permalink inside
+    JSON-LD/inline-script text unrewritten -- exactly the shape almost all
+    of a WordPress site's own permalinks take, and of schema.org JSON-LD's
+    own "@id"/"url" fields quoting them. This narrower check keeps
+    excluding what's actually never a real resource either way (Divi's
+    images_uri, with or without a trailing slash) without also excluding
+    every genuine page URL a script or JSON-LD block happens to quote.
+    """
+    path = urlsplit(url.rstrip()).path
     if not path.startswith(_ASSET_TREE_PREFIXES):
         return False
     return "." not in path.rsplit("/", 1)[-1]
@@ -158,7 +196,7 @@ def _is_bare_directory_reference(url: str) -> bool:
 _MAX_PLAUSIBLE_URL_LENGTH = 4096
 
 
-def _is_implausibly_long(url: str) -> bool:
+def is_implausibly_long(url: str) -> bool:
     """True for a "URL" a heuristic scan pulled out of a JS/JSON blob or a
     data-* attribute that is far longer than any real link could be.
 
@@ -173,10 +211,37 @@ def _is_implausibly_long(url: str) -> bool:
     return len(url) > _MAX_PLAUSIBLE_URL_LENGTH
 
 
-def _is_unlikely_real_url(url: str) -> bool:
+_WP_ADMIN_INFRASTRUCTURE_PREFIXES = ("/wp-admin/", "/wp-login.php", "/xmlrpc.php")
+
+
+def is_wp_admin_infrastructure(url: str) -> bool:
+    """True for WordPress's own admin/login/XML-RPC endpoints -- never real
+    front-end content on any WordPress site, and (unlike the wp-content/
+    wp-includes asset trees) not caught by _is_bare_directory_reference's
+    extension check, since admin-ajax.php has a real filename+extension.
+
+    admin-ajax.php specifically is close to universal: any plugin doing
+    client-side AJAX (Divi's builder chrome among them) embeds its own
+    absolute URL in inline JS/JSON config, so without this exclusion a
+    heuristic scan finds the identical "broken reference" on every single
+    page of the site. Measured on a real capture: 528 of 563 references a
+    first version of build.py's JSON/script rewriting newly surfaced
+    (93.8%) were this one URL, once per page -- real signal (a handful of
+    genuinely broken image/page references) buried under noise from a URL
+    that was never going to resolve on any static archive, of any
+    WordPress site, regardless of what this one happens to link to.
+    """
+    return urlsplit(url).path.startswith(_WP_ADMIN_INFRASTRUCTURE_PREFIXES)
+
+
+def is_unlikely_real_url(url: str) -> bool:
     """Combines the structural checks a heuristic-scan result must pass to
     be treated as a real, fetchable resource rather than a false positive."""
-    return _is_bare_directory_reference(url) or _is_implausibly_long(url)
+    return (
+        _is_bare_directory_reference(url)
+        or is_implausibly_long(url)
+        or is_wp_admin_infrastructure(url)
+    )
 
 
 _STATIC_CONCAT_PATH = "/_static/"
@@ -243,7 +308,7 @@ def _as_links(resolved: str, kind: str, context: str) -> list[ExtractedLink]:
     return [ExtractedLink(c, kind, f"{context}->static-bundle") for c in components]
 
 
-def _find_url_shaped_strings(text: str) -> list[str]:
+def find_url_shaped_strings(text: str) -> list[str]:
     """Best-effort URL scan over text that isn't valid JSON on its own
     (a non-JSON <script> body, or a data-* attribute holding a JS object
     literal -- Elementor's inline config is the common source of both).
@@ -260,15 +325,15 @@ def _find_url_shaped_strings(text: str) -> list[str]:
     """
     text = text.replace("\\/", "/")
     found: list[str] = []
-    for pattern in _URL_SHAPED_PATTERNS:
+    for pattern in URL_SHAPED_PATTERNS:
         found.extend(m.group(0) for m in pattern.finditer(text))
-    return [url for url in found if not _is_unlikely_real_url(url)]
+    return [url for url in found if not is_unlikely_real_url(url)]
 
 
 def _walk_json_for_urls(obj) -> list[str]:
     urls: list[str] = []
     if isinstance(obj, str):
-        if _is_url_shaped(obj) and not _is_unlikely_real_url(obj):
+        if is_url_shaped(obj) and not is_unlikely_real_url(obj):
             urls.append(obj)
     elif isinstance(obj, dict):
         for value in obj.values():
@@ -388,7 +453,7 @@ def extract_from_html(html: str, base_url: str) -> list[ExtractedLink]:
                     for url in _walk_json_for_urls(data):
                         add(url, RENDER, "script:json")
             if not handled_as_json and script_text:
-                for url in _find_url_shaped_strings(script_text):
+                for url in find_url_shaped_strings(script_text):
                     add(url, RENDER, "script:regex")
 
         # data-* attributes: URL-shaped values only (this is where gallery
@@ -405,10 +470,10 @@ def extract_from_html(html: str, base_url: str) -> list[ExtractedLink]:
             if "srcset" in attr_name.lower():
                 for url in _parse_srcset(attr_value):
                     add(url, RENDER, f"{name}[{attr_name}]")
-            elif _is_url_shaped(attr_value) and not _is_unlikely_real_url(attr_value):
+            elif is_url_shaped(attr_value) and not is_unlikely_real_url(attr_value):
                 add(attr_value.strip(), RENDER, f"{name}[{attr_name}]")
             else:
-                for url in _find_url_shaped_strings(attr_value):
+                for url in find_url_shaped_strings(attr_value):
                     add(url, RENDER, f"{name}[{attr_name}]")
 
     return links

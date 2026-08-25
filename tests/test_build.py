@@ -275,6 +275,148 @@ def test_css_url_and_inline_style_are_rewritten():
     assert "wp-content/bg.png" in out
 
 
+# --- JSON-LD / inline-script / data-* rewriting ----------------------------
+# The site's own <a href>/img[src]/etc. are covered above via _URL_ATTRS;
+# these cover URLs embedded in structured data and builder config that
+# never touch an ordinary attribute -- see build.py's rewrite_soup comment
+# for why they were invisible to the rewriter before this existed.
+
+
+def test_json_ld_script_urls_are_rewritten_in_place():
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/about/", "/about.html")
+    _fetched(manifest, f"{BASE}/team/", "/team.html")
+    rewriter, stats = _rewriter(manifest)
+
+    html = (
+        '<script type="application/ld+json">'
+        '{"@context":"https:\\/\\/schema.org","@graph":['
+        '{"@type":"WebPage","@id":"https:\\/\\/example.com\\/about\\/","url":"https:\\/\\/example.com\\/about\\/"},'
+        '{"@type":"ListItem","name":"Team","item":"https:\\/\\/example.com\\/team\\/"}'
+        "]}"
+        "</script>"
+    )
+    out = rewriter.rewrite_html(html, f"{BASE}/about/", "/about.html")
+
+    assert '"item":"team.html"' in out
+    assert '"@id":"about.html"' in out and '"url":"about.html"' in out
+    assert "schema.org" in out  # external, left alone
+    assert stats.rewritten >= 2
+
+
+def test_json_ld_self_reference_with_fragment_keeps_the_fragment():
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/", "/index.html")
+    rewriter, _ = _rewriter(manifest)
+
+    html = '<script type="application/ld+json">{"@id":"https:\\/\\/example.com\\/#website"}</script>'
+    out = rewriter.rewrite_html(html, f"{BASE}/", "/index.html")
+
+    assert '"@id":"index.html#website"' in out
+
+
+def test_json_ld_description_text_is_left_untouched():
+    """A JSON leaf string is a rewrite candidate only when the *entire*
+    string is url-shaped -- a longer description that merely quotes a URL
+    inside it is content, not a link, and must survive byte for byte."""
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/", "/index.html")
+    rewriter, _ = _rewriter(manifest)
+
+    description = 'See <a href=\\"https:\\/\\/example.com\\/about\\/\\">about</a> for more.'
+    html = f'<script type="application/ld+json">{{"description":"{description}"}}</script>'
+    out = rewriter.rewrite_html(html, f"{BASE}/", "/index.html")
+
+    assert "example.com" in out  # untouched
+
+
+def test_plain_script_object_literal_urls_are_rewritten_via_regex_fallback():
+    """A script with no type="application/json" (an ordinary <script> full
+    of JS statements) isn't valid JSON as a whole, so this falls back to
+    substring scanning -- Divi/Elementor's inline builder config is the
+    real-world shape."""
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/wp-content/themes/x/logo.png", "/wp-content/themes/x/logo.png", content_type="image/png")
+    rewriter, _ = _rewriter(manifest)
+
+    html = (
+        "<script>var cfg={\"logoUrl\":\"https://example.com/wp-content/themes/x/logo.png\","
+        '"ajaxurl":"https://example.com/wp-admin/admin-ajax.php"};</script>'
+    )
+    out = rewriter.rewrite_html(html, f"{BASE}/", "/index.html")
+
+    assert "wp-content/themes/x/logo.png" in out
+    assert "example.com/wp-content/themes/x/logo.png" not in out
+    # wp-admin/admin-ajax.php can never resolve on a static archive --
+    # left absolute rather than counted as a broken reference.
+    assert "https://example.com/wp-admin/admin-ajax.php" in out
+
+
+def test_divi_style_config_base_paths_are_left_alone_not_counted_broken():
+    """Divi's images_uri/builder_images_uri/tinymce_uri are asset base
+    paths with no filename -- never a real fetchable resource -- so they
+    must be left untouched and must NOT inflate stats.unresolved (this is
+    exactly the noise a real capture measured: 528 of 563 "broken
+    references" a first version of this feature surfaced were admin-ajax.php
+    alone, repeated once per page)."""
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/", "/index.html")
+    rewriter, stats = _rewriter(manifest)
+
+    html = (
+        '<script>var et_pb_custom={"ajaxurl":"https://example.com/wp-admin/admin-ajax.php",'
+        '"images_uri":"https://example.com/wp-content/themes/Divi/images"};</script>'
+    )
+    rewriter.rewrite_html(html, f"{BASE}/", "/index.html")
+
+    assert stats.unresolved == 0
+    assert stats.left_absolute == 0  # same host, but never attempted at all
+
+
+def test_data_attribute_whole_value_url_is_rewritten():
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/", "/index.html")
+    _fetched(manifest, f"{BASE}/about/", "/about.html")
+    rewriter, _ = _rewriter(manifest)
+
+    out = rewriter.rewrite_html(
+        f'<div data-target-url="{BASE}/about/">x</div>', f"{BASE}/", "/index.html"
+    )
+    assert 'data-target-url="about.html"' in out
+
+
+def test_data_attribute_json_blob_urls_are_rewritten():
+    """Mirrors Divi's data-et-multi-view attribute: a data-* attribute
+    whose value is itself a JSON blob, not a bare URL."""
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/", "/index.html")
+    _fetched(manifest, f"{BASE}/about/", "/about.html")
+    rewriter, _ = _rewriter(manifest)
+
+    html = (
+        '<div data-et-multi-view=\'{"desktop":{"link_option_url":"https://example.com/about/"}}\'>x</div>'
+    )
+    out = rewriter.rewrite_html(html, f"{BASE}/", "/index.html")
+
+    assert "about.html" in out
+    assert "example.com/about" not in out
+
+
+def test_data_attribute_srcset_shaped_value_uses_srcset_rewriting():
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/", "/index.html")
+    _fetched(
+        manifest, f"{BASE}/wp-content/uploads/p-480.jpg", "/wp-content/uploads/p-480.jpg", content_type="image/jpeg"
+    )
+    rewriter, _ = _rewriter(manifest)
+
+    html = f'<img data-lazy-srcset="{BASE}/wp-content/uploads/p-480.jpg 480w">'
+    out = rewriter.rewrite_html(html, f"{BASE}/", "/index.html")
+
+    assert "wp-content/uploads/p-480.jpg 480w" in out
+    assert "example.com" not in out
+
+
 # --- end to end -----------------------------------------------------------
 
 

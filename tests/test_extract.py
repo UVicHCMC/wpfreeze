@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from wpfreeze.extract import HYPERLINK, RENDER, extract_from_css, extract_from_html
+from wpfreeze.extract import (
+    HYPERLINK,
+    RENDER,
+    extract_from_css,
+    extract_from_html,
+    is_bare_asset_directory,
+    is_unlikely_real_url,
+    is_wp_admin_infrastructure,
+)
 
 BASE = "https://example.com/blog/post/"
 
@@ -454,3 +462,47 @@ def test_extensionless_asset_tree_path_in_a_real_href_is_unaffected():
     genuine href/src attribute is an explicit reference and always kept."""
     links = extract_from_html('<a href="/wp-content/themes/Divi/images">x</a>', BASE)
     assert [l.url for l in links] == ["https://example.com/wp-content/themes/Divi/images"]
+
+
+# --- is_bare_asset_directory / is_wp_admin_infrastructure ------------------
+# (build.py's LinkRewriter uses these directly -- see its own tests for the
+# rewriting behaviour; these cover just the two predicates.)
+
+
+def test_is_bare_asset_directory_matches_asset_tree_regardless_of_slash():
+    assert is_bare_asset_directory("https://example.com/wp-content/themes/Divi/images")
+    assert is_bare_asset_directory("https://example.com/wp-content/themes/Divi/images/")
+    assert is_bare_asset_directory("https://example.com/wp-includes/js/")
+
+
+def test_is_bare_asset_directory_keeps_real_page_permalinks():
+    """Unlike _is_bare_directory_reference (extraction's own, stricter
+    version), a trailing slash outside the asset trees is an ordinary
+    permalink, not excluded here -- see the docstring for why build.py's
+    rewriter needs the narrower check."""
+    assert not is_bare_asset_directory("https://example.com/teacher-resources/")
+    assert not is_bare_asset_directory("https://example.com/")
+
+
+def test_is_bare_asset_directory_keeps_real_assets_with_a_filename():
+    assert not is_bare_asset_directory("https://example.com/wp-content/uploads/photo.jpg")
+
+
+def test_is_wp_admin_infrastructure_matches_admin_ajax_and_login():
+    assert is_wp_admin_infrastructure("https://example.com/wp-admin/admin-ajax.php")
+    assert is_wp_admin_infrastructure("https://example.com/wp-login.php")
+    assert is_wp_admin_infrastructure("https://example.com/xmlrpc.php")
+
+
+def test_is_wp_admin_infrastructure_leaves_ordinary_content_alone():
+    assert not is_wp_admin_infrastructure("https://example.com/wp-content/uploads/photo.jpg")
+    assert not is_wp_admin_infrastructure("https://example.com/about/")
+
+
+def test_is_unlikely_real_url_still_excludes_wp_admin():
+    """is_unlikely_real_url (extraction's own combined check, used to
+    decide what to fetch) must keep excluding wp-admin/login/xmlrpc --
+    only build.py's narrower _is_unlikely_rewrite_target relaxes the
+    trailing-slash rule, and it composes is_wp_admin_infrastructure back
+    in explicitly rather than inheriting it implicitly."""
+    assert is_unlikely_real_url("https://example.com/wp-admin/admin-ajax.php")
