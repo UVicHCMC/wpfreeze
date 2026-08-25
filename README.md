@@ -139,11 +139,12 @@ site before committing) and then the real acquisition, right there in the
 same session. The file it writes is completely ordinary afterward:
 
 ```bash
-wpfreeze acquire --config www-example-com.yaml --resume
-wpfreeze report  --config www-example-com.yaml
-wpfreeze status  --config www-example-com.yaml
+wpfreeze acquire www-example-com --resume
+wpfreeze report  www-example-com
+wpfreeze status  www-example-com
 ```
 
+(`--config www-example-com.yaml` still works too — see "Projects" below.)
 no wizard involved. Everything the wizard doesn't ask about (`exclusions`,
 `extra_hosts`, `user_agent`) is left at sensible defaults — edit the YAML
 directly if a site needs something different there. See
@@ -172,7 +173,7 @@ site..." entry. Move with the arrow keys or press a row's number; Enter on
 a config expands it in place to show its current status ("Not yet
 acquired.", "Acquired: 519 fetched, 0 pending...", etc.) and the commands
 relevant to that state — each one itself a numbered, selectable row.
-Enter on a command runs it directly, with the right `--config` already
+Enter on a command runs it directly, with the right project name already
 filled in. Esc/Left collapses a config back down; `q` quits without
 running anything. Selecting "Starting a new site..." launches `wizard`
 the same as typing it.
@@ -188,16 +189,16 @@ wpfreeze -- static-archive WordPress sites
 
 Found 2 site configs in this directory:
 
-  landscapes.yaml  (https://site-c.example)
+  landscapes  (https://site-c.example, landscapes.yaml)
     Acquired: 519 fetched, 0 pending, 519 total. Built: yes.
-    wpfreeze status    --config landscapes.yaml
-    wpfreeze build     --config landscapes.yaml   (safe to re-run any time)
-    wpfreeze validate  --config landscapes.yaml
+    wpfreeze status    landscapes
+    wpfreeze build     landscapes   (safe to re-run any time)
+    wpfreeze validate  landscapes
 
-  new-site.yaml  (https://example.org)
+  new-site  (https://example.org, new-site.yaml)
     Not yet acquired.
-    wpfreeze acquire --config new-site.yaml --dry-run
-    wpfreeze acquire --config new-site.yaml
+    wpfreeze acquire new-site --dry-run
+    wpfreeze acquire new-site
 
 Starting a new site, or fixing a config that isn't loading? Run `wpfreeze wizard`
 for a guided walkthrough, or see SETUP.md.
@@ -209,19 +210,23 @@ selected and launched.
 
 ## CLI reference
 
+Every subcommand below takes the project either way: a name (`landscapes`)
+or `--config site.yaml`, never both. See "Projects" below for what a name
+resolves against.
+
 ```
-wpfreeze                                        # no subcommand: interactive picker (plain summary if not a real terminal)
-wpfreeze wizard                                 # guided setup: resume an existing run, or build a new site config
-wpfreeze acquire       --config site.yaml [--resume] [--dry-run]
-wpfreeze build         --config site.yaml [--site-dir DIR] [--no-verify] [--no-todo]
-wpfreeze validate      --config site.yaml [--site-dir DIR] [--no-todo]
-wpfreeze diagnose      --config site.yaml
-wpfreeze report        --config site.yaml [--html-only | --json-only]
-wpfreeze status        --config site.yaml
-wpfreeze rescan        --config site.yaml [--apply] [--profile-from-config]
-wpfreeze upload-script --config site.yaml [--site-dir DIR]
-wpfreeze search-index  --config site.yaml [--site-dir DIR]
-wpfreeze checklinks    --config site.yaml [--site-dir DIR] [--recheck]
+wpfreeze                                # no subcommand: interactive picker (plain summary if not a real terminal)
+wpfreeze wizard                         # guided setup: resume an existing run, or build a new site config
+wpfreeze acquire       <project> [--resume] [--dry-run]
+wpfreeze build         <project> [--site-dir DIR] [--no-verify] [--no-todo]
+wpfreeze validate      <project> [--site-dir DIR] [--no-todo]
+wpfreeze diagnose      <project>
+wpfreeze report        <project> [--html-only | --json-only]
+wpfreeze status        <project>
+wpfreeze rescan        <project> [--apply] [--profile-from-config]
+wpfreeze upload-script <project> [--site-dir DIR]
+wpfreeze search-index  <project> [--site-dir DIR]
+wpfreeze checklinks    <project> [--site-dir DIR] [--recheck]
 ```
 
 - **`wizard`** is the guided setup flow described in "Quickstart" above —
@@ -294,6 +299,30 @@ build summary and verification report say which. `Ctrl-C` prints a short
 message and exits `130` instead of a raw traceback — the manifest is saved
 incrementally during a crawl, so `--resume` can usually pick back up rather
 than starting over.
+
+## Projects
+
+A "project" is just a site config, addressed by a short name instead of
+its file path. `name:` in the YAML sets it explicitly; omit the key
+entirely and it falls back to the config filename's stem (`landscapes.yaml`
+→ `landscapes`) — no migration needed for a config that predates this.
+
+Resolution, when you pass `wpfreeze <command> <project>`: first, does the
+token look like a config path at all (ends in `.yaml`/`.yml`, contains a
+path separator, or names a real file) — if so it's loaded directly, the
+same as `--config` always has been. Otherwise it's matched case-
+insensitively against every config's `name:` in the current directory,
+then against every config's filename stem. Two configs claiming the same
+name (or one's explicit name colliding with another's filename stem) is an
+error naming both files, not a silent first match.
+
+An unknown project name prints the list of what *is* here and exits `2`:
+
+```
+$ wpfreeze build nope
+There is no project called nope.
+Projects in this directory: site-a, landscapes, site-b
+```
 
 ## What you get
 
@@ -378,7 +407,7 @@ being one click away.
 plain web server or browse straight off disk:
 
 ```bash
-wpfreeze build --config site.yaml
+wpfreeze build site
 ```
 
 It reads `raw/` and `manifest.json` and writes `<output_dir>/site` without
@@ -476,7 +505,7 @@ hand-editable script covering three ways to get a build somewhere it can
 be looked at, one script, one mode per invocation:
 
 ```bash
-wpfreeze upload-script --config site.yaml
+wpfreeze upload-script site
 cd <output_dir>
 ./upload.sh           # staging: site + reports, to upload.remote
 ./upload.sh --local   # local preview: site + reports, under ./preview/, no network
@@ -655,7 +684,7 @@ acting, don't blanket-acknowledge every page the checklist names:
    real content a plugin hid from extraction, looks thin for a different
    reason and is worth fixing at the source instead.
 2. Add its exact output path to `search.acknowledged_thin_pages`, then
-   run `wpfreeze search-index --config site.yaml` — unlike
+   run `wpfreeze search-index site` — unlike
    `exclude_pages`, this doesn't touch markup tagging, so re-indexing
    alone is enough to see it reflected in the console's `thin content`
    line and its `(N acknowledged)` count. The cleanup checklist itself is
@@ -687,7 +716,7 @@ double-clicking `index.html`, this is almost always why.
 
 `wpfreeze build` only verifies *local* references — a link to another
 site is left alone either way, and wpfreeze has no idea whether it's still
-live. `wpfreeze checklinks --config site.yaml` finds those out: it scans
+live. `wpfreeze checklinks site` finds those out: it scans
 the built site for every `<a href>` pointing at another host, checks each
 one, and writes `broken-external-links.md`/`.html`, listing only the
 internal pages that link to something now broken (a page with no dead
@@ -707,8 +736,8 @@ archive is made, not just at build time, so this is how you check again
 weeks or months later without re-running `build`:
 
 ```bash
-wpfreeze checklinks --config site.yaml            # scan + check
-wpfreeze checklinks --config site.yaml --recheck  # check again later, no rescan needed
+wpfreeze checklinks site            # scan + check
+wpfreeze checklinks site --recheck  # check again later, no rescan needed
 ```
 
 Checking uses the same per-host politeness/backoff as `acquire` (see

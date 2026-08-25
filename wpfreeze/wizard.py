@@ -177,7 +177,7 @@ def _describe_manifest(output_dir: Path) -> str:
 
 @dataclass(frozen=True)
 class RecommendedCommand:
-    """One `wpfreeze <subcommand> --config <name> ...` a site owner would
+    """One `wpfreeze <subcommand> <project> ...` a site owner would
     plausibly run next, given a config's current state. `argv_extra` is
     real argv (e.g. `("--resume",)`) appended to the invocation -- both
     `_print_commands` (rendering) and `wpfreeze.picker` (launching) build
@@ -190,8 +190,8 @@ class RecommendedCommand:
     argv_extra: tuple[str, ...] = ()
     note: str = ""
 
-    def argv(self, config_name: str) -> list[str]:
-        return [self.subcommand, "--config", config_name, *self.argv_extra]
+    def argv(self, project_name: str) -> list[str]:
+        return [self.subcommand, project_name, *self.argv_extra]
 
 
 @dataclass(frozen=True)
@@ -247,15 +247,15 @@ def describe_configs(directory: Path = Path(".")) -> tuple[list[ConfigStatus], l
     return statuses, invalid
 
 
-def _print_commands(tell: Callable[[str], None], config_name: str, entries: tuple[RecommendedCommand, ...]) -> None:
-    """Print one `wpfreeze <subcommand> --config <config_name> <argv_extra><note>`
-    line per entry, with subcommand names padded so every line's
-    `--config` column lines up.
+def _print_commands(tell: Callable[[str], None], project_name: str, entries: tuple[RecommendedCommand, ...]) -> None:
+    """Print one `wpfreeze <subcommand> <project_name> <argv_extra><note>`
+    line per entry, with subcommand names padded so every line's project-name
+    column lines up.
     """
     width = max(len(cmd.subcommand) for cmd in entries)
     for cmd in entries:
         extra = f" {' '.join(cmd.argv_extra)}" if cmd.argv_extra else ""
-        tell(f"    wpfreeze {cmd.subcommand:<{width}} --config {config_name}{extra}{cmd.note}")
+        tell(f"    wpfreeze {cmd.subcommand:<{width}} {project_name}{extra}{cmd.note}")
 
 
 def print_overview(directory: Path = Path("."), tell: Callable[[str], None] = print) -> int:
@@ -278,10 +278,10 @@ def print_overview(directory: Path = Path("."), tell: Callable[[str], None] = pr
         tell(f"Found {len(statuses)} site {noun} in this directory:")
         tell("")
         for status in statuses:
-            tell(f"  {status.path.name}  ({status.config.base_url})")
+            tell(f"  {status.config.name}  ({status.config.base_url}, {status.path.name})")
             for line in status.status_lines:
                 tell(f"    {line}")
-            _print_commands(tell, status.path.name, status.commands)
+            _print_commands(tell, status.config.name, status.commands)
             tell("")
 
     if invalid:
@@ -453,12 +453,12 @@ def run_wizard(
         if exit_code == 2:
             tell(
                 f"Acquisition finished (exit code {exit_code}). Run "
-                f"`wpfreeze acquire --config {config_path} --resume` to continue it, or "
+                f"`wpfreeze acquire {config.name} --resume` to continue it, or "
                 f"remove {config.output_dir} first to start fresh."
             )
         else:
             tell(f"Acquisition finished (exit code {exit_code}). See {config.output_dir}/report.html")
         return exit_code
 
-    tell(f"When you're ready: wpfreeze acquire --config {config_path}")
+    tell(f"When you're ready: wpfreeze acquire {config.name}")
     return 0

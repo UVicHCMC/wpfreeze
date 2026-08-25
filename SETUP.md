@@ -44,7 +44,7 @@ Run the real acquisition now? [y/N]:
 It writes a normal site config YAML (the same shape documented in
 `example-site.yaml`) and offers to dry-run and then run the real
 acquisition immediately. The written file is ordinary afterward —
-`wpfreeze acquire --config www-example-com.yaml --resume`,
+`wpfreeze acquire www-example-com --resume`,
 `wpfreeze report`, and `wpfreeze status` all work on it with no wizard
 involved. Exclusions, `extra_hosts`, and `user_agent` are left at their
 shipped defaults; edit the YAML directly if a site needs something
@@ -61,8 +61,11 @@ file requiring no local database setup at all.
 Copy `example-site.yaml`, fill in the values, and run:
 
 ```
-wpfreeze acquire --config your-site.yaml
+wpfreeze acquire your-site
 ```
+
+(or `wpfreeze acquire --config your-site.yaml` if you'd rather address it
+by path than by its `name:`)
 
 See that file's comments for every option, and `CLAUDE-acquire.md` for the
 full spec this tool implements.

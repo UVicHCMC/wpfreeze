@@ -157,7 +157,7 @@ def activate(state: PickerState) -> tuple[PickerState, Launch | None]:
     if isinstance(row, CommandRow):
         status = state.statuses[row.config_index]
         cmd = status.commands[row.command_index]
-        return state, Launch("command", tuple(cmd.argv(status.path.name)))
+        return state, Launch("command", tuple(cmd.argv(status.config.name)))
     if isinstance(row, StartNewSiteRow):
         return state, Launch("wizard")
     return state, None  # StatusLineRow can't be the cursor row; unreachable
@@ -170,14 +170,14 @@ def activate(state: PickerState) -> tuple[PickerState, Launch | None]:
 def _row_text(state: PickerState, row: Row) -> str:
     if isinstance(row, ConfigRow):
         status = state.statuses[row.config_index]
-        return f"{status.path.name}  ({status.config.base_url})"
+        return f"{status.config.name}  ({status.config.base_url}, {status.path.name})"
     if isinstance(row, StatusLineRow):
         return row.text
     if isinstance(row, CommandRow):
         status = state.statuses[row.config_index]
         cmd = status.commands[row.command_index]
         extra = f" {' '.join(cmd.argv_extra)}" if cmd.argv_extra else ""
-        return f"wpfreeze {cmd.subcommand} --config {status.path.name}{extra}{cmd.note}"
+        return f"wpfreeze {cmd.subcommand} {status.config.name}{extra}{cmd.note}"
     return "Starting a new site... (run `wpfreeze wizard`)"
 
 

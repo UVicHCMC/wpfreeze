@@ -516,6 +516,43 @@ def test_main_creates_logs_directory_with_content(tmp_path: Path):
         assert "fetched" in content.lower()
 
 
+def test_main_status_by_project_name_behaves_like_by_config(tmp_path: Path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_yaml(tmp_path / "landscapes.yaml", {"name": "landscapes", "base_url": "https://example.com/", "output_dir": "out"})
+
+    exit_code_by_name = main(["status", "landscapes"])
+    by_name = capsys.readouterr().out
+    exit_code_by_config = main(["status", "--config", "landscapes.yaml"])
+    by_config = capsys.readouterr().out
+
+    assert exit_code_by_name == exit_code_by_config == 0
+    assert by_name == by_config
+
+
+def test_main_project_and_config_together_is_an_error(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _write_yaml(tmp_path / "landscapes.yaml", {"name": "landscapes", "base_url": "https://example.com/", "output_dir": "out"})
+
+    assert main(["status", "landscapes", "--config", "landscapes.yaml"]) == 2
+
+
+def test_main_neither_project_nor_config_is_an_error(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert main(["status"]) == 2
+
+
+def test_main_unknown_project_name_exits_2_with_known_names_listed(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _write_yaml(tmp_path / "landscapes.yaml", {"name": "landscapes", "base_url": "https://example.com/", "output_dir": "out"})
+
+    exit_code = main(["status", "nope"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 2
+    assert "no project called nope" in out
+    assert "landscapes" in out
+
+
 def test_run_status_reports_counts(tmp_path: Path, capsys):
     with FixtureSite() as site:
         config = _config_for(site, tmp_path / "out")

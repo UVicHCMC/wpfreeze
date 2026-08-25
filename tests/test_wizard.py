@@ -200,7 +200,7 @@ def test_run_wizard_reports_full_resume_command_on_manifest_collision(tmp_path, 
 
     monkeypatch.chdir(tmp_path)
 
-    fake_config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
+    fake_config = SiteConfig(name="example-com", base_url="https://example.com/", output_dir=tmp_path / "out")
     monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
     monkeypatch.setattr("wpfreeze.cli.run_acquire", lambda config, resume, dry_run: 2)
 
@@ -221,7 +221,7 @@ def test_run_wizard_reports_full_resume_command_on_manifest_collision(tmp_path, 
     exit_code = run_wizard(ask=ask, tell=messages.append)
 
     assert exit_code == 2
-    assert any(f"wpfreeze acquire --config {config_path} --resume" in m for m in messages)
+    assert any("wpfreeze acquire example-com --resume" in m for m in messages)
 
 
 # ---------------------------------------------------------------------------
@@ -344,8 +344,8 @@ def test_print_overview_not_yet_acquired(tmp_path):
     text = "\n".join(lines)
 
     assert "Not yet acquired." in text
-    assert "wpfreeze acquire --config site.yaml --dry-run" in text
-    assert "wpfreeze acquire --config site.yaml" in text
+    assert "wpfreeze acquire site --dry-run" in text
+    assert "wpfreeze acquire site" in text
     assert "wpfreeze status" not in text
 
 
@@ -356,7 +356,7 @@ def test_print_overview_resumable_run_suggests_resume_only(tmp_path):
     lines = _run_overview(tmp_path)
     text = "\n".join(lines)
 
-    assert "wpfreeze acquire --config site.yaml --resume" in text
+    assert "wpfreeze acquire site --resume" in text
     assert "wpfreeze status" not in text
     assert "wpfreeze build" not in text
 
@@ -369,7 +369,7 @@ def test_print_overview_complete_not_built(tmp_path):
     text = "\n".join(lines)
 
     assert "Built: no." in text
-    assert "wpfreeze status --config site.yaml" in text
+    assert "wpfreeze status site" in text
     assert "wpfreeze build" in text
     assert "wpfreeze validate" not in text
     assert "wpfreeze upload-script" not in text
@@ -388,7 +388,7 @@ def test_print_overview_built_recommends_upload_script_even_with_no_remote_confi
 
     assert "Built: yes." in text
     assert "wpfreeze validate" in text
-    assert "wpfreeze upload-script --config site.yaml" in text
+    assert "wpfreeze upload-script site" in text
 
 
 def test_print_overview_built_with_upload_remote_still_recommends_upload_script(tmp_path):
@@ -409,7 +409,7 @@ def test_print_overview_built_with_upload_remote_still_recommends_upload_script(
     lines = _run_overview(tmp_path)
     text = "\n".join(lines)
 
-    assert "wpfreeze upload-script --config site.yaml" in text
+    assert "wpfreeze upload-script site" in text
 
 
 def test_print_overview_lists_non_conformant_yaml_by_name_only(tmp_path):
@@ -452,14 +452,14 @@ def test_print_overview_never_reads_stdin_and_returns_zero(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_recommended_command_argv_includes_config_and_extra_flags():
+def test_recommended_command_argv_includes_project_and_extra_flags():
     cmd = RecommendedCommand("acquire", ("--resume",))
-    assert cmd.argv("site.yaml") == ["acquire", "--config", "site.yaml", "--resume"]
+    assert cmd.argv("landscapes") == ["acquire", "landscapes", "--resume"]
 
 
 def test_recommended_command_argv_with_no_extra_flags():
     cmd = RecommendedCommand("status")
-    assert cmd.argv("site.yaml") == ["status", "--config", "site.yaml"]
+    assert cmd.argv("landscapes") == ["status", "landscapes"]
 
 
 def test_describe_configs_not_yet_acquired(tmp_path):
@@ -472,9 +472,9 @@ def test_describe_configs_not_yet_acquired(tmp_path):
     status = statuses[0]
     assert status.path.name == "site.yaml"
     assert status.status_lines == ("Not yet acquired.",)
-    assert [c.argv("site.yaml") for c in status.commands] == [
-        ["acquire", "--config", "site.yaml", "--dry-run"],
-        ["acquire", "--config", "site.yaml"],
+    assert [c.argv(status.config.name) for c in status.commands] == [
+        ["acquire", "site", "--dry-run"],
+        ["acquire", "site"],
     ]
 
 
@@ -484,8 +484,8 @@ def test_describe_configs_resumable_run_recommends_resume_only(tmp_path):
 
     statuses, _ = describe_configs(tmp_path)
 
-    assert [c.argv("site.yaml") for c in statuses[0].commands] == [
-        ["acquire", "--config", "site.yaml", "--resume"],
+    assert [c.argv(statuses[0].config.name) for c in statuses[0].commands] == [
+        ["acquire", "site", "--resume"],
     ]
 
 

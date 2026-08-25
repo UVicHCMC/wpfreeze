@@ -45,6 +45,7 @@ from wpfreeze.linkcheck import check_links, extract_external_links, load_links, 
 from wpfreeze.manifest import Manifest, Status, utc_now
 from wpfreeze.outputs import compute_output_paths, generate_redirects_htaccess
 from wpfreeze.policy import Policy
+from wpfreeze.projects import AmbiguousProject, ProjectNotFound, resolve_project, validate_name
 from wpfreeze.report import write_report_html, write_report_json
 from wpfreeze.rescan import format_rescan_summary, rescan
 from wpfreeze.runlock import RunLock, RunLockHeld
@@ -215,8 +216,6 @@ def _parse_date(value) -> date:
 
 def load_config(path: Path) -> SiteConfig:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-
-    from wpfreeze.projects import validate_name  # deferred: avoid a module-level cycle
 
     # An explicit `name:` (even an invalid one) is validated as given -- an
     # explicit empty string is a mistake to report, not something to
@@ -960,6 +959,21 @@ def run_checklinks(config: SiteConfig, site_dir: Path | None, recheck: bool) -> 
     return 1 if broken else 0
 
 
+def _add_project_arg(p: argparse.ArgumentParser) -> None:
+    """Every project-addressed subcommand takes the project either as a
+    positional name or via --config -- never both, never neither (enforced
+    once, in _dispatch, not per-subcommand)."""
+    p.add_argument(
+        "project",
+        nargs="?",
+        default=None,
+        help="project name (the `name:` in its config, or the config's filename without .yaml)",
+    )
+    p.add_argument(
+        "--config", type=Path, default=None, help="path to a site config; alternative to naming a project"
+    )
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wpfreeze")
     # Not required: no subcommand at all prints the non-interactive overview
@@ -972,23 +986,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     acquire_p = subparsers.add_parser("acquire", help="run (or resume) the full acquisition pipeline")
-    acquire_p.add_argument("--config", required=True, type=Path)
+    _add_project_arg(acquire_p)
     acquire_p.add_argument("--resume", action="store_true")
     acquire_p.add_argument("--dry-run", action="store_true")
 
     report_p = subparsers.add_parser("report", help="regenerate reports from the existing manifest")
-    report_p.add_argument("--config", required=True, type=Path)
+    _add_project_arg(report_p)
     format_group = report_p.add_mutually_exclusive_group()
     format_group.add_argument("--html-only", action="store_true")
     format_group.add_argument("--json-only", action="store_true")
 
     status_p = subparsers.add_parser("status", help="print a one-screen manifest summary")
-    status_p.add_argument("--config", required=True, type=Path)
+    _add_project_arg(status_p)
 
     build_p = subparsers.add_parser(
         "build", help="rewrite the capture into a servable static site"
     )
-    build_p.add_argument("--config", required=True, type=Path)
+    _add_project_arg(build_p)
     build_p.add_argument(
         "--site-dir", type=Path, default=None, help="output directory (default: <output_dir>/site)"
     )
@@ -1007,12 +1021,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     diagnose_p = subparsers.add_parser(
         "diagnose", help="write a compact debugging summary (diagnostics.json) from the existing manifest"
     )
-    diagnose_p.add_argument("--config", required=True, type=Path)
+    _add_project_arg(diagnose_p)
 
     validate_p = subparsers.add_parser(
         "validate", help="check the built site's HTML/CSS with the Nu Html Checker (VNU)"
     )
-    validate_p.add_argument("--config", required=True, type=Path)
+    _add_project_arg(validate_p)
     validate_p.add_argument(
         "--site-dir", type=Path, default=None, help="site directory to check (default: <output_dir>/site)"
     )
@@ -1027,7 +1041,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "rescan",
         help="re-parse stored raw/ bytes with current extraction code; queue new references as pending",
     )
-    rescan_p.add_argument("--config", required=True, type=Path)
+    _add_project_arg(rescan_p)
     rescan_p.add_argument(
         "--apply", action="store_true", help="write queued records to manifest.json (default: report only)"
     )
@@ -1043,7 +1057,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="write upload.sh: staging sync by default, --local for a no-network preview folder, "
         "--prod for a reports-free production sync -- writes the script only, never runs it",
     )
-    upload_script_p.add_argument("--config", required=True, type=Path)
+    _add_project_arg(upload_script_p)
     upload_script_p.add_argument(
         "--site-dir", type=Path, default=None, help="site directory to reference (default: <output_dir>/site)"
     )
@@ -1054,7 +1068,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "enabled: true`) -- `build` already does this automatically; use this to re-index after "
         "a selector change without a full rebuild",
     )
-    search_index_p.add_argument("--config", required=True, type=Path)
+    _add_project_arg(search_index_p)
     search_index_p.add_argument(
         "--site-dir", type=Path, default=None, help="site directory to reference (default: <output_dir>/site)"
     )
@@ -1064,7 +1078,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="find external links on the built site and check whether they're still live, writing "
         "broken-external-links.md/.html grouped by the page each one was found on",
     )
-    checklinks_p.add_argument("--config", required=True, type=Path)
+    _add_project_arg(checklinks_p)
     checklinks_p.add_argument(
         "--site-dir", type=Path, default=None, help="site directory to scan (default: <output_dir>/site)"
     )
@@ -1165,13 +1179,29 @@ def _dispatch(argv: list[str] | None) -> int:
 
         return run_wizard()
 
+    # Every other subcommand carries both `project` (positional) and
+    # `--config`, added together by _add_project_arg -- resolved once, here,
+    # rather than in each run_* function.
+    if args.project and args.config:
+        print("Pass a project name or --config, not both.")
+        return 2
+    if not args.project and not args.config:
+        print("Pass a project name (or --config <path>).")
+        return 2
+
     try:
-        config = load_config(args.config)
+        if args.config:
+            config = load_config(args.config)
+        else:
+            config = resolve_project(args.project).config
     except ConfigError as exc:
         print(str(exc))
         return 2
+    except (ProjectNotFound, AmbiguousProject) as exc:
+        print(str(exc))
+        return 2
     except (OSError, yaml.YAMLError, KeyError) as exc:
-        print(f"Failed to load config {args.config}: {exc}")
+        print(f"Failed to load config: {exc}")
         return 2
 
     _configure_logging(config.output_dir)

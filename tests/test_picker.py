@@ -26,15 +26,16 @@ from wpfreeze.wizard import ConfigStatus, RecommendedCommand
 
 
 class _FakeConfig:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, name: str):
         self.base_url = base_url
+        self.name = name
 
 
 def _status(name: str, *, status_line: str = "Not yet acquired.", commands=None) -> ConfigStatus:
     commands = commands if commands is not None else [RecommendedCommand("acquire", ("--dry-run",))]
     return ConfigStatus(
         path=Path(name),
-        config=_FakeConfig(f"https://{name}.example.com/"),
+        config=_FakeConfig(f"https://{name}.example.com/", name),
         status_lines=(status_line,),
         commands=tuple(commands),
     )
@@ -173,7 +174,7 @@ def test_activate_command_row_returns_a_launch_with_full_argv():
         cursor=1,
     )
     state, launch = activate(state)
-    assert launch == Launch("command", ("acquire", "--config", "site.yaml", "--resume"))
+    assert launch == Launch("command", ("acquire", "site.yaml", "--resume"))
 
 
 def test_activate_start_new_site_row_returns_a_wizard_launch():
