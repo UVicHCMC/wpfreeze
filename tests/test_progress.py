@@ -74,6 +74,33 @@ def test_context_manager_restores_console_handler_level():
         package_logger.handlers.remove(console_handler)
 
 
+def test_suspend_clears_line_and_restores_logging_then_resumes():
+    package_logger = logging.getLogger("wpfreeze")
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    package_logger.handlers.append(console_handler)
+    try:
+        stream = _FakeTTYStream(isatty=True)
+        progress = Progress("Building", stream=stream)
+        with progress:
+            progress.tick()
+            with progress.suspend():
+                # Logging is back to normal for the duration of the prompt.
+                assert console_handler.level == logging.INFO
+            # And re-suspended (and redrawn) once the prompt is done.
+            assert console_handler.level == logging.WARNING
+    finally:
+        package_logger.handlers.remove(console_handler)
+
+
+def test_suspend_is_a_noop_when_not_active():
+    stream = _FakeTTYStream(isatty=False)  # inactive: not a tty
+    progress = Progress("Building", stream=stream)
+    with progress:
+        with progress.suspend():
+            pass  # must not raise
+
+
 def test_unicode_encode_error_disables_display_without_propagating():
     stream = _RaisingStream()
     progress = Progress("Acquiring example.com", stream=stream)

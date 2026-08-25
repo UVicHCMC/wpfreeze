@@ -12,6 +12,7 @@ import shutil
 import sys
 import time
 from collections import Counter
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ from wpfreeze.analyse import (
     flag_xml_unresolved,
 )
 from wpfreeze.build import (
+    BuildStats,
     build_site,
     format_build_summary,
     format_verify_summary,
@@ -205,6 +207,15 @@ class SearchSettings:
     # precedent as exclude_pages: an entry that no longer matches a real
     # thin page is simply unused, not an error.
     acknowledged_thin_pages: tuple[str, ...] = ()
+    # Suppresses run_build's pushback when search is enabled but the
+    # capture has no search form to wire up (apply_search tagged zero
+    # forms) -- no warning, no "build anyway?" prompt, indexing proceeds
+    # exactly as if a form existed. Same shape and rationale as
+    # acknowledged_thin_pages: an escape hatch for an owner who has
+    # already looked at this and decided (they may be planning to add a
+    # search box to the template by hand later). Default False, so the
+    # pushback is on by default for every existing config.
+    acknowledged_no_forms: bool = False
 
 
 @dataclass(frozen=True)
@@ -279,6 +290,7 @@ def load_config(path: Path) -> SiteConfig:
         force_language=search_raw.get("force_language"),
         exclude_pages=tuple(search_raw.get("exclude_pages", []) or []),
         acknowledged_thin_pages=tuple(search_raw.get("acknowledged_thin_pages", []) or []),
+        acknowledged_no_forms=bool(search_raw.get("acknowledged_no_forms", False)),
     )
     if search.enabled and policy.strip_forms and policy.strip_search_forms:
         raise ConfigError(
@@ -853,9 +865,24 @@ def _run_build_body(
     # land in build-report.json (via stats.search, folded into asdict(stats))
     # alongside the rewriting stats, or the cleanup checklist (regenerated
     # moments later) has no way to see it.
+    #
+    # `stats.search.forms_tagged` is authoritative here -- build_site's own
+    # page loop has already run apply_search over every page, so this is
+    # the real count across the whole capture, not a guess from a sample.
+    # Placed before run_pagefind_index (not after) so declining skips the
+    # expensive subprocess rather than wasting it.
+    build_search = config.search.enabled
+    if build_search and stats.search.forms_tagged == 0 and not config.search.acknowledged_no_forms:
+        build_search = _confirm_search_with_no_forms(config, stats, progress)
+        if not build_search:
+            # build_site already set this True (it ran apply_search
+            # regardless of what it found) -- reset it so build-report.json
+            # and the cleanup checklist agree with what actually happened.
+            stats.search.enabled = False
+
     search_result = None
     content_issues = None
-    if config.search.enabled:
+    if build_search:
         try:
             search_result = run_pagefind_index(target, config.search)
         except SearchUnavailable as exc:
@@ -882,6 +909,49 @@ def _run_build_body(
     # hijacked search form and no index behind it is a failed build, not a
     # warning.
     return 1 if (stats.unresolved or broken or (search_result is not None and not search_result.ok)) else 0
+
+
+def _confirm_search_with_no_forms(config: SiteConfig, stats: BuildStats, progress: "Progress | None") -> bool:
+    """`search.enabled: true` but this capture's whole build_site pass
+    tagged zero search forms -- an index would get built with nothing on
+    the site able to reach it. Always prints the warning (tty or not);
+    only offers a choice in a real terminal. Returns True if indexing
+    should proceed anyway, False if it should be skipped for this run.
+
+    The Progress display, if any, is suspended for the duration of the
+    prompt -- printing over a live spinner would be unreadable -- and
+    resumed right after, wherever it left off.
+    """
+    print(
+        "Search is enabled, but this capture has no search form.\n"
+        '  wpfreeze tags the site\'s own search form (role="search", or an\n'
+        '  input named "s") and wires it to the index. None of the '
+        f"{stats.pages} pages\n"
+        "  built has one, so the index would be built with nothing to reach it.\n"
+        "  The pages would still be indexed -- there would just be no search box."
+    )
+
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return True  # unattended: proceed exactly as today, warning already printed
+
+    with (progress.suspend() if progress is not None else nullcontext()):
+        try:
+            answer = input("Build search anyway? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+
+    if answer in ("y", "yes"):
+        return True
+
+    print(
+        f"Skipped the search index. To make this permanent, set in {config.name}.yaml:\n"
+        "    search:\n"
+        "      enabled: false\n"
+        "Or, to keep search and stop being asked, add:\n"
+        "    search:\n"
+        "      acknowledged_no_forms: true"
+    )
+    return False
 
 
 def run_validate(

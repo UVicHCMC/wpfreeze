@@ -34,6 +34,7 @@ import os
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from types import TracebackType
 
 # Ten-frame braille cycle -- Greg's call, 2026-08-25: it animates smoothly
@@ -119,6 +120,25 @@ class Progress:
         if self.active:
             self._clear_line()
             self._restore_console_logging()
+
+    @contextmanager
+    def suspend(self):
+        """Tears the live display down for the duration of the `with`
+        block -- e.g. around an `input()` prompt, which would otherwise be
+        printed over/under a live spinner -- and puts it back exactly
+        where it left off (frame count, elapsed clock) afterward. A no-op
+        if the display isn't active (non-tty, already disabled by a write
+        error, etc.)."""
+        if not self.active:
+            yield
+            return
+        self._clear_line()
+        self._restore_console_logging()
+        try:
+            yield
+        finally:
+            self._suspend_console_logging()
+            self._render(force=True)
 
     def _console_handlers(self) -> list[logging.Handler]:
         package_logger = logging.getLogger(_LOGGER_NAME)

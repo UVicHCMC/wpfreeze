@@ -651,6 +651,29 @@ also happen automatically every time you re-run `build`; `wpfreeze
 search-index` re-runs just the indexing step, for tuning selectors
 without a full rebuild.
 
+**If the capture turns out to have no search form at all** (rare — most
+sites that reach this point have one, since the `ConfigError` above
+already means one existed to keep from stripping), `build` warns rather
+than silently indexing a site nobody can search from:
+
+```
+Search is enabled, but this capture has no search form.
+  wpfreeze tags the site's own search form (role="search", or an
+  input named "s") and wires it to the index. None of the 1163 pages
+  built has one, so the index would be built with nothing to reach it.
+  The pages would still be indexed -- there would just be no search box.
+```
+
+In a real terminal it also asks `Build search anyway? [y/N]` — default No
+skips the (otherwise wasted) Pagefind subprocess for this run and prints
+the exact one-line edit to make that permanent
+(`search: enabled: false`). An unattended run (piped, CI, backgrounded)
+proceeds exactly as before, warning only. If you know the site has no
+search form and don't want to be asked again while keeping search enabled
+(say, you're planning to add a search box to the template by hand), set
+`search.acknowledged_no_forms: true` — suppresses the warning and prompt
+entirely, indexing proceeds as if a form existed.
+
 **`search.body_selectors`** — a list of CSS selectors marking where a
 page's real content lives — does two things at once, and the second is
 easy to miss: it narrows *what* gets indexed on a matching page, but it

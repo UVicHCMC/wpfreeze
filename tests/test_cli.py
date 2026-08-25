@@ -978,6 +978,152 @@ def test_run_build_returns_2_when_pagefind_unavailable(tmp_path: Path, monkeypat
     assert "pagefind not installed" in capsys.readouterr().out
 
 
+# ---------------------------------------------------------------------------
+# search-enabled-but-no-search-form pushback (Part 4 of CLAUDE-freeze-ux.md)
+# ---------------------------------------------------------------------------
+
+
+def _capture_with_search_form(output_dir: Path) -> SiteConfig:
+    """Like _minimal_capture, but the page has a real, recognizable search
+    form -- apply_search will tag it, so stats.search.forms_tagged > 0."""
+    manifest = Manifest()
+    record = manifest.get_or_create("https://example.com/")
+    record.status = Status.FETCHED.value
+    record.http_status = 200
+    record.output_path = "/index.html"
+    record.local_path = "raw/index.html"
+    record.content_type = "text/html"
+    (output_dir / "raw").mkdir(parents=True)
+    (output_dir / "raw" / "index.html").write_text(
+        '<html><body><form role="search"><input name="s"></form></body></html>', encoding="utf-8"
+    )
+    manifest.save(output_dir / "manifest.json")
+    return SiteConfig(base_url="https://example.com/", output_dir=output_dir)
+
+
+def test_no_search_forms_non_tty_proceeds_and_warns(tmp_path: Path, monkeypatch, capsys):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_build
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(_minimal_capture(output_dir), search=SearchSettings(enabled=True))
+    calls = _mock_pagefind_index(monkeypatch, ok=True, pages_indexed=1, languages=("en",))
+
+    exit_code = run_build(config, None, verify=False)
+    out = capsys.readouterr().out
+
+    assert "Search is enabled, but this capture has no search form." in out
+    assert len(calls) == 1  # still indexed -- non-tty proceeds as before
+    assert exit_code == 0
+
+
+def test_no_search_forms_tty_declined_skips_indexing(tmp_path: Path, monkeypatch):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_build
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(_minimal_capture(output_dir), search=SearchSettings(enabled=True))
+    calls = _mock_pagefind_index(monkeypatch, ok=True, pages_indexed=1, languages=("en",))
+
+    run_build(config, None, verify=False)
+
+    assert calls == []
+    build_report = json.loads((output_dir / "build-report.json").read_text(encoding="utf-8"))
+    assert build_report["search"]["enabled"] is False
+
+
+def test_no_search_forms_tty_accepted_indexes_normally(tmp_path: Path, monkeypatch):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_build
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(_minimal_capture(output_dir), search=SearchSettings(enabled=True))
+    calls = _mock_pagefind_index(monkeypatch, ok=True, pages_indexed=1, languages=("en",))
+
+    exit_code = run_build(config, None, verify=False)
+
+    assert len(calls) == 1
+    assert exit_code == 0
+
+
+def test_no_search_forms_acknowledged_skips_warning_and_prompt(tmp_path: Path, monkeypatch, capsys):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_build
+
+    def _fail_if_called(prompt):
+        raise AssertionError("acknowledged_no_forms must suppress the prompt entirely")
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(
+        _minimal_capture(output_dir), search=SearchSettings(enabled=True, acknowledged_no_forms=True)
+    )
+    calls = _mock_pagefind_index(monkeypatch, ok=True, pages_indexed=1, languages=("en",))
+
+    exit_code = run_build(config, None, verify=False)
+    out = capsys.readouterr().out
+
+    assert "Search is enabled, but this capture has no search form." not in out
+    assert len(calls) == 1
+    assert exit_code == 0
+
+
+def test_search_forms_present_no_warning(tmp_path: Path, monkeypatch, capsys):
+    """Guard against a regression that warns whenever *some* page lacks a
+    form -- the condition is forms_tagged == 0 across the whole capture,
+    not "every page has one"."""
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, run_build
+    from wpfreeze.policy import Policy
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(
+        _capture_with_search_form(output_dir),
+        search=SearchSettings(enabled=True),
+        policy=Policy(strip_search_forms=False),  # otherwise policy strips the form before apply_search sees it
+    )
+    calls = _mock_pagefind_index(monkeypatch, ok=True, pages_indexed=1, languages=("en",))
+
+    run_build(config, None, verify=False)
+    out = capsys.readouterr().out
+
+    assert "Search is enabled, but this capture has no search form." not in out
+    assert len(calls) == 1
+
+
+def test_load_config_reads_acknowledged_no_forms(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {
+            "base_url": "https://example.com/",
+            "output_dir": "out",
+            "policy": {"strip_search_forms": False},
+            "search": {"enabled": True, "acknowledged_no_forms": True},
+        },
+    )
+    config = load_config(path)
+    assert config.search.acknowledged_no_forms is True
+
+
+def test_load_config_acknowledged_no_forms_defaults_false(tmp_path: Path):
+    path = _write_yaml(tmp_path / "site.yaml", {"base_url": "https://example.com/", "output_dir": "out"})
+    config = load_config(path)
+    assert config.search.acknowledged_no_forms is False
+
+
 def test_search_index_without_search_enabled_errors(tmp_path: Path, capsys):
     from wpfreeze.cli import run_search_index
 

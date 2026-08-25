@@ -276,3 +276,10 @@ vnu_jar: "./vnu.jar"
 #   suppressed. Still listed every build under its own "Acknowledged"
 #   heading, never silently dropped from the report.
 #   acknowledged_thin_pages: []
+#
+#   Suppresses `build`'s pushback when this capture has no search form at
+#   all to wire up (an index would otherwise get built with nothing on
+#   the site able to reach it) -- no warning, no "build anyway?" prompt.
+#   Set this only once you've confirmed that's expected (e.g. you're
+#   planning to add a search box to the template by hand later).
+#   acknowledged_no_forms: false
