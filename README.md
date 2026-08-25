@@ -38,6 +38,10 @@ web scraper and makes no attempt to be polite to sites it doesn't own.
   search form to the local index — no new UI, no server, no third-party
   service, nothing leaves the browser. Opt-in and off by default; see
   "Offline search" below.
+- **Optionally does**: check whether the pages you're keeping still link
+  to something live. `wpfreeze checklinks` finds every external link in
+  the built site and reports which internal pages point at ones that are
+  now broken — see "Checking external links" below.
 
 ## Requirements
 
@@ -216,6 +220,7 @@ wpfreeze status        --config site.yaml
 wpfreeze rescan        --config site.yaml [--apply] [--profile-from-config]
 wpfreeze upload-script --config site.yaml [--site-dir DIR]
 wpfreeze search-index  --config site.yaml [--site-dir DIR]
+wpfreeze checklinks    --config site.yaml [--site-dir DIR] [--recheck]
 ```
 
 - **`wizard`** is the guided setup flow described in "Quickstart" above —
@@ -270,6 +275,14 @@ wpfreeze search-index  --config site.yaml [--site-dir DIR]
   `body_selectors`/`exclude_pages` change needs `build` to actually take
   effect). Requires both a built `site/` and `search.enabled: true` in the
   config; see "Offline search" below.
+- **`checklinks`** scans the built site for external links (`<a href>`
+  targets on another host) and checks whether each one still resolves,
+  writing `broken-external-links.md`/`.html` grouped by the internal page
+  each broken link was found on. Also (re)writes `external-links.json`,
+  the page → external-URL list it just found — `--recheck` re-verifies
+  that persisted list's liveness without re-scanning the built site (or
+  even needing `site/` to still exist), so link rot can be checked again
+  later without a rebuild. See "Checking external links" below.
 
 **Exit codes**: `0` = complete, `1` = complete with gaps (see `report.html`'s
 "Action required" section — expected content that couldn't be recovered
@@ -301,6 +314,9 @@ cleanup-todo.md    human-readable punch list synthesized from the three reports 
 cleanup-todo.html  the same, styled like report.html, with clickable links -- see below
 upload.sh          only after `wpfreeze upload-script` -- see "Previewing a build somewhere"
 preview/           only after `upload.sh --local` -- site + reports, assembled for local browsing
+external-links.json       only after `wpfreeze checklinks` -- the page -> external-URL list it found
+broken-external-links.md  only after `wpfreeze checklinks` -- broken links, grouped by internal page
+broken-external-links.html  the same, styled like report.html
 ```
 
 `report.html` and `cleanup-todo.html` have no external dependencies — no
@@ -665,6 +681,44 @@ cd <output_dir>/site && python3 -m http.server
 
 If a search box looks broken while you're browsing the site locally by
 double-clicking `index.html`, this is almost always why.
+
+## Checking external links
+
+`wpfreeze build` only verifies *local* references — a link to another
+site is left alone either way, and wpfreeze has no idea whether it's still
+live. `wpfreeze checklinks --config site.yaml` finds those out: it scans
+the built site for every `<a href>` pointing at another host, checks each
+one, and writes `broken-external-links.md`/`.html`, listing only the
+internal pages that link to something now broken (a page with no dead
+external links doesn't appear at all).
+
+It's two phases, run together by default:
+
+1. **Scan** the built site for external links, grouped by unique target
+   URL with every page that links to it, and save that list to
+   `external-links.json`.
+2. **Check** each URL in that list and write the report.
+
+`--recheck` runs only the second phase, against whatever
+`external-links.json` already has on disk — no re-scan, and the built
+`site/` doesn't even need to still be present. Link rot accrues after the
+archive is made, not just at build time, so this is how you check again
+weeks or months later without re-running `build`:
+
+```bash
+wpfreeze checklinks --config site.yaml            # scan + check
+wpfreeze checklinks --config site.yaml --recheck  # check again later, no rescan needed
+```
+
+Checking uses the same per-host politeness/backoff as `acquire` (see
+`rate_limit`/`concurrency` in the config) — these are hosts wpfreeze
+doesn't own, so an impolite link-checker is exactly the failure mode that
+backoff logic exists to avoid. A `401`/`403` is reported as "auth-gated",
+not flatly "broken" — that status can mean a real login wall rather than
+a dead page, so it's worth a human glance rather than an automatic verdict.
+
+Exit code `1` means at least one broken link was found; `0` means none
+were (including "no external links at all").
 
 ## Behaviour worth knowing about
 

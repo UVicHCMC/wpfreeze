@@ -13,7 +13,7 @@ import sys
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -41,6 +41,7 @@ from wpfreeze.crawl import compile_exclusions, crawl_fixpoint
 from wpfreeze.diagnostics import build_diagnostics, format_diagnostics_summary, write_diagnostics
 from wpfreeze.fetch import DEFAULT_USER_AGENT, FetchConfig, RateLimiter
 from wpfreeze.inventory import discover_inventory
+from wpfreeze.linkcheck import check_links, extract_external_links, load_links, write_links, write_report
 from wpfreeze.manifest import Manifest, Status, utc_now
 from wpfreeze.outputs import compute_output_paths, generate_redirects_htaccess
 from wpfreeze.policy import Policy
@@ -893,6 +894,50 @@ def run_search_index(config: SiteConfig, site_dir: Path | None) -> int:
     return 0 if result.ok else 1
 
 
+def run_checklinks(config: SiteConfig, site_dir: Path | None, recheck: bool) -> int:
+    """Find every external `<a href>` the built site contains and check
+    whether it still resolves, writing `broken-external-links.md`/`.html`
+    grouped by the internal page each broken link was found on.
+
+    Two phases, independently runnable (see linkcheck.py's module
+    docstring for why): without `--recheck`, scans the built site and
+    (re)writes `external-links.json`, the persisted page -> external-URL
+    list, before checking it. With `--recheck`, skips the scan entirely
+    and re-verifies the URLs already in `external-links.json` -- so link
+    rot can be re-checked on a later day without the built site even
+    being present, let alone re-running `build`.
+    """
+    if recheck:
+        links = load_links(config.output_dir)
+        if links is None:
+            print(
+                f"No {config.output_dir / 'external-links.json'} found; run "
+                "`wpfreeze checklinks` (without --recheck) first."
+            )
+            return 2
+    else:
+        target = site_dir or (config.output_dir / "site")
+        if not target.exists():
+            print(f"No built site found at {target}; run `wpfreeze build` first.")
+            return 2
+        profile = scope_profile_from_config(config.base_url, config.extra_hosts)
+        links = extract_external_links(target, profile)
+        path = write_links(links, config.output_dir, config.base_url)
+        print(f"Found {len(links)} unique external link(s) across the built site; saved to {path}")
+
+    if not links:
+        print("No external links to check.")
+        return 0
+
+    results = check_links(links, user_agent=config.user_agent, rate_limit=config.rate_limit, workers=config.concurrency)
+    broken = [r for r in results if not r.ok]
+    checked_at = datetime.now(timezone.utc).isoformat()
+    md_path, html_path = write_report(results, config.output_dir, checked_at)
+    print(f"Checked {len(results)} external link(s): {len(broken)} broken.")
+    print(f"Report: {md_path} / {html_path}")
+    return 1 if broken else 0
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wpfreeze")
     # Not required: no subcommand at all prints the non-interactive overview
@@ -990,6 +1035,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     search_index_p.add_argument("--config", required=True, type=Path)
     search_index_p.add_argument(
         "--site-dir", type=Path, default=None, help="site directory to reference (default: <output_dir>/site)"
+    )
+
+    checklinks_p = subparsers.add_parser(
+        "checklinks",
+        help="find external links on the built site and check whether they're still live, writing "
+        "broken-external-links.md/.html grouped by the page each one was found on",
+    )
+    checklinks_p.add_argument("--config", required=True, type=Path)
+    checklinks_p.add_argument(
+        "--site-dir", type=Path, default=None, help="site directory to scan (default: <output_dir>/site)"
+    )
+    checklinks_p.add_argument(
+        "--recheck",
+        action="store_true",
+        help="re-check the external links already saved in external-links.json instead of re-scanning "
+        "the built site -- works without the built site present",
     )
 
     return parser
@@ -1111,6 +1172,8 @@ def _dispatch(argv: list[str] | None) -> int:
         return run_upload_script(config, args.site_dir)
     if args.command == "search-index":
         return run_search_index(config, args.site_dir)
+    if args.command == "checklinks":
+        return run_checklinks(config, args.site_dir, recheck=args.recheck)
 
     return 2
 
