@@ -85,6 +85,41 @@ def _is_unlikely_rewrite_target(url: str) -> bool:
     """
     return is_implausibly_long(url) or is_wp_admin_infrastructure(url) or is_bare_asset_directory(url)
 
+
+def _unescape_forward_slashes(text: str) -> tuple[str, list[int]]:
+    """Replace every `\\/` in `text` with `/` -- same JSON-escaping
+    convention extract.py's find_url_shaped_strings un-escapes before
+    pattern-matching, so URL_SHAPED_PATTERNS can see through it -- but
+    return an offset map alongside instead of just the normalized string.
+
+    extract.py's version is read-only (it only returns the URLs it finds,
+    never the surrounding text), so a blanket replace across the whole
+    string is harmless there. rewrite_url_shaped_strings below has to
+    write the *surrounding* text back out too, and a blanket replace over
+    the whole script body corrupts any unrelated `\\/`-escaped syntax
+    sitting next to a genuine JSON-escaped URL -- a bundled library's own
+    regex literals being the real-world case (e.g. jQuery's
+    `/^<([a-z][^\\/\\0>...]*)[\\x20\\t\\r\\n\\f]*\\/?>.../i`, which a blanket
+    unescape turns into a syntax error by exposing an unescaped `/` outside
+    its character class). The offset map lets a caller match against the
+    normalized text but splice a replacement back into the *original* one,
+    so only the bytes inside an actual accepted match ever change.
+    """
+    out_chars: list[str] = []
+    offsets: list[int] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] == "\\" and text[i + 1 : i + 2] == "/":
+            out_chars.append("/")
+            offsets.append(i)
+            i += 2
+        else:
+            out_chars.append(text[i])
+            offsets.append(i)
+            i += 1
+    offsets.append(n)
+    return "".join(out_chars), offsets
+
 # The same attribute surface extract.py discovers over, in editable form.
 _URL_ATTRS: dict[str, tuple[str, ...]] = {
     "a": ("href",),
@@ -584,16 +619,24 @@ class LinkRewriter:
         .../assets/foo.jpg the first pattern just produced matching the
         asset-extension pattern), and re-resolving already-rewritten text
         wastes work and can pollute the unresolved-reference count.
+
+        Matching runs against a `\\/`-unescaped copy of `text` (see
+        _unescape_forward_slashes for why a blanket replace on `text`
+        itself would corrupt unrelated escaped syntax elsewhere in the
+        same script), with every match's span translated back to the
+        original text via the offset map before splicing -- so only the
+        bytes inside an actual accepted match are ever touched.
         """
-        text = text.replace("\\/", "/")
+        normalized, offsets = _unescape_forward_slashes(text)
         matches = sorted(
-            (m for pattern in URL_SHAPED_PATTERNS for m in pattern.finditer(text)),
+            (m for pattern in URL_SHAPED_PATTERNS for m in pattern.finditer(normalized)),
             key=lambda m: m.start(),
         )
         out = []
         cursor = 0
         for match in matches:
-            if match.start() < cursor:
+            orig_start, orig_end = offsets[match.start()], offsets[match.end()]
+            if orig_start < cursor:
                 continue  # overlaps a match already accepted
             url = match.group(0)
             if _is_unlikely_rewrite_target(url):
@@ -601,9 +644,9 @@ class LinkRewriter:
             replacement = self.resolve(url, page_url, page_output, context)
             if replacement is None:
                 continue
-            out.append(text[cursor : match.start()])
+            out.append(text[cursor:orig_start])
             out.append(replacement)
-            cursor = match.end()
+            cursor = orig_end
         out.append(text[cursor:])
         return "".join(out)
 

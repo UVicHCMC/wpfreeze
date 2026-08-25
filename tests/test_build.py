@@ -352,6 +352,36 @@ def test_plain_script_object_literal_urls_are_rewritten_via_regex_fallback():
     assert "https://example.com/wp-admin/admin-ajax.php" in out
 
 
+def test_plain_script_regex_literal_with_escaped_slashes_is_left_alone():
+    """A bundled library's own `\\/`-escaped regex literal (jQuery's
+    rsingleTag, verbatim) sits right next to a genuine JSON-escaped URL in
+    the same script -- the real shape found in a Twine/Harlowe story
+    engine bundle that rendered as a blank page because a blanket
+    text.replace("\\/", "/") over the whole script body corrupted the
+    regex literal's syntax (stripping the backslash before the bare `/`
+    right after the character class terminates the JS regex-literal token
+    early, leaving a dangling `?>` -- a real SyntaxError, not just cosmetic
+    breakage). Only the matched URL span may be unescaped; everything else
+    in the script must survive byte for byte."""
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/about/", "/about.html")
+    rewriter, _ = _rewriter(manifest)
+
+    regex_literal = (
+        r"var A=/^<([a-z][^\/\0>:\x20\t\r\n\f]*)[\x20\t\r\n\f]*\/?>(?:<\/\1>|)$/i;"
+    )
+    html = (
+        "<script>"
+        + regex_literal
+        + 'var cfg={"aboutUrl":"https:\\/\\/example.com\\/about\\/"};'
+        + "</script>"
+    )
+    out = rewriter.rewrite_html(html, f"{BASE}/", "/index.html")
+
+    assert regex_literal in out  # byte for byte, backslashes intact
+    assert '"aboutUrl":"about.html"' in out  # the genuine URL still resolved
+
+
 def test_divi_style_config_base_paths_are_left_alone_not_counted_broken():
     """Divi's images_uri/builder_images_uri/tinymce_uri are asset base
     paths with no filename -- never a real fetchable resource -- so they
