@@ -1,6 +1,15 @@
 # wpfreeze site configuration -- one file per target site.
 # Copy this file, fill in the values for your site, and run:
-#   wpfreeze acquire --config your-site.yaml
+#   wpfreeze acquire your-site
+#   wpfreeze acquire --config your-site.yaml   (--config still works too)
+
+# Optional. Short handle for this project -- every command can take it in
+# place of --config: `wpfreeze build example-com`. Letters, digits, dash,
+# underscore, dot only -- no slashes. Also the default basename the wizard
+# suggests for output_dir below and for this file's own name. Omit this key
+# entirely to fall back to the config filename's stem (no migration needed
+# for an existing config).
+name: example-com
 
 # The site's root URL. Must be reachable; wpfreeze probes it once at
 # startup to learn whether it serves https, whether it prefers www or

@@ -115,6 +115,7 @@ Otherwise, run `wpfreeze wizard` and answer the questions:
 
 ```
 $ wpfreeze wizard
+What should this project be called?: www-example-com
 What site are we scraping? (base URL): https://www.example.com
 Where should the output go? [./output/www-example-com]:
 How nice are we being to the server?

@@ -167,6 +167,39 @@ def test_load_config_search_settings_plumb_through(tmp_path: Path):
     assert config.search.acknowledged_thin_pages == ("/portfolio-item/a.html",)
 
 
+def test_load_config_picks_up_explicit_name(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {"name": "landscapes", "base_url": "https://example.com/", "output_dir": "out"},
+    )
+    config = load_config(path)
+    assert config.name == "landscapes"
+
+
+def test_load_config_name_falls_back_to_file_stem(tmp_path: Path):
+    path = _write_yaml(tmp_path / "my-site.yaml", {"base_url": "https://example.com/", "output_dir": "out"})
+    config = load_config(path)
+    assert config.name == "my-site"
+
+
+def test_load_config_rejects_name_with_path_traversal(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {"name": "../evil", "base_url": "https://example.com/", "output_dir": "out"},
+    )
+    with pytest.raises(ConfigError):
+        load_config(path)
+
+
+def test_load_config_rejects_explicit_empty_name(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {"name": "", "base_url": "https://example.com/", "output_dir": "out"},
+    )
+    with pytest.raises(ConfigError):
+        load_config(path)
+
+
 def test_search_enabled_with_default_policy_raises_config_error(tmp_path: Path):
     # strip_forms and strip_search_forms both default True, so a search
     # form never survives the build -- nothing left to wire up.

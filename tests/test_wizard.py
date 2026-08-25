@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import yaml
 
 from wpfreeze.wizard import (
@@ -29,6 +30,7 @@ def test_slugify_domain_replaces_dots():
 
 def test_build_config_dict_no_xml_backup():
     ask = _answers(
+        "example-com",  # name
         "https://example.com",  # base_url
         "",  # output_dir default
         "",  # rate preset default
@@ -38,6 +40,7 @@ def test_build_config_dict_no_xml_backup():
     )
     config_dict, suggested_path = build_config_dict(ask=ask, tell=lambda m: None)
 
+    assert config_dict["name"] == "example-com"
     assert config_dict["base_url"] == "https://example.com"
     assert config_dict["output_dir"] == "./output/example-com"
     assert config_dict["rate_limit"] == 1.0
@@ -47,7 +50,7 @@ def test_build_config_dict_no_xml_backup():
 
 
 def test_build_config_dict_adds_https_prefix_when_missing():
-    ask = _answers("example.com", "", "", "n", "n")
+    ask = _answers("example-com", "example.com", "", "", "n", "n")
     config_dict, _ = build_config_dict(ask=ask, tell=lambda m: None)
     assert config_dict["base_url"] == "https://example.com"
     assert config_dict["wayback"]["enabled"] is False
@@ -56,6 +59,7 @@ def test_build_config_dict_adds_https_prefix_when_missing():
 
 def test_build_config_dict_aggressive_preset_has_no_delay_but_wayback_stays_throttled():
     ask = _answers(
+        "example-com",  # name
         "https://example.com",
         "",
         "3",  # aggressive preset
@@ -74,6 +78,7 @@ def test_build_config_dict_aggressive_preset_has_no_delay_but_wayback_stays_thro
 
 def test_build_config_dict_with_xml_backup():
     ask = _answers(
+        "example-com",  # name
         "https://example.com",
         "",
         "1",  # gentle preset
@@ -86,6 +91,26 @@ def test_build_config_dict_with_xml_backup():
 
     assert config_dict["rate_limit"] == 2.0
     assert config_dict["xml_backup"] == "/tmp/export.WordPress.xml"
+
+
+def test_build_config_dict_skips_name_question_when_name_given():
+    """Part 3's 'start one?' flow already knows the name -- passing it must
+    consume no prompt for it, and the scripted list must be exhausted with
+    nothing left over."""
+    ask = _answers(
+        "https://example.com",  # base_url -- no name question first
+        "",
+        "",
+        "n",
+        "n",
+    )
+    config_dict, suggested_path = build_config_dict(ask=ask, tell=lambda m: None, name="foo")
+
+    assert config_dict["name"] == "foo"
+    assert config_dict["output_dir"] == "./output/foo"
+    assert suggested_path == Path("foo.yaml")
+    with pytest.raises(StopIteration):
+        ask("anything")  # every scripted answer above was consumed, none left
 
 
 def test_run_wizard_writes_config_and_offers_dry_run(tmp_path, monkeypatch):
@@ -107,6 +132,7 @@ def test_run_wizard_writes_config_and_offers_dry_run(tmp_path, monkeypatch):
 
     config_path = tmp_path / "example-com.yaml"
     ask = _answers(
+        "example-com",  # name
         "https://example.com",  # base_url
         "",  # output_dir
         "",  # rate preset
@@ -148,6 +174,7 @@ def test_run_wizard_auto_resumes_real_run_after_a_preceding_dry_run(tmp_path, mo
 
     config_path = tmp_path / "example-com.yaml"
     ask = _answers(
+        "example-com",  # name
         "https://example.com",
         "",
         "",
@@ -179,6 +206,7 @@ def test_run_wizard_reports_full_resume_command_on_manifest_collision(tmp_path, 
 
     config_path = tmp_path / "example-com.yaml"
     ask = _answers(
+        "example-com",  # name
         "https://example.com",
         "",
         "",
@@ -556,6 +584,7 @@ def test_run_wizard_multiple_candidates_none_of_these_falls_through(tmp_path, mo
     config_path = tmp_path / "new-site.yaml"
     ask = _answers(
         "3",  # neither a nor b -- "None of these" is the 3rd option with 2 candidates
+        "new-site",  # name
         "https://new-site.example.com",
         "",
         "",
@@ -589,6 +618,7 @@ def test_run_wizard_falls_through_to_full_flow_when_resume_declined(tmp_path, mo
     config_path = tmp_path / "new-site.yaml"
     ask = _answers(
         "n",  # decline the resume offer
+        "new-site",  # name
         "https://new-site.example.com",  # base_url
         "",  # output_dir
         "",  # rate preset
@@ -615,6 +645,7 @@ def test_run_wizard_no_candidates_goes_straight_to_question_flow(tmp_path, monke
 
     config_path = tmp_path / "example-com.yaml"
     ask = _answers(
+        "example-com",  # name
         "https://example.com",  # base_url
         "",  # output_dir
         "",  # rate preset

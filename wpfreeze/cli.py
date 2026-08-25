@@ -187,6 +187,12 @@ class SearchSettings:
 class SiteConfig:
     base_url: str
     output_dir: Path
+    # Short handle for this project -- what project-addressed commands
+    # (`wpfreeze build landscapes`) match against. Non-defaulted would break
+    # every existing positional SiteConfig(...) construction in the tests;
+    # load_config always sets it for real, defaulting to the config
+    # filename's stem when the YAML omits `name:` (see load_config).
+    name: str = ""
     rate_limit: float = 1.0
     wayback_rate_limit: float = 3.0
     concurrency: int = 2
@@ -209,6 +215,21 @@ def _parse_date(value) -> date:
 
 def load_config(path: Path) -> SiteConfig:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+
+    from wpfreeze.projects import validate_name  # deferred: avoid a module-level cycle
+
+    # An explicit `name:` (even an invalid one) is validated as given -- an
+    # explicit empty string is a mistake to report, not something to
+    # silently paper over with the filename-stem fallback. Only an *absent*
+    # key falls back; the stem of a real path is always a usable name.
+    name_raw = raw.get("name")
+    if name_raw is not None:
+        try:
+            name = validate_name(str(name_raw))
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+    else:
+        name = Path(path).stem
 
     wayback_raw = raw.get("wayback") or {}
     prefer_near_raw = wayback_raw.get("prefer_snapshots_near")
@@ -246,6 +267,7 @@ def load_config(path: Path) -> SiteConfig:
     return SiteConfig(
         base_url=raw["base_url"].rstrip("/") + "/",
         output_dir=Path(raw["output_dir"]),
+        name=name,
         rate_limit=float(raw.get("rate_limit", 1.0)),
         wayback_rate_limit=float(raw.get("wayback_rate_limit", 3.0)),
         concurrency=concurrency,

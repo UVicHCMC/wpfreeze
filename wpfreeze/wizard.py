@@ -34,6 +34,8 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from wpfreeze.projects import validate_name
+
 if TYPE_CHECKING:
     from wpfreeze.cli import SiteConfig
 
@@ -52,6 +54,15 @@ DEFAULT_EXCLUSIONS = [
     r"/xmlrpc\.php",
     r"/comment-page-\d+/",
 ]
+
+# Every new project's output lands under this root by default -- the
+# `name:` question's answer is joined onto it, replacing the old inline
+# f"./output/{domain_slug}" literal. output_dir stays an ordinary,
+# independently hand-editable config key afterward; this only supplies its
+# default at wizard time. A bare "output", not "./output" -- pathlib
+# normalizes away a leading "./" the moment it's parsed, so the display
+# string below prepends it explicitly rather than relying on str(Path(...)).
+DEFAULT_OUTPUT_ROOT = Path("output")
 
 RATE_PRESETS: dict[str, tuple[str, float]] = {
     "1": ("Gentle", 2.0),
@@ -332,18 +343,37 @@ def _offer_resume(
     return True, exit_code
 
 
+def _ask_name(ask: Callable[[str], str]) -> str:
+    """Asks for a project name, re-asking (not raising) on an invalid
+    answer -- this is an interactive flow, and a ValueError here would be a
+    crash over a typo."""
+    while True:
+        answer = _ask_required("What should this project be called?", ask)
+        try:
+            return validate_name(answer)
+        except ValueError as exc:
+            print(str(exc))
+
+
 def build_config_dict(
     ask: Callable[[str], str] = input,
     tell: Callable[[str], None] = print,
+    name: str | None = None,
 ) -> tuple[dict, Path]:
     """Runs the question flow and returns (config_dict, suggested_yaml_path).
-    Does not write anything -- callers decide when/whether to persist."""
+    Does not write anything -- callers decide when/whether to persist.
+
+    `name` pre-seeds the project name (Part 3's "start one?" flow already
+    knows it) and skips the name question entirely; otherwise it's asked
+    first, before the URL question, with no default offered."""
+    if name is None:
+        name = _ask_name(ask)
+
     base_url = _ask_required("What site are we scraping? (base URL)", ask)
     if not base_url.startswith(("http://", "https://")):
         base_url = f"https://{base_url}"
 
-    domain_slug = slugify_domain(base_url)
-    output_dir = _ask("Where should the output go?", f"./output/{domain_slug}", ask)
+    output_dir = _ask("Where should the output go?", f"./{DEFAULT_OUTPUT_ROOT}/{name}", ask)
 
     tell("How nice are we being to the server?")
     tell("  1) Gentle (2s between requests)")
@@ -364,6 +394,7 @@ def build_config_dict(
     xml_backup_path = _ask_xml_backup(ask, tell)
 
     config_dict: dict = {
+        "name": name,
         "base_url": base_url,
         "output_dir": output_dir,
         "rate_limit": rate_limit,
@@ -381,7 +412,7 @@ def build_config_dict(
         "something different.)"
     )
 
-    suggested_path = Path(f"{domain_slug}.yaml")
+    suggested_path = Path(f"{name}.yaml")
     return config_dict, suggested_path
 
 
