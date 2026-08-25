@@ -136,7 +136,18 @@ Run the real acquisition now? [y/N]:
 The wizard writes a normal YAML config and offers to run a dry-run (finds
 every URL the site claims to have, fetches nothing — good for sizing up a
 site before committing) and then the real acquisition, right there in the
-same session. The file it writes is completely ordinary afterward:
+same session. The file it writes is completely ordinary afterward — the
+normal way to run wpfreeze against it from here on is:
+
+```bash
+wpfreeze freeze www-example-com
+```
+
+which runs the config's declared `freeze.steps` (acquire, build, validate
+by default) end to end, with a live progress display and a single
+timing/paths summary at the end — see "What a freeze run looks like"
+below. Each step is also available on its own, no wizard or `freeze`
+involved:
 
 ```bash
 wpfreeze acquire www-example-com --resume
@@ -145,7 +156,7 @@ wpfreeze status  www-example-com
 ```
 
 (`--config www-example-com.yaml` still works too — see "Projects" below.)
-no wizard involved. Everything the wizard doesn't ask about (`exclusions`,
+Everything the wizard doesn't ask about (`exclusions`,
 `extra_hosts`, `user_agent`) is left at sensible defaults — edit the YAML
 directly if a site needs something different there. See
 [`example-site.yaml`](example-site.yaml) for every option, annotated.
@@ -208,31 +219,66 @@ Neither mode reads stdin or runs anything unasked — the plain-text form
 never does, and the picker only acts once a command row is actually
 selected and launched.
 
+## What a freeze run looks like
+
+`wpfreeze freeze <project>` runs the whole sequence a config declares in
+its `freeze.steps` key (default: `acquire`, `build`, `validate`), one
+progress display per step, ending in a single combined summary:
+
+```
+$ wpfreeze freeze landscapes
+⠹ Acquiring site-c.example   pages 412/1163  assets 2204  ▸ /about/staff/   3m12s
+...
+⠼ Validating site-c.example   (vnu, no progress available)   0m48s
+Check external links now? (hits third-party hosts, can be slow) [y/N]
+
+landscapes — done in 41m02s
+  acquire   38m14s
+  build      2m31s
+  validate     17s
+
+  Built site   output/landscapes/site/
+  Report       output/landscapes/report.html
+  Checklist    output/landscapes/cleanup-todo.html
+  Logs         output/landscapes/logs/
+```
+
+The progress line only ever appears in a real terminal — piped output,
+backgrounded, or CI still get the plain log lines they always have. A step
+that returns exit `2` (refused/failed) stops the sequence there and marks
+itself in the wrap-up; a step returning `1` (completed with gaps) doesn't
+stop it but does make `freeze`'s own final exit code `1`. `checklinks`
+stays out of the default sequence (it's slow and hits hosts wpfreeze
+doesn't control) but is offered once the declared steps finish — default
+answer is No, and a broken link found this way doesn't change `freeze`'s
+exit code, the same way `validate`'s findings don't. Every other
+subcommand (`acquire`, `build`, `validate`, `search-index`, `checklinks`)
+shows this same progress line and prints its own brief wrap-up when run on
+its own too.
+
+Declare a different sequence, or add `checklinks`/`upload-script` to it,
+in the config:
+
+```yaml
+freeze:
+  steps: [acquire, build, validate, checklinks]
+```
+
+Permitted steps: `acquire`, `build`, `validate`, `diagnose`, `report`,
+`checklinks`, `search-index`, `upload-script`. `freeze` never infers a step
+from another config key — `upload-script` only runs if you list it, even
+if `upload.remote` is set.
+
 ## CLI reference
 
 Every subcommand below takes the project either way: a name (`landscapes`)
 or `--config site.yaml`, never both. See "Projects" below for what a name
 resolves against.
 
-`acquire`, `build`, `validate`, `search-index`, and `checklinks` show a
-live single-line progress display while they run, in a real terminal only
-(piped output, backgrounded, or CI gets the plain log lines instead, same
-as always) — a spinner, a counter where one is known, and the current
-URL/page. Each finishes with a brief summary: how long it took, and where
-the artefacts it produced actually landed:
-
-```
-landscapes — done in 41m02s
-  acquire        41m02s
-
-  Report     output/landscapes/report.html
-  Manifest   output/landscapes/manifest.json
-  Logs       output/landscapes/logs/
-```
-
 ```
 wpfreeze                                # no subcommand: interactive picker (plain summary if not a real terminal)
 wpfreeze wizard                         # guided setup: resume an existing run, or build a new site config
+wpfreeze freeze         <project>
 wpfreeze acquire       <project> [--resume] [--dry-run]
 wpfreeze build         <project> [--site-dir DIR] [--no-verify] [--no-todo]
 wpfreeze validate      <project> [--site-dir DIR] [--no-todo]
@@ -249,6 +295,11 @@ wpfreeze checklinks    <project> [--site-dir DIR] [--recheck]
   resume an existing run if one's found, otherwise build a new site config
   by answering a few questions. Explicit and interactive only; bare
   `wpfreeze` (no subcommand) is the picker/summary above, not this.
+- **`freeze`** runs a project's whole declared step sequence in one go —
+  see "What a freeze run looks like" above. On an unknown project name (for
+  `freeze` or any other subcommand here), offers to launch the wizard
+  pre-seeded with that name, in a real terminal only; otherwise lists the
+  known project names and exits `2`.
 - **`acquire`** runs (or resumes) the full pipeline: inventory discovery,
   crawl-to-fixpoint, Wayback recovery, analysis, and report generation.
   Refuses to start over an existing `manifest.json` unless `--resume` is
@@ -311,7 +362,9 @@ wpfreeze checklinks    <project> [--site-dir DIR] [--recheck]
 live or via Wayback), `2` = error or refused to run. For `build`, `1` means
 the site was written but some references could not be resolved to a local
 file (left pointing at the original site) or a local link is broken; the
-build summary and verification report say which. `Ctrl-C` prints a short
+build summary and verification report say which. For `freeze`, `2` means
+some step in the sequence returned `2` (the sequence stopped there); `1`
+means every step ran but at least one returned `1`. `Ctrl-C` prints a short
 message and exits `130` instead of a raw traceback — the manifest is saved
 incrementally during a crawl, so `--resume` can usually pick back up rather
 than starting over.
@@ -332,7 +385,22 @@ then against every config's filename stem. Two configs claiming the same
 name (or one's explicit name colliding with another's filename stem) is an
 error naming both files, not a silent first match.
 
-An unknown project name prints the list of what *is* here and exits `2`:
+An unknown project name, in a real terminal, offers to start one instead
+of just refusing — the same offer regardless of which subcommand you
+typed, since `wpfreeze build newsite` for a project that doesn't exist yet
+is exactly as plausible a first move as `wpfreeze freeze newsite`:
+
+```
+$ wpfreeze build newsite
+There is no project called newsite. Would you like to start one? [Y/n]
+```
+
+Saying yes launches the wizard pre-seeded with that name (skipping the
+"resume an existing run?" offer, which would be a non-sequitur for a name
+that doesn't exist yet) and, at the end, offers to run the full freeze
+right away in place of the usual separate acquire question. Saying no, or
+running unattended (piped output, CI, a script), prints the list of what
+*is* here and exits `2` without ever prompting:
 
 ```
 $ wpfreeze build nope

@@ -15,6 +15,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlsplit
 
 import requests
@@ -103,6 +104,26 @@ class UploadSettings:
     # gets written regardless (see run_upload_script), since its --local
     # mode needs no remote at all.
     prod_remote: str | None = None
+
+
+# What `wpfreeze freeze` runs, and in what order, when a config's own
+# freeze.steps doesn't override it. Deliberately excludes checklinks (it
+# hits third-party hosts and is slow -- freeze offers it at the end
+# instead, see run_freeze) and upload-script (uploading/writing the script
+# is a separate, explicit act per the standing "no capability rides along
+# inside an existing command just because config enables it" rule).
+DEFAULT_FREEZE_STEPS: tuple[str, ...] = ("acquire", "build", "validate")
+
+# Every step name freeze.steps may name. Kept as the literal set of run_*
+# dispatch keys run_freeze builds its step_runners dict from -- see there.
+FREEZE_PERMITTED_STEPS: tuple[str, ...] = (
+    "acquire", "build", "validate", "diagnose", "report", "checklinks", "search-index", "upload-script",
+)
+
+
+@dataclass(frozen=True)
+class FreezeSettings:
+    steps: tuple[str, ...] = DEFAULT_FREEZE_STEPS
 
 
 # load_config's default for `search.body_selectors` when a site's config
@@ -208,6 +229,7 @@ class SiteConfig:
     vnu_jar: Path | None = None  # optional: pin a specific vnu.jar; unset auto-downloads/caches the latest
     upload: UploadSettings = field(default_factory=UploadSettings)  # upload.sh destination; see `upload-script`
     search: SearchSettings = field(default_factory=SearchSettings)  # offline search (Pagefind); see `search-index`
+    freeze: FreezeSettings = field(default_factory=FreezeSettings)  # what `wpfreeze freeze` runs, and in what order
 
 
 def _parse_date(value) -> date:
@@ -265,6 +287,24 @@ def load_config(path: Path) -> SiteConfig:
             "false) -- otherwise there is no form left to wire up."
         )
 
+    freeze_raw = raw.get("freeze") or {}
+    freeze_steps_raw = freeze_raw.get("steps")
+    if freeze_steps_raw is None:
+        freeze_steps = DEFAULT_FREEZE_STEPS
+    else:
+        freeze_steps = tuple(freeze_steps_raw)
+        unknown_steps = [s for s in freeze_steps if s not in FREEZE_PERMITTED_STEPS]
+        if unknown_steps:
+            raise ConfigError(
+                f"freeze.steps: unknown step(s) {unknown_steps!r} -- permitted: "
+                f"{', '.join(FREEZE_PERMITTED_STEPS)}"
+            )
+        seen_steps: set[str] = set()
+        duplicate_steps = [s for s in freeze_steps if s in seen_steps or seen_steps.add(s)]  # type: ignore[func-returns-value]
+        if duplicate_steps:
+            raise ConfigError(f"freeze.steps: duplicate step(s) {duplicate_steps!r} -- list each step once")
+    freeze = FreezeSettings(steps=freeze_steps)
+
     return SiteConfig(
         base_url=raw["base_url"].rstrip("/") + "/",
         output_dir=Path(raw["output_dir"]),
@@ -287,6 +327,7 @@ def load_config(path: Path) -> SiteConfig:
             prod_remote=(raw.get("upload") or {}).get("prod_remote"),
         ),
         search=search,
+        freeze=freeze,
     )
 
 
@@ -433,7 +474,14 @@ def _run_to_settled(
     manifest.save(manifest_path)
 
 
-def run_acquire(config: SiteConfig, resume: bool, dry_run: bool) -> int:
+def run_acquire(
+    config: SiteConfig,
+    resume: bool,
+    dry_run: bool,
+    *,
+    offer_followups: bool = True,
+    print_wrapup: bool = True,
+) -> int:
     _configure_logging(config.output_dir)
     output_dir = config.output_dir
     raw_dir = output_dir / "raw"
@@ -460,12 +508,15 @@ def run_acquire(config: SiteConfig, resume: bool, dry_run: bool) -> int:
             exit_code = time_step(
                 summary,
                 "acquire",
-                lambda: _run_acquire_locked(config, resume, dry_run, output_dir, raw_dir, manifest_path, progress),
+                lambda: _run_acquire_locked(
+                    config, resume, dry_run, output_dir, raw_dir, manifest_path, progress, offer_followups
+                ),
             )
     finally:
         lock.release()
 
-    print(format_wrapup(summary))
+    if print_wrapup:
+        print(format_wrapup(summary))
     return exit_code
 
 
@@ -477,6 +528,7 @@ def _run_acquire_locked(
     raw_dir: Path,
     manifest_path: Path,
     progress: "Progress | None" = None,
+    offer_followups: bool = True,
 ) -> int:
     manifest = Manifest.load(manifest_path) if manifest_path.exists() else Manifest()
 
@@ -539,8 +591,9 @@ def _run_acquire_locked(
     write_report_html(manifest, output_dir, output_dir / "report.html", run_started, run_finished)
     (output_dir / "redirects.htaccess").write_text(generate_redirects_htaccess(manifest), encoding="utf-8")
 
-    _maybe_offer_diagnostics(manifest, output_dir, config.base_url)
-    _maybe_offer_build_and_validate(config)
+    if offer_followups:
+        _maybe_offer_diagnostics(manifest, output_dir, config.base_url)
+        _maybe_offer_build_and_validate(config)
 
     return 1 if manifest.has_gaps() else 0
 
@@ -740,7 +793,14 @@ def run_rescan(config: SiteConfig, apply: bool, profile_from_config: bool) -> in
 # ---------------------------------------------------------------------------
 
 
-def run_build(config: SiteConfig, site_dir: Path | None, verify: bool, write_todo: bool = True) -> int:
+def run_build(
+    config: SiteConfig,
+    site_dir: Path | None,
+    verify: bool,
+    write_todo: bool = True,
+    *,
+    print_wrapup: bool = True,
+) -> int:
     """Emit the rewritten, servable site from an existing capture.
 
     Reads only; writes only into the site directory. Never touches raw/,
@@ -759,7 +819,8 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool, write_tod
         exit_code = time_step(
             summary, "build", lambda: _run_build_body(config, manifest, target, verify, write_todo, progress)
         )
-    print(format_wrapup(summary))
+    if print_wrapup:
+        print(format_wrapup(summary))
     return exit_code
 
 
@@ -823,7 +884,9 @@ def _run_build_body(
     return 1 if (stats.unresolved or broken or (search_result is not None and not search_result.ok)) else 0
 
 
-def run_validate(config: SiteConfig, site_dir: Path | None, write_todo: bool = True) -> int:
+def run_validate(
+    config: SiteConfig, site_dir: Path | None, write_todo: bool = True, *, print_wrapup: bool = True
+) -> int:
     """Check the built site's HTML/CSS with VNU.
 
     No config needed to enable this: unless `vnu_jar` pins a specific jar,
@@ -846,7 +909,8 @@ def run_validate(config: SiteConfig, site_dir: Path | None, write_todo: bool = T
     host = urlsplit(config.base_url).hostname or config.base_url
     with Progress(f"Validating {host} (vnu, no progress available)"):
         exit_code = time_step(summary, "validate", lambda: _run_validate_body(config, target, write_todo))
-    print(format_wrapup(summary))
+    if print_wrapup:
+        print(format_wrapup(summary))
     return exit_code
 
 
@@ -916,7 +980,7 @@ def run_upload_script(config: SiteConfig, site_dir: Path | None) -> int:
     return 0
 
 
-def run_search_index(config: SiteConfig, site_dir: Path | None) -> int:
+def run_search_index(config: SiteConfig, site_dir: Path | None, *, print_wrapup: bool = True) -> int:
     """Re-index an already-built site with Pagefind, without a full
     `wpfreeze build`. `build` already runs this automatically when
     `search.enabled` is set -- this command exists for re-indexing after an
@@ -943,7 +1007,8 @@ def run_search_index(config: SiteConfig, site_dir: Path | None) -> int:
     host = urlsplit(config.base_url).hostname or config.base_url
     with Progress(f"Indexing {host} (pagefind, no progress available)"):
         exit_code = time_step(summary, "search-index", lambda: _run_search_index_body(config, target))
-    print(format_wrapup(summary))
+    if print_wrapup:
+        print(format_wrapup(summary))
     return exit_code
 
 
@@ -975,7 +1040,9 @@ def _run_search_index_body(config: SiteConfig, target: Path) -> int:
     return 0 if result.ok else 1
 
 
-def run_checklinks(config: SiteConfig, site_dir: Path | None, recheck: bool) -> int:
+def run_checklinks(
+    config: SiteConfig, site_dir: Path | None, recheck: bool, *, print_wrapup: bool = True
+) -> int:
     """Find every external `<a href>` the built site contains and check
     whether it still resolves, writing `broken-external-links.md`/`.html`
     grouped by the internal page each broken link was found on.
@@ -1014,7 +1081,8 @@ def run_checklinks(config: SiteConfig, site_dir: Path | None, recheck: bool) -> 
     host = urlsplit(config.base_url).hostname or config.base_url
     with Progress(f"Checking links from {host}") as progress:
         exit_code = time_step(summary, "checklinks", lambda: _run_checklinks_body(config, links, progress))
-    print(format_wrapup(summary))
+    if print_wrapup:
+        print(format_wrapup(summary))
     return exit_code
 
 
@@ -1029,6 +1097,97 @@ def _run_checklinks_body(config: SiteConfig, links: list, progress: "Progress | 
     print(f"Checked {len(results)} external link(s): {len(broken)} broken.")
     print(f"Report: {md_path} / {html_path}")
     return 1 if broken else 0
+
+
+def run_freeze(config: SiteConfig, project: str) -> int:
+    """Runs every step `config.freeze.steps` declares, in order, with one
+    progress display per step (each run_* function below shows its own)
+    and a single combined wrap-up at the end.
+
+    Failure semantics: a step returning 2 stops the sequence immediately
+    (running e.g. `build` after a refused `acquire` would just produce a
+    second, confusing failure) and makes the final exit code 2. A step
+    returning 1 ("completed with gaps") does not stop the sequence, but
+    does make the final exit code 1 unless a later step returns 2.
+    KeyboardInterrupt is not caught here -- it propagates to `main`'s
+    existing handler unchanged, and the wrap-up print below is simply
+    never reached, which is correct: `main` already prints its own resume
+    hint for an interrupted run.
+
+    `resume` (whether to pass `--resume`-equivalent to `acquire`) is
+    decided once, from whether a manifest already exists -- the same
+    judgement `wizard._offer_resume` already makes. Each declared step's
+    own `print_wrapup` is suppressed (see that kwarg on each run_*
+    function) so only this function's combined summary ever prints.
+    """
+    manifest_path = config.output_dir / "manifest.json"
+    resume = manifest_path.exists()
+
+    step_runners: dict[str, Callable[[], int]] = {
+        "acquire": lambda: run_acquire(
+            config, resume=resume, dry_run=False, offer_followups=False, print_wrapup=False
+        ),
+        "build": lambda: run_build(config, None, verify=True, print_wrapup=False),
+        "validate": lambda: run_validate(config, None, print_wrapup=False),
+        "diagnose": lambda: run_diagnose(config),
+        "report": lambda: run_report(config, html_only=False, json_only=False),
+        "checklinks": lambda: run_checklinks(config, None, recheck=False, print_wrapup=False),
+        "search-index": lambda: run_search_index(config, None, print_wrapup=False),
+        "upload-script": lambda: run_upload_script(config, None),
+    }
+
+    if "search-index" in config.freeze.steps and "build" in config.freeze.steps:
+        print(
+            "Note: `search-index` is redundant here -- `build` already indexes "
+            "automatically when search.enabled is set. Running it anyway, since "
+            "you listed it explicitly."
+        )
+
+    summary = RunSummary(project=project, base_url=config.base_url, output_dir=config.output_dir)
+    had_error = False
+    had_gap = False
+    for step in config.freeze.steps:
+        exit_code = time_step(summary, step, step_runners[step])
+        if exit_code == 2:
+            had_error = True
+            print(f"`{step}` failed (exit 2) -- stopping the freeze sequence.")
+            break
+        if exit_code == 1:
+            had_gap = True
+
+    if not had_error:
+        _maybe_offer_checklinks_at_end(config, summary)
+
+    print(format_wrapup(summary))
+
+    if had_error:
+        return 2
+    return 1 if had_gap else 0
+
+
+def _maybe_offer_checklinks_at_end(config: SiteConfig, summary: RunSummary) -> None:
+    """Greg's call, 2026-08-25: `checklinks` stays out of freeze.steps'
+    defaults (network-heavy, hits third-party hosts the site owner doesn't
+    control), but `freeze` offers it once the declared sequence finishes.
+    Declining is the default -- an unanswered prompt must never start a
+    long network operation on its own."""
+    if "checklinks" in config.freeze.steps:
+        return  # already ran as a declared step -- don't ask twice
+    if not (config.output_dir / "site").exists():
+        return  # nothing built to scan
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return  # unattended runs never prompt, never check links
+    try:
+        answer = input("Check external links now? (hits third-party hosts, can be slow) [y/N] ").strip().lower()
+    except EOFError:
+        return
+    if answer not in ("y", "yes"):
+        return
+    # Deliberately not folded into had_gap/the final exit code: a broken
+    # third-party link is a fact about the internet, not a freeze failure
+    # -- same reasoning as `validate`'s informational-only exit code. Its
+    # result (and timing) still lands in the wrap-up below.
+    time_step(summary, "checklinks", lambda: run_checklinks(config, None, recheck=False, print_wrapup=False))
 
 
 def _add_project_arg(p: argparse.ArgumentParser) -> None:
@@ -1161,6 +1320,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "the built site -- works without the built site present",
     )
 
+    freeze_p = subparsers.add_parser(
+        "freeze",
+        help="run a project's whole declared sequence (default: acquire, build, validate) with one "
+        "progress display per step and a single timing/paths wrap-up at the end",
+    )
+    _add_project_arg(freeze_p)
+
     return parser
 
 
@@ -1226,6 +1392,35 @@ def main(argv: list[str] | None = None) -> int:
         raise
 
 
+def _offer_new_project(name: str, exc: ProjectNotFound) -> int:
+    """`wpfreeze <any project-addressed command> <unknown-name>` -- offers
+    to start a new project with that name instead of just refusing.
+    Applies to every project-addressed subcommand, not just `freeze`
+    (typing `wpfreeze build foo` for a project that doesn't exist yet is
+    exactly as plausible a first move as `wpfreeze freeze foo`), which is
+    why this lives here in _dispatch's resolution step rather than inside
+    run_freeze specifically.
+
+    Only offers in a real terminal -- a scripted `wpfreeze build foo` that
+    blocks on stdin forever, for a name that was probably just a typo in a
+    script, is a bug, not a feature."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(str(exc))
+        return 2
+    try:
+        answer = input(f"There is no project called {name}. Would you like to start one? [Y/n] ").strip().lower()
+    except EOFError:
+        print(str(exc))
+        return 2
+    if answer not in ("", "y", "yes"):
+        print(str(exc))
+        return 2
+
+    from wpfreeze.wizard import run_wizard
+
+    return run_wizard(initial_name=name, then_freeze=True)
+
+
 def _dispatch(argv: list[str] | None) -> int:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
 
@@ -1269,7 +1464,9 @@ def _dispatch(argv: list[str] | None) -> int:
     except ConfigError as exc:
         print(str(exc))
         return 2
-    except (ProjectNotFound, AmbiguousProject) as exc:
+    except ProjectNotFound as exc:
+        return _offer_new_project(args.project, exc)
+    except AmbiguousProject as exc:
         print(str(exc))
         return 2
     except (OSError, yaml.YAMLError, KeyError) as exc:
@@ -1284,6 +1481,8 @@ def _dispatch(argv: list[str] | None) -> int:
         return run_report(config, html_only=args.html_only, json_only=args.json_only)
     if args.command == "status":
         return run_status(config)
+    if args.command == "freeze":
+        return run_freeze(config, config.name)
     if args.command == "build":
         return run_build(config, args.site_dir, verify=not args.no_verify, write_todo=not args.no_todo)
     if args.command == "diagnose":

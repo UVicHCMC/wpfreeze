@@ -419,14 +419,33 @@ def build_config_dict(
 def run_wizard(
     ask: Callable[[str], str] = input,
     tell: Callable[[str], None] = print,
+    initial_name: str | None = None,
+    then_freeze: bool = False,
 ) -> int:
-    from wpfreeze.cli import load_config, run_acquire  # deferred: cli imports this module
+    """`initial_name`/`then_freeze` are set by _dispatch's "there is no
+    project called X, start one?" offer (see cli.py's _offer_new_project),
+    for any project-addressed subcommand -- not exclusive to `freeze`
+    itself. A pre-seeded name means the user just typed a *new* project's
+    name, so the resume offer (below) is skipped outright: offering to
+    resume some unrelated existing run would be a non-sequitur. `then_freeze`
+    swaps the closing "run the real acquisition now?" question for "run
+    the full freeze now?" -- the dry-run offer stays either way, since
+    sizing up a site before committing to a real crawl is useful
+    regardless of how the rest of the run proceeds.
+    """
+    from wpfreeze.cli import DEFAULT_FREEZE_STEPS, load_config, run_acquire, run_freeze  # deferred: cli imports this module
 
-    handled, exit_code = _offer_resume(find_resumable_configs(), ask, tell)
-    if handled:
-        return exit_code
+    if initial_name is None:
+        handled, exit_code = _offer_resume(find_resumable_configs(), ask, tell)
+        if handled:
+            return exit_code
 
-    config_dict, suggested_path = build_config_dict(ask=ask, tell=tell)
+    config_dict, suggested_path = build_config_dict(ask=ask, tell=tell, name=initial_name)
+    # Written explicitly (rather than left to load_config's own default)
+    # so a config fresh out of the wizard shows the sequence `freeze` will
+    # run, ready to hand-edit, not just an implicit default someone has to
+    # know exists.
+    config_dict["freeze"] = {"steps": list(DEFAULT_FREEZE_STEPS)}
 
     config_path = Path(_ask("Save this config as", str(suggested_path), ask))
     config_path.write_text(yaml.safe_dump(config_dict, sort_keys=False), encoding="utf-8")
@@ -441,12 +460,20 @@ def run_wizard(
     # This isn't "resuming someone else's prior run"; it's the same
     # session's own dry-run, so auto-resuming here is correct -- the guard
     # still applies normally to a config whose output_dir already had an
-    # unrelated manifest before the wizard ever touched it.
+    # unrelated manifest before the wizard ever touched it. run_freeze
+    # makes the same judgement itself (a manifest existing means resume),
+    # so nothing further needs threading through for the then_freeze path.
     dry_run_performed = False
     if _ask_yes_no("Run a dry-run now? (discovers URLs, fetches nothing)", True, ask):
         exit_code = run_acquire(config, resume=False, dry_run=True)
         tell(f"Dry run finished (exit code {exit_code}). See {config.output_dir}/report.html")
         dry_run_performed = True
+
+    if then_freeze:
+        if _ask_yes_no("Run the full freeze now?", False, ask):
+            return run_freeze(config, config.name)
+        tell(f"When you're ready: wpfreeze freeze {config.name}")
+        return 0
 
     if _ask_yes_no("Run the real acquisition now?", False, ask):
         exit_code = run_acquire(config, resume=dry_run_performed, dry_run=False)

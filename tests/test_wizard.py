@@ -225,6 +225,127 @@ def test_run_wizard_reports_full_resume_command_on_manifest_collision(tmp_path, 
 
 
 # ---------------------------------------------------------------------------
+# run_wizard: initial_name/then_freeze (the "start a new project?" offer
+# from _dispatch's project resolution, see cli._offer_new_project)
+# ---------------------------------------------------------------------------
+
+
+def test_run_wizard_initial_name_skips_resume_offer_and_name_question(tmp_path, monkeypatch):
+    """A pre-seeded name means the caller already knows this is a *new*
+    project -- offering to resume some unrelated existing run would be a
+    non-sequitur, and asking for a name that's already known would be too."""
+    from wpfreeze.cli import SiteConfig
+
+    monkeypatch.chdir(tmp_path)
+    # A resumable candidate exists in this directory -- if the resume
+    # offer weren't skipped, the very first scripted answer below ("https
+    # ://...", meant as the base_url) would instead be consumed as a
+    # resume-or-not answer, and the test would fail differently.
+    _write_site_yaml(tmp_path / "other.yaml", "https://example.com/", tmp_path / "other-out")
+    _write_fake_manifest(tmp_path / "other-out")
+
+    fake_config = SiteConfig(name="foo", base_url="https://foo.example.com/", output_dir=tmp_path / "out")
+    monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
+    monkeypatch.setattr("wpfreeze.cli.run_acquire", lambda config, resume, dry_run: 0)
+
+    config_path = tmp_path / "foo.yaml"
+    ask = _answers(
+        "https://foo.example.com",  # base_url -- no name question first
+        "",  # output_dir
+        "",  # rate preset
+        "n",  # wayback: no
+        "n",  # xml_backup: no
+        str(config_path),  # save-as path
+        "n",  # dry run now
+        "n",  # real run now
+    )
+    exit_code = run_wizard(ask=ask, tell=lambda m: None, initial_name="foo")
+
+    assert exit_code == 0
+    assert config_path.exists()
+    written = yaml.safe_load(config_path.read_text())
+    assert written["name"] == "foo"
+
+
+def test_run_wizard_then_freeze_offers_full_freeze_instead_of_acquire(tmp_path, monkeypatch):
+    from wpfreeze.cli import SiteConfig
+
+    monkeypatch.chdir(tmp_path)
+    fake_config = SiteConfig(name="foo", base_url="https://foo.example.com/", output_dir=tmp_path / "out")
+    monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
+    freeze_calls = []
+    monkeypatch.setattr("wpfreeze.cli.run_freeze", lambda config, project: freeze_calls.append(project) or 0)
+
+    def _fail_if_acquire_called(*a, **k):
+        raise AssertionError("then_freeze=True must not call run_acquire for the real run")
+
+    monkeypatch.setattr("wpfreeze.cli.run_acquire", _fail_if_acquire_called)
+
+    config_path = tmp_path / "foo.yaml"
+    ask = _answers(
+        "https://foo.example.com",
+        "",
+        "",
+        "n",
+        "n",
+        str(config_path),
+        "n",  # dry run now: no
+        "y",  # run the full freeze now: yes
+    )
+    exit_code = run_wizard(ask=ask, tell=lambda m: None, initial_name="foo", then_freeze=True)
+
+    assert exit_code == 0
+    assert freeze_calls == ["foo"]
+
+
+def test_run_wizard_then_freeze_declined_prints_freeze_hint(tmp_path, monkeypatch):
+    from wpfreeze.cli import SiteConfig
+
+    monkeypatch.chdir(tmp_path)
+    fake_config = SiteConfig(name="foo", base_url="https://foo.example.com/", output_dir=tmp_path / "out")
+    monkeypatch.setattr("wpfreeze.cli.load_config", lambda path: fake_config)
+    monkeypatch.setattr("wpfreeze.cli.run_acquire", lambda config, resume, dry_run: 0)
+
+    config_path = tmp_path / "foo.yaml"
+    ask = _answers(
+        "https://foo.example.com",
+        "",
+        "",
+        "n",
+        "n",
+        str(config_path),
+        "n",  # dry run now: no
+        "n",  # run the full freeze now: no
+    )
+    messages = []
+    exit_code = run_wizard(ask=ask, tell=messages.append, initial_name="foo", then_freeze=True)
+
+    assert exit_code == 0
+    assert any("wpfreeze freeze foo" in m for m in messages)
+
+
+def test_run_wizard_writes_freeze_block_into_generated_yaml(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "example-com.yaml"
+    ask = _answers(
+        "example-com",  # name
+        "https://example.com",
+        "",
+        "",
+        "",
+        "",
+        "n",  # xml_backup: no
+        str(config_path),
+        "n",  # dry run now
+        "n",  # real run now
+    )
+    run_wizard(ask=ask, tell=lambda m: None)
+
+    written = yaml.safe_load(config_path.read_text())
+    assert written["freeze"] == {"steps": ["acquire", "build", "validate"]}
+
+
+# ---------------------------------------------------------------------------
 # find_resumable_configs: scanning a directory for configs with a prior run
 # ---------------------------------------------------------------------------
 

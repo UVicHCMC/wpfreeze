@@ -78,6 +78,18 @@ wayback:
   # Wayback recovery. Defaults to today (most recent available) if unset.
   prefer_snapshots_near: "2026-01-01"
 
+# Optional. What `wpfreeze freeze` runs, and in what order -- omit this
+# whole block to accept the default shown below. `freeze` never infers a
+# step from another config key (e.g. it does NOT run `upload-script` just
+# because `upload.remote` is set below) -- only what's listed here runs.
+# Permitted values: acquire, build, validate, diagnose, report, checklinks,
+# search-index, upload-script. `checklinks` is deliberately not in the
+# default list (it hits third-party hosts and is slow) -- `freeze` offers
+# to run it at the end of the sequence instead; list it here explicitly if
+# you always want it as a declared step.
+freeze:
+  steps: [acquire, build, validate]
+
 # Content policy for `wpfreeze build` -- what to strip when turning the raw
 # capture into a servable static site. All three default to true: the point
 # of a build is a durable, self-contained archive, and live-web machinery

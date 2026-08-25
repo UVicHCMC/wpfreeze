@@ -10,11 +10,13 @@ import yaml
 
 from wpfreeze.cli import (
     ConfigError,
+    FreezeSettings,
     SiteConfig,
     load_config,
     main,
     probe_site,
     run_acquire,
+    run_freeze,
     run_report,
     run_rescan,
     run_status,
@@ -197,6 +199,43 @@ def test_load_config_rejects_explicit_empty_name(tmp_path: Path):
         {"name": "", "base_url": "https://example.com/", "output_dir": "out"},
     )
     with pytest.raises(ConfigError):
+        load_config(path)
+
+
+def test_load_config_freeze_steps_default(tmp_path: Path):
+    path = _write_yaml(tmp_path / "site.yaml", {"base_url": "https://example.com/", "output_dir": "out"})
+    config = load_config(path)
+    assert config.freeze.steps == ("acquire", "build", "validate")
+
+
+def test_load_config_freeze_steps_custom_order_honoured(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {
+            "base_url": "https://example.com/",
+            "output_dir": "out",
+            "freeze": {"steps": ["build", "acquire", "diagnose"]},
+        },
+    )
+    config = load_config(path)
+    assert config.freeze.steps == ("build", "acquire", "diagnose")
+
+
+def test_load_config_freeze_steps_rejects_unknown_step(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {"base_url": "https://example.com/", "output_dir": "out", "freeze": {"steps": ["acquire", "bogus"]}},
+    )
+    with pytest.raises(ConfigError, match="bogus"):
+        load_config(path)
+
+
+def test_load_config_freeze_steps_rejects_duplicate(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {"base_url": "https://example.com/", "output_dir": "out", "freeze": {"steps": ["acquire", "acquire"]}},
+    )
+    with pytest.raises(ConfigError, match="acquire"):
         load_config(path)
 
 
@@ -1257,3 +1296,342 @@ def test_main_reports_keyboard_interrupt_instead_of_a_traceback(monkeypatch, cap
     captured = capsys.readouterr()
     assert "Interrupted" in captured.out
     assert "--resume" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# run_freeze
+# ---------------------------------------------------------------------------
+
+
+def _freeze_config(tmp_path: Path, steps=("acquire", "build", "validate")) -> SiteConfig:
+    return SiteConfig(
+        name="landscapes",
+        base_url="https://example.com/",
+        output_dir=tmp_path / "out",
+        freeze=FreezeSettings(steps=tuple(steps)),
+    )
+
+
+def test_run_freeze_runs_default_three_steps_in_order(tmp_path: Path):
+    import wpfreeze.cli as cli
+
+    calls: list[str] = []
+    for step in ("acquire", "build", "validate"):
+        _patch_step_module(cli, calls, step, 0)
+    config = _freeze_config(tmp_path)
+
+    exit_code = run_freeze(config, config.name)
+
+    assert calls == ["acquire", "build", "validate"]
+    assert exit_code == 0
+
+
+def _patch_step_module(cli_module, calls, name, result=0):
+    attr = {
+        "acquire": "run_acquire",
+        "build": "run_build",
+        "validate": "run_validate",
+        "diagnose": "run_diagnose",
+        "report": "run_report",
+        "checklinks": "run_checklinks",
+        "search-index": "run_search_index",
+        "upload-script": "run_upload_script",
+    }[name]
+    setattr(cli_module, attr, lambda *a, **k: calls.append(name) or result)
+
+
+def test_run_freeze_step_returning_2_stops_sequence(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    calls: list[str] = []
+    _patch_step_module(cli, calls, "acquire", 2)
+    _patch_step_module(cli, calls, "build", 0)
+    _patch_step_module(cli, calls, "validate", 0)
+    config = _freeze_config(tmp_path)
+
+    exit_code = run_freeze(config, config.name)
+
+    assert calls == ["acquire"]  # build/validate never called
+    assert exit_code == 2
+
+
+def test_run_freeze_step_returning_1_continues_and_sets_exit_code(tmp_path: Path):
+    import wpfreeze.cli as cli
+
+    calls: list[str] = []
+    _patch_step_module(cli, calls, "acquire", 1)
+    _patch_step_module(cli, calls, "build", 0)
+    _patch_step_module(cli, calls, "validate", 0)
+    config = _freeze_config(tmp_path)
+
+    exit_code = run_freeze(config, config.name)
+
+    assert calls == ["acquire", "build", "validate"]
+    assert exit_code == 1
+
+
+def test_run_freeze_custom_step_order_is_honoured(tmp_path: Path):
+    import wpfreeze.cli as cli
+
+    calls: list[str] = []
+    for step in ("build", "acquire", "diagnose"):
+        _patch_step_module(cli, calls, step, 0)
+    config = _freeze_config(tmp_path, steps=("build", "acquire", "diagnose"))
+
+    run_freeze(config, config.name)
+
+    assert calls == ["build", "acquire", "diagnose"]
+
+
+def test_run_freeze_calls_acquire_with_resume_true_when_manifest_exists(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True)
+    (output_dir / "manifest.json").write_text("{}", encoding="utf-8")
+
+    captured_kwargs = {}
+
+    def fake_run_acquire(config, resume, dry_run, **kwargs):
+        captured_kwargs.update(kwargs)
+        captured_kwargs["resume"] = resume
+        return 0
+
+    monkeypatch.setattr(cli, "run_acquire", fake_run_acquire)
+    monkeypatch.setattr(cli, "run_build", lambda *a, **k: 0)
+    monkeypatch.setattr(cli, "run_validate", lambda *a, **k: 0)
+
+    config = SiteConfig(name="landscapes", base_url="https://example.com/", output_dir=output_dir)
+    run_freeze(config, config.name)
+
+    assert captured_kwargs["resume"] is True
+
+
+def test_run_freeze_calls_acquire_with_offer_followups_false(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    captured_kwargs = {}
+
+    def fake_run_acquire(config, resume, dry_run, **kwargs):
+        captured_kwargs.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "run_acquire", fake_run_acquire)
+    monkeypatch.setattr(cli, "run_build", lambda *a, **k: 0)
+    monkeypatch.setattr(cli, "run_validate", lambda *a, **k: 0)
+
+    config = _freeze_config(tmp_path)
+    run_freeze(config, config.name)
+
+    assert captured_kwargs["offer_followups"] is False
+
+
+def test_direct_acquire_still_offers_followups_by_default(tmp_path: Path, monkeypatch):
+    """A direct `wpfreeze acquire <name>` (not via freeze) must keep its
+    existing end-of-run offer behaviour -- only run_freeze suppresses it,
+    via offer_followups=False."""
+    import wpfreeze.cli as cli
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_maybe_offer_diagnostics", lambda *a, **k: calls.append("diagnostics"))
+    monkeypatch.setattr(cli, "_maybe_offer_build_and_validate", lambda *a, **k: calls.append("build_and_validate"))
+
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        run_acquire(config, resume=False, dry_run=False)
+
+    assert calls == ["diagnostics", "build_and_validate"]
+
+
+def test_run_freeze_suppresses_acquires_followup_offers(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_maybe_offer_diagnostics", lambda *a, **k: calls.append("diagnostics"))
+    monkeypatch.setattr(cli, "_maybe_offer_build_and_validate", lambda *a, **k: calls.append("build_and_validate"))
+    monkeypatch.setattr(cli, "run_build", lambda *a, **k: 0)
+    monkeypatch.setattr(cli, "run_validate", lambda *a, **k: 0)
+
+    import dataclasses
+
+    with FixtureSite() as site:
+        config = dataclasses.replace(
+            _config_for(site, tmp_path / "out"),
+            name="landscapes",
+            freeze=FreezeSettings(steps=("acquire", "build", "validate")),
+        )
+        run_freeze(config, config.name)
+
+    assert calls == []
+
+
+# --- end-of-run checklinks offer ---------------------------------------------
+
+
+def _freeze_tty_config(tmp_path: Path, monkeypatch, steps=("acquire", "build", "validate")) -> SiteConfig:
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    return _freeze_config(tmp_path, steps=steps)
+
+
+def _patch_default_steps(monkeypatch, cli_module):
+    monkeypatch.setattr(cli_module, "run_acquire", lambda *a, **k: 0)
+    monkeypatch.setattr(cli_module, "run_build", lambda *a, **k: 0)
+    monkeypatch.setattr(cli_module, "run_validate", lambda *a, **k: 0)
+
+
+def test_checklinks_offer_not_asked_when_already_declared(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    config = _freeze_tty_config(tmp_path, monkeypatch, steps=("acquire", "build", "validate", "checklinks"))
+    (config.output_dir / "site").mkdir(parents=True)
+    _patch_default_steps(monkeypatch, cli)
+    checklinks_calls = []
+    monkeypatch.setattr(cli, "run_checklinks", lambda *a, **k: checklinks_calls.append(1) or 0)
+
+    def _fail_if_called(prompt):
+        raise AssertionError("must not offer checklinks again -- it was already declared")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+
+    run_freeze(config, config.name)
+
+    assert checklinks_calls == [1]  # ran once, as the declared step
+
+
+def test_checklinks_offer_not_asked_after_exit_2_abort(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    config = _freeze_tty_config(tmp_path, monkeypatch)
+    (config.output_dir / "site").mkdir(parents=True)
+    monkeypatch.setattr(cli, "run_acquire", lambda *a, **k: 2)
+
+    def _fail_if_called(prompt):
+        raise AssertionError("must not offer checklinks after an aborted sequence")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+
+    exit_code = run_freeze(config, config.name)
+
+    assert exit_code == 2
+
+
+def test_checklinks_offer_not_asked_with_no_built_site(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    config = _freeze_tty_config(tmp_path, monkeypatch)  # no site/ dir created
+    _patch_default_steps(monkeypatch, cli)
+
+    def _fail_if_called(prompt):
+        raise AssertionError("must not offer checklinks with nothing built to scan")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+
+    run_freeze(config, config.name)
+
+
+def test_checklinks_offer_not_asked_on_non_tty(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    config = _freeze_config(tmp_path)  # isatty not patched True -> non-tty
+    (config.output_dir / "site").mkdir(parents=True)
+    _patch_default_steps(monkeypatch, cli)
+
+    def _fail_if_called(prompt):
+        raise AssertionError("must not prompt or check links on a non-tty")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+
+    run_freeze(config, config.name)
+
+
+def test_checklinks_offer_bare_enter_declines(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    config = _freeze_tty_config(tmp_path, monkeypatch)
+    (config.output_dir / "site").mkdir(parents=True)
+    _patch_default_steps(monkeypatch, cli)
+    checklinks_calls = []
+    monkeypatch.setattr(cli, "run_checklinks", lambda *a, **k: checklinks_calls.append(1) or 0)
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+
+    run_freeze(config, config.name)
+
+    assert checklinks_calls == []
+
+
+def test_checklinks_offer_accepted_broken_links_dont_change_exit_code(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    config = _freeze_tty_config(tmp_path, monkeypatch)
+    (config.output_dir / "site").mkdir(parents=True)
+    _patch_default_steps(monkeypatch, cli)
+    checklinks_calls = []
+    monkeypatch.setattr(cli, "run_checklinks", lambda *a, **k: checklinks_calls.append(1) or 1)
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+
+    exit_code = run_freeze(config, config.name)
+
+    assert checklinks_calls == [1]
+    assert exit_code == 0  # offered checklinks' own 1 (broken links) is informational only
+
+
+def test_declared_checklinks_step_returning_1_does_set_exit_code(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    config = _freeze_tty_config(tmp_path, monkeypatch, steps=("acquire", "build", "validate", "checklinks"))
+    (config.output_dir / "site").mkdir(parents=True)
+    _patch_default_steps(monkeypatch, cli)
+    monkeypatch.setattr(cli, "run_checklinks", lambda *a, **k: 1)
+
+    exit_code = run_freeze(config, config.name)
+
+    assert exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# _offer_new_project (unknown project -> offer to start one via the wizard)
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_project_non_tty_exits_2_without_calling_input(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+    def _fail_if_called(prompt):
+        raise AssertionError("must not prompt on a non-tty")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+
+    assert main(["build", "foo"]) == 2
+
+
+def test_unknown_project_tty_accepted_launches_wizard_with_initial_name(tmp_path: Path, monkeypatch):
+    import wpfreeze.cli as cli
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+
+    wizard_calls = []
+    monkeypatch.setattr(
+        "wpfreeze.wizard.run_wizard",
+        lambda **kwargs: wizard_calls.append(kwargs) or 0,
+    )
+
+    exit_code = cli.main(["build", "foo"])
+
+    assert exit_code == 0
+    assert wizard_calls == [{"initial_name": "foo", "then_freeze": True}]
+
+
+def test_unknown_project_tty_declined_exits_2(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    assert main(["build", "foo"]) == 2
