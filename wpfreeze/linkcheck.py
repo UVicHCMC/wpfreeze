@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import requests
@@ -36,6 +37,9 @@ from bs4 import BeautifulSoup
 from wpfreeze.fetch import SUCCESS, FetchConfig, FetchOutcome, RateLimiter, fetch_with_retries
 from wpfreeze.manifest import FLAG_AUTH_GATED, FLAG_RETRY_EXHAUSTED
 from wpfreeze.urlnorm import SiteProfile
+
+if TYPE_CHECKING:
+    from wpfreeze.progress import Progress
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +158,7 @@ def check_links(
     user_agent: str,
     rate_limit: float,
     workers: int,
+    progress: "Progress | None" = None,
 ) -> list[LinkCheckResult]:
     """Ask each unique URL in `links` whether it still resolves, respecting
     the same per-host politeness/backoff `acquire` uses (see fetch.py) --
@@ -163,6 +168,8 @@ def check_links(
     rate_limiter = RateLimiter(rate_limit)
     session = requests.Session()
     results: dict[str, LinkCheckResult] = {}
+    if progress is not None:
+        progress.phase("Checking external links", total=len(links))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
         futures = {
             executor.submit(fetch_with_retries, link.url, session, rate_limiter, fetch_config): link
@@ -179,6 +186,8 @@ def check_links(
                 status=outcome.http_status,
                 reason=None if ok else _describe_failure(outcome),
             )
+            if progress is not None:
+                progress.tick(detail=link.url)
     return [results[link.url] for link in links]
 
 

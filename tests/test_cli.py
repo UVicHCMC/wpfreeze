@@ -305,6 +305,17 @@ def test_run_acquire_end_to_end_produces_artefacts(tmp_path: Path):
         assert about.output_path == "/about.html"
 
 
+def test_run_acquire_prints_a_timing_wrapup(tmp_path: Path, capsys):
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        run_acquire(config, resume=False, dry_run=False)
+        out = capsys.readouterr().out
+        assert "done in" in out
+        assert "acquire" in out
+        assert "Manifest" in out
+        assert str(config.output_dir / "report.html") in out
+
+
 def test_run_acquire_refuses_without_resume_when_manifest_exists(tmp_path: Path):
     with FixtureSite() as site:
         config = _config_for(site, tmp_path / "out")
@@ -677,6 +688,21 @@ def test_run_build_writes_build_report_and_cleanup_todo(tmp_path: Path, capsys):
     out = capsys.readouterr().out
     assert f"Cleanup checklist: {output_dir / 'cleanup-todo.md'}" in out
     assert "cleanup-todo.html" in out
+
+
+def test_run_build_prints_a_timing_wrapup(tmp_path: Path, capsys):
+    from wpfreeze.cli import run_build
+
+    output_dir = tmp_path / "out"
+    config = _minimal_capture(output_dir)
+
+    run_build(config, None, verify=False)
+
+    out = capsys.readouterr().out
+    assert "done in" in out
+    assert "build" in out
+    assert "Built site" in out
+    assert str(output_dir / "site") in out
 
 
 def test_run_build_verify_ignores_a_pre_existing_file_in_site_dir(tmp_path: Path):

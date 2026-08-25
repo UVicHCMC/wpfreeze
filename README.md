@@ -214,6 +214,22 @@ Every subcommand below takes the project either way: a name (`landscapes`)
 or `--config site.yaml`, never both. See "Projects" below for what a name
 resolves against.
 
+`acquire`, `build`, `validate`, `search-index`, and `checklinks` show a
+live single-line progress display while they run, in a real terminal only
+(piped output, backgrounded, or CI gets the plain log lines instead, same
+as always) — a spinner, a counter where one is known, and the current
+URL/page. Each finishes with a brief summary: how long it took, and where
+the artefacts it produced actually landed:
+
+```
+landscapes — done in 41m02s
+  acquire        41m02s
+
+  Report     output/landscapes/report.html
+  Manifest   output/landscapes/manifest.json
+  Logs       output/landscapes/logs/
+```
+
 ```
 wpfreeze                                # no subcommand: interactive picker (plain summary if not a real terminal)
 wpfreeze wizard                         # guided setup: resume an existing run, or build a new site config

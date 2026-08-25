@@ -55,6 +55,7 @@ from wpfreeze.urlnorm import PERMALINK_QUERY_KEYS, scope_profile_from_config
 
 if TYPE_CHECKING:
     from wpfreeze.cli import SearchSettings
+    from wpfreeze.progress import Progress
 
 logger = logging.getLogger(__name__)
 
@@ -741,6 +742,7 @@ def build_site(
     base_url: str | None = None,
     extra_hosts: tuple[str, ...] | list[str] = (),
     search: SearchSettings | None = None,
+    progress: "Progress | None" = None,
 ) -> BuildStats:
     """Emit the rewritten site under `site_dir`.
 
@@ -774,7 +776,12 @@ def build_site(
     stats.search.enabled = search_enabled
     logger.info("build: %d lookup keys, %d attachment redirects", len(lookup), len(attachment_media))
 
+    if progress is not None:
+        progress.phase("Building", total=len(manifest))
+
     for record in manifest.all():
+        if progress is not None:
+            progress.tick(detail=record.url)
         if record.status not in _FETCHED_STATUSES or not record.output_path:
             continue
         source = output_dir / record.local_path if record.local_path else None

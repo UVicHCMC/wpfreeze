@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlencode, urlsplit
 
 import requests
@@ -21,6 +22,9 @@ from wpfreeze.crawl import admit_link, _should_parse_for_links, content_kind, di
 from wpfreeze.fetch import SUCCESS, FetchConfig, RateLimiter, fetch_with_retries
 from wpfreeze.manifest import Manifest, ManifestRecord, Source, Status
 from wpfreeze.urlnorm import SiteProfile, normalize_url
+
+if TYPE_CHECKING:
+    from wpfreeze.progress import Progress
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +101,7 @@ def recover_via_wayback(
     manifest_save_path: Path | None = None,
     cdx_api: str = DEFAULT_CDX_API,
     wayback_base: str = DEFAULT_WAYBACK_BASE,
+    progress: "Progress | None" = None,
 ) -> None:
     """Attempt Wayback recovery for every Status.RETRYING record (Stage 3's
     Wayback candidates). Successful recoveries become fetched_wayback and
@@ -114,6 +119,8 @@ def recover_via_wayback(
     tests override them to point at a local fake.
     """
     candidates = manifest.by_status(Status.RETRYING.value)
+    if progress is not None:
+        progress.phase("Recovering via Wayback", total=len(candidates))
     for record in candidates:
         _recover_one(
             record,
@@ -129,6 +136,8 @@ def recover_via_wayback(
         )
         if manifest_save_path is not None:
             manifest.save(manifest_save_path)
+        if progress is not None:
+            progress.tick(detail=record.url)
 
 
 def _recover_one(

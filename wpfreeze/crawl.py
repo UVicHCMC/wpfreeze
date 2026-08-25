@@ -10,6 +10,7 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import requests
@@ -18,6 +19,9 @@ from wpfreeze.extract import HYPERLINK, extract_from_css, extract_from_html
 from wpfreeze.fetch import SUCCESS, WAYBACK_CANDIDATE, FetchConfig, FetchResult, RateLimiter, fetch_with_retries
 from wpfreeze.manifest import Manifest, ManifestRecord, Source, Status, utc_now
 from wpfreeze.urlnorm import SiteProfile, normalize_url
+
+if TYPE_CHECKING:
+    from wpfreeze.progress import Progress
 
 logger = logging.getLogger(__name__)
 
@@ -352,6 +356,7 @@ def crawl_fixpoint(
     exclusions: list[re.Pattern],
     manifest_save_path: Path | None = None,
     workers: int = 1,
+    progress: "Progress | None" = None,
 ) -> None:
     """Process every pending record, discovering more as links are
     extracted, until no pending records remain. Not a fixed number of
@@ -368,12 +373,14 @@ def crawl_fixpoint(
     `workers=1`, rather than branching to a separate sequential loop, so
     there's exactly one code path to trust regardless of worker count.
     """
+    if progress is not None:
+        progress.phase("Crawling")
     with ThreadPoolExecutor(max_workers=workers) as executor:
         while True:
             pending = manifest.by_status(Status.PENDING.value)
             if not pending:
                 break
-            futures = [
+            future_to_record = {
                 executor.submit(
                     _process_one,
                     record,
@@ -385,12 +392,14 @@ def crawl_fixpoint(
                     raw_dir,
                     exclusions,
                     manifest_save_path,
-                )
+                ): record
                 for record in pending
-            ]
+            }
             try:
-                for future in as_completed(futures):
+                for future in as_completed(future_to_record):
                     future.result()
+                    if progress is not None:
+                        progress.tick(detail=future_to_record[future].url)
             except BaseException:
                 # Stop scheduling new work immediately; let anything
                 # already running finish (its locked save completes

@@ -45,6 +45,7 @@ from wpfreeze.linkcheck import check_links, extract_external_links, load_links, 
 from wpfreeze.manifest import Manifest, Status, utc_now
 from wpfreeze.outputs import compute_output_paths, generate_redirects_htaccess
 from wpfreeze.policy import Policy
+from wpfreeze.progress import Progress
 from wpfreeze.projects import AmbiguousProject, ProjectNotFound, resolve_project, validate_name
 from wpfreeze.report import write_report_html, write_report_json
 from wpfreeze.rescan import format_rescan_summary, rescan
@@ -66,6 +67,7 @@ from wpfreeze.validate import (
     write_validation_report,
 )
 from wpfreeze.wayback import recover_via_wayback
+from wpfreeze.wrapup import RunSummary, format_wrapup, time_step
 
 logger = logging.getLogger(__name__)
 
@@ -409,18 +411,21 @@ def _describe_inventory_sources(manifest, sources: dict[str, bool]) -> str:
     return ", ".join(parts) + " (sources overlap; a URL can come from several)"
 
 
-def _run_to_settled(manifest, profile, config, session, rate_limiter, wayback_rate_limiter, fetch_config, raw_dir, exclusions, manifest_path) -> None:
+def _run_to_settled(
+    manifest, profile, config, session, rate_limiter, wayback_rate_limiter, fetch_config, raw_dir,
+    exclusions, manifest_path, progress: "Progress | None" = None,
+) -> None:
     """Interleave crawl -> Wayback recovery -> canonical cascade until no
     pending work remains (Stage 2/4 joint fixpoint, see CLAUDE-acquire.md)."""
     while True:
         crawl_fixpoint(
             manifest, profile, session, rate_limiter, fetch_config, raw_dir, exclusions,
-            manifest_save_path=manifest_path, workers=config.concurrency,
+            manifest_save_path=manifest_path, workers=config.concurrency, progress=progress,
         )
         if config.wayback.enabled:
             recover_via_wayback(
                 manifest, profile, session, wayback_rate_limiter, fetch_config, raw_dir,
-                config.wayback.prefer_snapshots_near, manifest_save_path=manifest_path,
+                config.wayback.prefer_snapshots_near, manifest_save_path=manifest_path, progress=progress,
             )
         cascade_created_pending = apply_canonical_cascade(manifest, profile, raw_dir)
         if not manifest.by_status(Status.PENDING.value) and not cascade_created_pending:
@@ -447,14 +452,31 @@ def run_acquire(config: SiteConfig, resume: bool, dry_run: bool) -> int:
     except RunLockHeld as exc:
         print(str(exc))
         return 2
+
+    summary = RunSummary(project=config.name, base_url=config.base_url, output_dir=output_dir)
+    host = urlsplit(config.base_url).hostname or config.base_url
     try:
-        return _run_acquire_locked(config, resume, dry_run, output_dir, raw_dir, manifest_path)
+        with Progress(f"Acquiring {host}") as progress:
+            exit_code = time_step(
+                summary,
+                "acquire",
+                lambda: _run_acquire_locked(config, resume, dry_run, output_dir, raw_dir, manifest_path, progress),
+            )
     finally:
         lock.release()
 
+    print(format_wrapup(summary))
+    return exit_code
+
 
 def _run_acquire_locked(
-    config: SiteConfig, resume: bool, dry_run: bool, output_dir: Path, raw_dir: Path, manifest_path: Path
+    config: SiteConfig,
+    resume: bool,
+    dry_run: bool,
+    output_dir: Path,
+    raw_dir: Path,
+    manifest_path: Path,
+    progress: "Progress | None" = None,
 ) -> int:
     manifest = Manifest.load(manifest_path) if manifest_path.exists() else Manifest()
 
@@ -482,6 +504,8 @@ def _run_acquire_locked(
     # marked `excluded` later.
     exclusions = compile_exclusions(config.exclusions)
 
+    if progress is not None:
+        progress.phase("Discovering inventory")
     manifest.get_or_create(config.base_url, discovered_via="base_url")
     sources = discover_inventory(
         manifest, config.base_url, profile, exclusions, config.xml_backup,
@@ -496,7 +520,10 @@ def _run_acquire_locked(
         print(f"  by source: {_describe_inventory_sources(manifest, sources)}")
         return 0
 
-    _run_to_settled(manifest, profile, config, session, rate_limiter, wayback_rate_limiter, fetch_config, raw_dir, exclusions, manifest_path)
+    _run_to_settled(
+        manifest, profile, config, session, rate_limiter, wayback_rate_limiter, fetch_config, raw_dir,
+        exclusions, manifest_path, progress=progress,
+    )
 
     flag_orphans_and_unlisted(manifest)
     flag_forms_and_plugin_markup(manifest, raw_dir)
@@ -725,13 +752,28 @@ def run_build(config: SiteConfig, site_dir: Path | None, verify: bool, write_tod
         return 2
     manifest = Manifest.load(manifest_path)
     target = site_dir or (config.output_dir / "site")
+
+    summary = RunSummary(project=config.name, base_url=config.base_url, output_dir=config.output_dir)
+    host = urlsplit(config.base_url).hostname or config.base_url
+    with Progress(f"Building {host}") as progress:
+        exit_code = time_step(
+            summary, "build", lambda: _run_build_body(config, manifest, target, verify, write_todo, progress)
+        )
+    print(format_wrapup(summary))
+    return exit_code
+
+
+def _run_build_body(
+    config: SiteConfig, manifest: Manifest, target: Path, verify: bool, write_todo: bool, progress: "Progress | None"
+) -> int:
     # Captured before build_site writes anything, so verify_site can tell
     # this run's own output apart from whatever else might already be
     # sitting in `target` (a file the user placed there for their own
     # purposes, say) -- see verify_site's written_after docstring.
     build_started = time.time()
     stats = build_site(
-        manifest, config.output_dir, target, config.policy, config.base_url, config.extra_hosts, config.search
+        manifest, config.output_dir, target, config.policy, config.base_url, config.extra_hosts, config.search,
+        progress=progress,
     )
     print(format_build_summary(stats))
     print(f"Site written to {target}")
@@ -800,6 +842,15 @@ def run_validate(config: SiteConfig, site_dir: Path | None, write_todo: bool = T
         print(f"No built site found at {target}; run `wpfreeze build` first.")
         return 2
 
+    summary = RunSummary(project=config.name, base_url=config.base_url, output_dir=config.output_dir)
+    host = urlsplit(config.base_url).hostname or config.base_url
+    with Progress(f"Validating {host} (vnu, no progress available)"):
+        exit_code = time_step(summary, "validate", lambda: _run_validate_body(config, target, write_todo))
+    print(format_wrapup(summary))
+    return exit_code
+
+
+def _run_validate_body(config: SiteConfig, target: Path, write_todo: bool) -> int:
     try:
         vnu_jar = config.vnu_jar or ensure_vnu_jar()
         report = validate_site(vnu_jar, target)
@@ -888,6 +939,15 @@ def run_search_index(config: SiteConfig, site_dir: Path | None) -> int:
         print(f"No built site found at {target}; run `wpfreeze build` first.")
         return 2
 
+    summary = RunSummary(project=config.name, base_url=config.base_url, output_dir=config.output_dir)
+    host = urlsplit(config.base_url).hostname or config.base_url
+    with Progress(f"Indexing {host} (pagefind, no progress available)"):
+        exit_code = time_step(summary, "search-index", lambda: _run_search_index_body(config, target))
+    print(format_wrapup(summary))
+    return exit_code
+
+
+def _run_search_index_body(config: SiteConfig, target: Path) -> int:
     try:
         result = run_pagefind_index(target, config.search)
     except SearchUnavailable as exc:
@@ -950,7 +1010,19 @@ def run_checklinks(config: SiteConfig, site_dir: Path | None, recheck: bool) -> 
         print("No external links to check.")
         return 0
 
-    results = check_links(links, user_agent=config.user_agent, rate_limit=config.rate_limit, workers=config.concurrency)
+    summary = RunSummary(project=config.name, base_url=config.base_url, output_dir=config.output_dir)
+    host = urlsplit(config.base_url).hostname or config.base_url
+    with Progress(f"Checking links from {host}") as progress:
+        exit_code = time_step(summary, "checklinks", lambda: _run_checklinks_body(config, links, progress))
+    print(format_wrapup(summary))
+    return exit_code
+
+
+def _run_checklinks_body(config: SiteConfig, links: list, progress: "Progress | None") -> int:
+    results = check_links(
+        links, user_agent=config.user_agent, rate_limit=config.rate_limit, workers=config.concurrency,
+        progress=progress,
+    )
     broken = [r for r in results if not r.ok]
     checked_at = datetime.now(timezone.utc).isoformat()
     md_path, html_path = write_report(results, config.output_dir, checked_at)
