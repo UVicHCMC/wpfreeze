@@ -435,7 +435,10 @@ broken-external-links.html  the same, styled like report.html
 
 `report.html` and `cleanup-todo.html` have no external dependencies — no
 CDN scripts, no fonts, no tracking — each is one file you can hand to
-anyone.
+anyone. You don't have to memorize this tree yourself, either — the
+wrap-up printed after `acquire`/`build`/`validate`/`freeze` (see "What a
+freeze run looks like" above) names exactly which of these paths actually
+exist for the run you just did.
 
 ## The cleanup checklist
 
