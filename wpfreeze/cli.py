@@ -50,7 +50,7 @@ from wpfreeze.outputs import compute_output_paths, generate_redirects_htaccess
 from wpfreeze.policy import Policy
 from wpfreeze.progress import Progress
 from wpfreeze.projects import AmbiguousProject, ProjectNotFound, resolve_project, validate_name
-from wpfreeze.report import assess_dry_run, format_readiness, write_report_html, write_report_json
+from wpfreeze.report import assess_dry_run, format_readiness, inventory_records, write_report_html, write_report_json
 from wpfreeze.rescan import format_rescan_summary, rescan
 from wpfreeze.runlock import RunLock, RunLockHeld
 from wpfreeze.search import (
@@ -599,7 +599,14 @@ def _run_acquire_locked(
         )
         if progress is not None:
             progress.finish()
-        print(f"Dry run: {len(manifest)} URL(s) discovered, nothing fetched.")
+        # Not len(manifest): a dry run has no collision guard (see the
+        # refusal check above, which excludes dry_run outright) and will
+        # happily load an existing manifest.json from a prior completed
+        # run -- len(manifest) would then count thousands of crawl-
+        # discovered assets that this dry run's own inventory discovery
+        # never touched. inventory_records() filters to what was actually
+        # (re)discovered just now (sitemap/REST API/XML export/base_url).
+        print(f"Dry run: {len(inventory_records(manifest))} URL(s) discovered, nothing fetched.")
         print(f"  by source: {_describe_inventory_sources(manifest, sources)}")
         print(format_readiness(assessment))
         return 0
@@ -1002,21 +1009,27 @@ def run_validate(
 
     summary = RunSummary(project=config.name, base_url=config.base_url, output_dir=config.output_dir)
     host = urlsplit(config.base_url).hostname or config.base_url
-    with Progress(f"Validating {host} (vnu, no progress available)"):
-        exit_code = time_step(summary, "validate", lambda: _run_validate_body(config, target, write_todo))
+    with Progress(f"Validating {host} (vnu, no progress available)") as progress:
+        exit_code = time_step(summary, "validate", lambda: _run_validate_body(config, target, write_todo, progress))
     if print_wrapup:
         print(format_wrapup(summary))
     return exit_code
 
 
-def _run_validate_body(config: SiteConfig, target: Path, write_todo: bool) -> int:
+def _run_validate_body(
+    config: SiteConfig, target: Path, write_todo: bool, progress: "Progress | None" = None
+) -> int:
     try:
         vnu_jar = config.vnu_jar or ensure_vnu_jar()
         report = validate_site(vnu_jar, target)
     except VnuUnavailable as exc:
+        if progress is not None:
+            progress.finish()
         print(f"VNU validation could not run: {exc}")
         return 2
 
+    if progress is not None:
+        progress.finish()
     print(format_validation_summary(report))
     path = write_validation_report(report, config.output_dir)
     print(f"Full detail: {path}")
@@ -1100,19 +1113,24 @@ def run_search_index(config: SiteConfig, site_dir: Path | None, *, print_wrapup:
 
     summary = RunSummary(project=config.name, base_url=config.base_url, output_dir=config.output_dir)
     host = urlsplit(config.base_url).hostname or config.base_url
-    with Progress(f"Indexing {host} (pagefind, no progress available)"):
-        exit_code = time_step(summary, "search-index", lambda: _run_search_index_body(config, target))
+    with Progress(f"Indexing {host} (pagefind, no progress available)") as progress:
+        exit_code = time_step(summary, "search-index", lambda: _run_search_index_body(config, target, progress))
     if print_wrapup:
         print(format_wrapup(summary))
     return exit_code
 
 
-def _run_search_index_body(config: SiteConfig, target: Path) -> int:
+def _run_search_index_body(config: SiteConfig, target: Path, progress: "Progress | None" = None) -> int:
     try:
         result = run_pagefind_index(target, config.search)
     except SearchUnavailable as exc:
+        if progress is not None:
+            progress.finish()
         print(f"Search index could not be built: {exc}")
         return 2
+
+    if progress is not None:
+        progress.finish()
 
     # Not format_search_summary: that also reports per-page form/content
     # coverage computed during build_site's own loop, which this command

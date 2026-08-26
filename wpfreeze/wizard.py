@@ -231,7 +231,21 @@ def describe_configs(directory: Path = Path(".")) -> tuple[list[ConfigStatus], l
         site_dir = config.output_dir / "site"
         if not manifest_path.exists():
             status_lines = ("Not yet acquired.",)
-            commands = (RecommendedCommand("acquire", ("--dry-run",)), RecommendedCommand("acquire"))
+            # freeze recommended between the dry-run and the bare acquire:
+            # sizing a site up first is still worth keeping as its own
+            # leading option (CLAUDE-freeze-ux.md's own reasoning -- "useful
+            # regardless of how the rest of the run proceeds"), but for a
+            # project with nothing done yet, freeze -- not a lone acquire --
+            # is the config's own declared normal path end to end (see
+            # README's Quickstart, which already leads with it). Left out of
+            # the resumable-run and already-acquired branches below on
+            # purpose: re-running the whole sequence there would just be a
+            # slower way to do what a single recommended step already does.
+            commands = (
+                RecommendedCommand("acquire", ("--dry-run",)),
+                RecommendedCommand("freeze"),
+                RecommendedCommand("acquire"),
+            )
         else:
             fetched, pending, total = _manifest_counts(config.output_dir)
             status_lines = (

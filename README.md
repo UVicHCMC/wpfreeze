@@ -20,6 +20,10 @@ web scraper and makes no attempt to be polite to sites it doesn't own.
   snapshots for anything the live site can't serve, and write a
   self-contained `report.html` that tells you exactly what's missing and
   why.
+- **Also does**: run a project's whole acquire → build → validate sequence
+  in one command (`wpfreeze freeze <project>`), addressed by a short
+  project name instead of `--config path/to/site.yaml`. See "Projects"
+  and "What a freeze run looks like" below.
 - **Also does**: give `acquire --dry-run` a plain-language readiness
   verdict — ready, worth a look, or needs attention — from the URL
   inventory it just discovered, before you commit to a real crawl. See

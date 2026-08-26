@@ -525,6 +525,9 @@ def test_print_overview_not_yet_acquired(tmp_path):
 
     assert "Not yet acquired." in text
     assert "wpfreeze acquire site --dry-run" in text
+    # Column-padded against "acquire" (7 chars), so "freeze" (6) gets an
+    # extra space -- check the subcommand appears, not the exact spacing.
+    assert "wpfreeze freeze" in text
     assert "wpfreeze acquire site" in text
     assert "wpfreeze status" not in text
 
@@ -654,6 +657,7 @@ def test_describe_configs_not_yet_acquired(tmp_path):
     assert status.status_lines == ("Not yet acquired.",)
     assert [c.argv(status.config.name) for c in status.commands] == [
         ["acquire", "site", "--dry-run"],
+        ["freeze", "site"],
         ["acquire", "site"],
     ]
 

@@ -210,6 +210,30 @@ def test_get_or_create_chases_multi_hop_redirect_chain():
     assert len(manifest) == 1
 
 
+def test_get_or_create_terminates_on_a_redirect_cycle_instead_of_recursing_forever():
+    """Real bug, surfaced on a live crawl (site-b.example): a
+    WordPress slug that never settles between its raw-Unicode and
+    percent-encoded spellings, each 301-ing to the other, forever. The
+    while loop's cycle detection correctly stops walking, but an earlier
+    version then recursed into get_or_create(target_url, ...) for
+    whatever it stopped on -- a fresh call with a fresh `seen` set that
+    doesn't remember the cycle, so it walked the same loop again, stopped
+    again, recursed again, forever, until RecursionError. Neither URL
+    ever gets a real record in this scenario (no fetch ever completes),
+    matching what a real manifest.json with this shape looks like."""
+    manifest = Manifest()
+    manifest.resolve_redirect("https://example.com/a/", "https://example.com/b/")
+    manifest.resolve_redirect("https://example.com/b/", "https://example.com/a/")
+
+    result = manifest.get_or_create("https://example.com/a/")  # must not raise RecursionError
+    assert result is not None
+    assert len(manifest) == 1
+
+    # The other direction must terminate too, independently.
+    other = manifest.get_or_create("https://example.com/b/")
+    assert other is not None
+
+
 def test_redirect_aliases_survive_save_and_load(tmp_path: Path):
     manifest = Manifest()
     manifest.get_or_create("https://example.com/a/", discovered_via="sitemap")

@@ -457,6 +457,31 @@ def test_run_acquire_real_run_readiness_is_null(tmp_path: Path):
         assert report["readiness"] is None
 
 
+def test_run_acquire_dry_run_over_a_completed_capture_reports_inventory_count_not_full_manifest(
+    tmp_path: Path, capsys
+):
+    """A dry run has no collision guard and will happily load a prior
+    completed run's manifest.json -- the printed count must reflect only
+    what THIS dry run's own inventory discovery found, not the full
+    manifest, which by then also has crawl-discovered assets the earlier
+    real run added."""
+    from wpfreeze.report import inventory_records
+
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        run_acquire(config, resume=False, dry_run=False)
+        capsys.readouterr()  # discard the real run's own output
+
+        full_manifest = Manifest.load(config.output_dir / "manifest.json")
+        exit_code = run_acquire(config, resume=False, dry_run=True)
+        assert exit_code == 0
+
+        out = capsys.readouterr().out
+        expected = len(inventory_records(full_manifest))
+        assert f"Dry run: {expected} URL(s) discovered" in out
+        assert expected < len(full_manifest)
+
+
 def test_run_acquire_releases_lock_after_completion(tmp_path: Path):
     with FixtureSite() as site:
         config = _config_for(site, tmp_path / "out")
@@ -1309,6 +1334,39 @@ def test_search_index_returns_1_on_a_failed_index(tmp_path: Path, monkeypatch, c
     assert "index exploded" in capsys.readouterr().out
 
 
+def test_run_search_index_body_calls_progress_finish_on_success(tmp_path: Path, monkeypatch):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, _run_search_index_body, run_build
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(_minimal_capture(output_dir), search=SearchSettings(enabled=True))
+    _mock_pagefind_index(monkeypatch, ok=True)
+    run_build(config, None, verify=False)  # so the built site exists
+
+    _mock_pagefind_index(monkeypatch, ok=True, pages_indexed=1, languages=("en",))
+    progress = _FakeProgress()
+    _run_search_index_body(config, output_dir / "site", progress)
+    assert progress.finished is True
+
+
+def test_run_search_index_body_calls_progress_finish_when_pagefind_unavailable(tmp_path: Path, monkeypatch):
+    import dataclasses
+
+    from wpfreeze.cli import SearchSettings, SearchUnavailable, _run_search_index_body, run_build
+
+    output_dir = tmp_path / "out"
+    config = dataclasses.replace(_minimal_capture(output_dir), search=SearchSettings(enabled=True))
+    _mock_pagefind_index(monkeypatch, ok=True)
+    run_build(config, None, verify=False)  # so the built site exists
+
+    _mock_pagefind_index(monkeypatch, raises=SearchUnavailable("pagefind not installed"))
+    progress = _FakeProgress()
+    exit_code = _run_search_index_body(config, output_dir / "site", progress)
+    assert exit_code == 2
+    assert progress.finished is True
+
+
 def test_run_validate_writes_cleanup_todo(tmp_path: Path, monkeypatch):
     from wpfreeze.cli import run_validate
     from wpfreeze.validate import ValidationReport
@@ -1347,6 +1405,58 @@ def test_run_validate_no_todo_flag_skips_cleanup_todo(tmp_path: Path, monkeypatc
 
     assert not (output_dir / "cleanup-todo.md").exists()
     assert not (output_dir / "cleanup-todo.html").exists()
+
+
+class _FakeProgress:
+    """Stands in for wpfreeze.progress.Progress in tests that only need to
+    assert finish() was (or wasn't) called -- a real Progress is inactive
+    under pytest's captured, non-tty stderr, so it can't be used to
+    observe this itself."""
+
+    def __init__(self):
+        self.finished = False
+
+    def finish(self):
+        self.finished = True
+
+
+def test_run_validate_body_calls_progress_finish_on_success(tmp_path, monkeypatch):
+    from wpfreeze.cli import _run_validate_body
+    from wpfreeze.validate import ValidationReport
+
+    output_dir = tmp_path / "out"
+    (output_dir / "site").mkdir(parents=True)
+    config = SiteConfig(base_url="https://example.com/", output_dir=output_dir)
+
+    monkeypatch.setattr("wpfreeze.cli.ensure_vnu_jar", lambda: Path("/fake/vnu.jar"))
+    monkeypatch.setattr(
+        "wpfreeze.cli.validate_site",
+        lambda jar, target: ValidationReport(documents_checked=1, total_messages=0, issues=[]),
+    )
+
+    progress = _FakeProgress()
+    _run_validate_body(config, output_dir / "site", False, progress)
+    assert progress.finished is True
+
+
+def test_run_validate_body_calls_progress_finish_when_vnu_is_unavailable(tmp_path, monkeypatch):
+    from wpfreeze.cli import VnuUnavailable, _run_validate_body
+
+    output_dir = tmp_path / "out"
+    (output_dir / "site").mkdir(parents=True)
+    config = SiteConfig(base_url="https://example.com/", output_dir=output_dir)
+
+    def _raise():
+        raise VnuUnavailable("no java on PATH")
+
+    monkeypatch.setattr("wpfreeze.cli.ensure_vnu_jar", _raise)
+
+    progress = _FakeProgress()
+    exit_code = _run_validate_body(config, output_dir / "site", False, progress)
+    assert exit_code == 2
+    # The checkmark still resolves the "Validating" phase even on failure --
+    # it marks the tracked phase as over, not that validation succeeded.
+    assert progress.finished is True
 
 
 # ---------------------------------------------------------------------------

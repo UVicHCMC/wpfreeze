@@ -230,7 +230,16 @@ class DryRunAssessment:
     findings: tuple[Finding, ...]
 
 
-def _inventory_records(manifest: Manifest) -> list[ManifestRecord]:
+def inventory_records(manifest: Manifest) -> list[ManifestRecord]:
+    """Records actually seeded by inventory discovery (sitemap/REST API/XML
+    export/the base_url itself) -- excludes crawl:/wayback: provenance.
+    Public (not `_`-prefixed) because `_run_acquire_locked`'s dry-run
+    branch needs it too, for the same reason assess_dry_run does: a dry
+    run has no collision guard and will happily load an existing
+    manifest.json from a completed prior run (see "the resumed-manifest
+    trap" in CLAUDE-dry-run-readiness.md) -- `len(manifest)` in that case
+    counts thousands of crawl-discovered assets that were never part of
+    this dry run's own inventory discovery at all."""
     return [r for r in manifest.all() if _INVENTORY_PROVENANCE & set(r.discovered_via)]
 
 
@@ -273,8 +282,8 @@ def assess_dry_run(
     configured at all and when a configured one failed to read/parse, and
     R3 needs to tell those apart.
     """
-    inventory_records = _inventory_records(manifest)
-    total = len(inventory_records)
+    records = inventory_records(manifest)
+    total = len(records)
     findings: list[Finding] = []
 
     # R1 -- concern. Nothing beyond the seeded base_url itself.
@@ -308,8 +317,8 @@ def assess_dry_run(
 
     sitemap_ok = bool(sources.get("sitemap"))
     rest_ok = bool(sources.get("rest_api"))
-    sitemap_count = sum(1 for r in inventory_records if "sitemap" in r.discovered_via)
-    rest_count = sum(1 for r in inventory_records if "rest_api" in r.discovered_via)
+    sitemap_count = sum(1 for r in records if "sitemap" in r.discovered_via)
+    rest_count = sum(1 for r in records if "rest_api" in r.discovered_via)
 
     # R3 -- notice. Exactly one of sitemap/REST API reachable, no XML
     # export configured. Common and often fine (security plugins routinely
@@ -375,7 +384,7 @@ def assess_dry_run(
     # is WordPress archive/attachment pages, not standalone content.
     # Suppressed when R1 already fired, same reasoning as R3.
     if not nothing_discovered:
-        urls = [r.url for r in inventory_records]
+        urls = [r.url for r in records]
         matched_total, per_category = _low_value_archive_counts(urls)
         if matched_total >= 20 and (matched_total / total) >= 0.10:
             breakdown = ", ".join(

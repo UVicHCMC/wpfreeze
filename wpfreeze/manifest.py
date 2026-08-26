@@ -199,6 +199,17 @@ class Manifest:
         very post it's on) creates a self-sustaining loop: fetch, redirect,
         fold away, get rediscovered via the target's own content, fetch
         again, forever. This surfaced on a real crawl.
+
+        The while loop below is itself cycle-safe (a `seen` set stops it
+        from walking a circular alias chain forever), but the record it
+        resolves to is fetched/created *inline*, not via a recursive
+        get_or_create(target_url, ...) call as an earlier version did.
+        Recursing would re-run this exact walk from scratch with a fresh
+        `seen` set that has no memory of the cycle just found, so a real
+        redirect cycle (two URLs 301-ing back and forth -- surfaced on a
+        real crawl as a WordPress slug that never settles between its raw
+        Unicode and percent-encoded spellings) recursed forever instead of
+        terminating, until Python's own recursion limit raised.
         """
         target_url = self._redirect_aliases.get(url)
         if target_url is not None:
@@ -206,7 +217,13 @@ class Manifest:
             while target_url in self._redirect_aliases and target_url not in seen:
                 seen.add(target_url)
                 target_url = self._redirect_aliases[target_url]
-            target = self.get_or_create(target_url, discovered_via)
+            target = self._records.get(target_url)
+            if target is None:
+                target = ManifestRecord(url=target_url)
+                self._records[target_url] = target
+                logger.debug("new pending record for %s", target_url)
+            if discovered_via is not None:
+                target.add_discovered_via(discovered_via)
             target.add_redirect_from(url)
             target.add_alias(url)
             return target
