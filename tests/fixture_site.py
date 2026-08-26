@@ -10,12 +10,22 @@ from __future__ import annotations
 import contextlib
 import http.server
 import threading
+from collections import defaultdict
 
 
 class _FixtureHandler(http.server.BaseHTTPRequestHandler):
     routes: dict[str, tuple[int, str, bytes]] = {}
     redirects: dict[str, str] = {}
     request_log: list[str] = []
+    # Per-path status-code sequences, e.g. {"/limited/": [429, 429, 200]} --
+    # sticks on the last entry once exhausted, same convention as
+    # test_fetch.py's own scripted handler. Overrides only the status code
+    # a path's route would otherwise return; content_type/body are unchanged.
+    status_scripts: dict[str, list[int]] = {}
+    # Extra response headers per path, e.g. {"/limited/": {"Retry-After": "1"}}
+    # -- sent on every response to that path, script or not.
+    extra_headers: dict[str, dict[str, str]] = {}
+    call_counts: dict[str, int]
 
     def do_GET(self):  # noqa: N802
         self._handle(write_body=True)
@@ -43,9 +53,16 @@ class _FixtureHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(body)
             return
         status, content_type, body = entry
+        script = self.status_scripts.get(self.path)
+        if script:
+            idx = min(self.call_counts[self.path], len(script) - 1)
+            status = script[idx]
+            self.call_counts[self.path] += 1
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        for header_name, header_value in self.extra_headers.get(self.path, {}).items():
+            self.send_header(header_name, header_value)
         self.end_headers()
         if write_body:
             self.wfile.write(body)
@@ -54,11 +71,18 @@ class _FixtureHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def _make_handler(routes, redirects):
+def _make_handler(routes, redirects, status_scripts=None, extra_headers=None):
     return type(
         "FixtureHandler",
         (_FixtureHandler,),
-        {"routes": routes, "redirects": redirects, "request_log": []},
+        {
+            "routes": routes,
+            "redirects": redirects,
+            "request_log": [],
+            "status_scripts": status_scripts or {},
+            "extra_headers": extra_headers or {},
+            "call_counts": defaultdict(int),
+        },
     )
 
 
@@ -76,15 +100,30 @@ def _run_server(handler_class, host: str):
 
 class FixtureSite:
     """Context manager exposing `.site_base`, `.cdn_base`, request logs, and
-    the exact bytes served for each internal path (for hash assertions)."""
+    the exact bytes served for each internal path (for hash assertions).
 
-    def __init__(self):
+    `status_scripts`/`extra_headers` apply to the *site* server only (not
+    the CDN) -- see `_FixtureHandler` for their shape. Both default to
+    empty, so every existing caller is unaffected; they exist so an
+    integration test can make one path 429-then-200 (with a real
+    Retry-After header) and drive a real `run_acquire` against it, to
+    prove the rate-limit backoff works through the actual multi-threaded
+    crawl pipeline -- not just fetch_with_retries/RateLimiter in
+    isolation, which tests/test_fetch.py already covers thoroughly."""
+
+    def __init__(
+        self,
+        status_scripts: dict[str, list[int]] | None = None,
+        extra_headers: dict[str, dict[str, str]] | None = None,
+    ):
         self.site_handler = None
         self.cdn_handler = None
         self._site_ctx = None
         self._cdn_ctx = None
         self.site_server = None
         self.cdn_server = None
+        self._status_scripts = status_scripts or {}
+        self._extra_headers = extra_headers or {}
 
     def __enter__(self) -> "FixtureSite":
         self._cdn_ctx = _run_server(_make_handler(self._cdn_routes(), {}), "127.0.0.2")
@@ -92,7 +131,10 @@ class FixtureSite:
         cdn_base = f"http://127.0.0.2:{self.cdn_server.server_port}"
 
         site_routes, site_redirects = self._site_routes(cdn_base)
-        self._site_ctx = _run_server(_make_handler(site_routes, site_redirects), "127.0.0.1")
+        self._site_ctx = _run_server(
+            _make_handler(site_routes, site_redirects, self._status_scripts, self._extra_headers),
+            "127.0.0.1",
+        )
         self.site_server = self._site_ctx.__enter__()
         self.site_base = f"http://127.0.0.1:{self.site_server.server_port}"
         self.cdn_base = cdn_base

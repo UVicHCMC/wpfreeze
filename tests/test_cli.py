@@ -1665,12 +1665,12 @@ def _freeze_config(tmp_path: Path, steps=("acquire", "build", "validate")) -> Si
     )
 
 
-def test_run_freeze_runs_default_three_steps_in_order(tmp_path: Path):
+def test_run_freeze_runs_default_three_steps_in_order(tmp_path: Path, monkeypatch):
     import wpfreeze.cli as cli
 
     calls: list[str] = []
     for step in ("acquire", "build", "validate"):
-        _patch_step_module(cli, calls, step, 0)
+        _patch_step_module(monkeypatch, cli, calls, step, 0)
     config = _freeze_config(tmp_path)
 
     exit_code = run_freeze(config, config.name)
@@ -1679,7 +1679,15 @@ def test_run_freeze_runs_default_three_steps_in_order(tmp_path: Path):
     assert exit_code == 0
 
 
-def _patch_step_module(cli_module, calls, name, result=0):
+def _patch_step_module(monkeypatch, cli_module, calls, name, result=0):
+    """monkeypatch, not a bare setattr: this replaces a `run_*` function
+    directly on the shared `wpfreeze.cli` module object, and a plain
+    setattr has no automatic teardown -- it leaked into every later test
+    in the session (permanently stubbing the real run_acquire/run_build/
+    etc. for anyone who imports them afterward) until whichever later
+    test happened to patch the same name back over it. Found via
+    test_rate_limit_integration.py's own run_acquire coming back as this
+    exact lambda, from many tests away."""
     attr = {
         "acquire": "run_acquire",
         "build": "run_build",
@@ -1690,16 +1698,16 @@ def _patch_step_module(cli_module, calls, name, result=0):
         "search-index": "run_search_index",
         "upload-script": "run_upload_script",
     }[name]
-    setattr(cli_module, attr, lambda *a, **k: calls.append(name) or result)
+    monkeypatch.setattr(cli_module, attr, lambda *a, **k: calls.append(name) or result)
 
 
 def test_run_freeze_step_returning_2_stops_sequence(tmp_path: Path, monkeypatch):
     import wpfreeze.cli as cli
 
     calls: list[str] = []
-    _patch_step_module(cli, calls, "acquire", 2)
-    _patch_step_module(cli, calls, "build", 0)
-    _patch_step_module(cli, calls, "validate", 0)
+    _patch_step_module(monkeypatch, cli, calls, "acquire", 2)
+    _patch_step_module(monkeypatch, cli, calls, "build", 0)
+    _patch_step_module(monkeypatch, cli, calls, "validate", 0)
     config = _freeze_config(tmp_path)
 
     exit_code = run_freeze(config, config.name)
@@ -1708,13 +1716,13 @@ def test_run_freeze_step_returning_2_stops_sequence(tmp_path: Path, monkeypatch)
     assert exit_code == 2
 
 
-def test_run_freeze_step_returning_1_continues_and_sets_exit_code(tmp_path: Path):
+def test_run_freeze_step_returning_1_continues_and_sets_exit_code(tmp_path: Path, monkeypatch):
     import wpfreeze.cli as cli
 
     calls: list[str] = []
-    _patch_step_module(cli, calls, "acquire", 1)
-    _patch_step_module(cli, calls, "build", 0)
-    _patch_step_module(cli, calls, "validate", 0)
+    _patch_step_module(monkeypatch, cli, calls, "acquire", 1)
+    _patch_step_module(monkeypatch, cli, calls, "build", 0)
+    _patch_step_module(monkeypatch, cli, calls, "validate", 0)
     config = _freeze_config(tmp_path)
 
     exit_code = run_freeze(config, config.name)
@@ -1723,12 +1731,12 @@ def test_run_freeze_step_returning_1_continues_and_sets_exit_code(tmp_path: Path
     assert exit_code == 1
 
 
-def test_run_freeze_custom_step_order_is_honoured(tmp_path: Path):
+def test_run_freeze_custom_step_order_is_honoured(tmp_path: Path, monkeypatch):
     import wpfreeze.cli as cli
 
     calls: list[str] = []
     for step in ("build", "acquire", "diagnose"):
-        _patch_step_module(cli, calls, step, 0)
+        _patch_step_module(monkeypatch, cli, calls, step, 0)
     config = _freeze_config(tmp_path, steps=("build", "acquire", "diagnose"))
 
     run_freeze(config, config.name)
