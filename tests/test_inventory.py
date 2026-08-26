@@ -482,6 +482,66 @@ def test_discover_sitemaps_warns_when_an_index_promises_a_missing_child(monkeypa
     assert any("page-sitemap.xml" in m and "sitemap index" in m for m in warnings)
 
 
+class _FakeProgress:
+    """Records tick() calls -- stands in for wpfreeze.progress.Progress so a
+    test can assert discovery actually reports movement, without a real
+    terminal. See progress.py's own module docstring: there is no
+    background render thread, so a blocking discovery call that never
+    ticks looks completely frozen for its whole duration -- that's the
+    real bug this coverage exists to catch a regression of."""
+
+    def __init__(self):
+        self.ticks: list[str] = []
+
+    def tick(self, n: int = 1, detail: str = "") -> None:
+        self.ticks.append(detail)
+
+
+def test_discover_sitemaps_ticks_progress_once_per_sitemap_fetched(monkeypatch):
+    from wpfreeze import inventory
+
+    progress = _FakeProgress()
+    fetcher = _FakeFetcher({"https://example.com/sitemap.xml": PAGE_SITEMAP_XML})
+    monkeypatch.setattr(inventory, "fetch_with_retries", fetcher)
+    inventory.discover_sitemaps(
+        Manifest(), "https://example.com/", _profile_for("https://example.com/"), [], None, None, None,
+        progress=progress,
+    )
+    # One tick per URL actually fetched (conventional-location probes plus
+    # any nested sitemap) -- not zero, and not just one for the whole call.
+    assert len(progress.ticks) == len(fetcher.requested)
+    assert "https://example.com/sitemap.xml" in progress.ticks
+
+
+def test_discover_sitemaps_with_no_progress_does_not_raise(monkeypatch):
+    # progress=None (the default) must stay a no-op, same as every other
+    # optional-progress call site in this codebase.
+    ok, _, _ = _discover(monkeypatch, {})
+    assert ok is False
+
+
+def test_discover_rest_api_ticks_progress_once_per_page_fetched(monkeypatch):
+    import json as _json
+
+    from wpfreeze import inventory
+
+    progress = _FakeProgress()
+    pages_fetched: list[str] = []
+
+    def _fake_fetch(url, session, rate_limiter, fetch_config):
+        pages_fetched.append(url)
+        body = _json.dumps([{"id": 1, "link": "https://example.com/hello/"}]).encode() if "/posts" in url else b"[]"
+        return _FakeOutcome(body, url)
+
+    monkeypatch.setattr(inventory, "fetch_with_retries", _fake_fetch)
+    inventory.discover_rest_api(
+        Manifest(), "https://example.com/", _rest_profile("https://example.com/"), [], None, None, None,
+        progress=progress,
+    )
+    assert len(progress.ticks) == len(pages_fetched)
+    assert any("/posts" in d for d in progress.ticks)
+
+
 # ---------------------------------------------------------------------------
 # Scope confinement at seed time (multisite subdirectory installs)
 # ---------------------------------------------------------------------------

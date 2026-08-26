@@ -50,7 +50,7 @@ from wpfreeze.outputs import compute_output_paths, generate_redirects_htaccess
 from wpfreeze.policy import Policy
 from wpfreeze.progress import Progress
 from wpfreeze.projects import AmbiguousProject, ProjectNotFound, resolve_project, validate_name
-from wpfreeze.report import write_report_html, write_report_json
+from wpfreeze.report import assess_dry_run, format_readiness, write_report_html, write_report_json
 from wpfreeze.rescan import format_rescan_summary, rescan
 from wpfreeze.runlock import RunLock, RunLockHeld
 from wpfreeze.search import (
@@ -274,9 +274,21 @@ def load_config(path: Path) -> SiteConfig:
 
     xml_backup_raw = raw.get("xml_backup")
 
-    policy = Policy.from_config(raw.get("policy"))
-
+    policy_raw = raw.get("policy") or {}
     search_raw = raw.get("search") or {}
+    search_enabled = bool(search_raw.get("enabled", False))
+    # search.enabled implies "keep this site's search form" -- that's the
+    # entire point of turning it on, and requiring the same fact spelled out
+    # a second time via policy.strip_search_forms was pure duplication (the
+    # wizard already had to write both keys together for exactly this
+    # reason). Only kicks in when the config never addressed the key at all;
+    # an *explicit* strip_search_forms: true (or strip_forms: true) next to
+    # search.enabled: true is a real contradiction, not silently overridden
+    # -- see the ConfigError below, which still fires for that case.
+    if search_enabled and "strip_search_forms" not in policy_raw:
+        policy_raw = {**policy_raw, "strip_search_forms": False}
+    policy = Policy.from_config(policy_raw)
+
     body_selectors_raw = search_raw.get("body_selectors")
     # Key absent entirely -> DEFAULT_BODY_SELECTORS. Key present, even as
     # an explicit empty list, is a deliberate opt-out and must be honoured
@@ -284,7 +296,7 @@ def load_config(path: Path) -> SiteConfig:
     # promoted to the default.
     body_selectors = DEFAULT_BODY_SELECTORS if body_selectors_raw is None else tuple(body_selectors_raw or [])
     search = SearchSettings(
-        enabled=bool(search_raw.get("enabled", False)),
+        enabled=search_enabled,
         body_selectors=body_selectors,
         ignore_selectors=tuple(search_raw.get("ignore_selectors", []) or []),
         force_language=search_raw.get("force_language"),
@@ -573,15 +585,23 @@ def _run_acquire_locked(
     manifest.get_or_create(config.base_url, discovered_via="base_url")
     sources = discover_inventory(
         manifest, config.base_url, profile, exclusions, config.xml_backup,
-        session, rate_limiter, fetch_config,
+        session, rate_limiter, fetch_config, progress,
     )
     manifest.save(manifest_path)
 
     if dry_run:
-        write_report_json(manifest, output_dir, output_dir / "report.json", run_started, utc_now())
-        write_report_html(manifest, output_dir, output_dir / "report.html", run_started, utc_now())
+        assessment = assess_dry_run(manifest, sources, xml_backup_configured=config.xml_backup is not None)
+        write_report_json(
+            manifest, output_dir, output_dir / "report.json", run_started, utc_now(), readiness=assessment
+        )
+        write_report_html(
+            manifest, output_dir, output_dir / "report.html", run_started, utc_now(), readiness=assessment
+        )
+        if progress is not None:
+            progress.finish()
         print(f"Dry run: {len(manifest)} URL(s) discovered, nothing fetched.")
         print(f"  by source: {_describe_inventory_sources(manifest, sources)}")
+        print(format_readiness(assessment))
         return 0
 
     _run_to_settled(
@@ -602,6 +622,9 @@ def _run_acquire_locked(
     write_report_json(manifest, output_dir, output_dir / "report.json", run_started, run_finished)
     write_report_html(manifest, output_dir, output_dir / "report.html", run_started, run_finished)
     (output_dir / "redirects.htaccess").write_text(generate_redirects_htaccess(manifest), encoding="utf-8")
+
+    if progress is not None:
+        progress.finish()
 
     if offer_followups:
         _maybe_offer_diagnostics(manifest, output_dir, config.base_url)
@@ -848,6 +871,8 @@ def _run_build_body(
         manifest, config.output_dir, target, config.policy, config.base_url, config.extra_hosts, config.search,
         progress=progress,
     )
+    if progress is not None:
+        progress.finish()
     print(format_build_summary(stats))
     print(f"Site written to {target}")
 
@@ -1161,6 +1186,8 @@ def _run_checklinks_body(config: SiteConfig, links: list, progress: "Progress | 
         links, user_agent=config.user_agent, rate_limit=config.rate_limit, workers=config.concurrency,
         progress=progress,
     )
+    if progress is not None:
+        progress.finish()
     broken = [r for r in results if not r.ok]
     checked_at = datetime.now(timezone.utc).isoformat()
     md_path, html_path = write_report(results, config.output_dir, checked_at)
@@ -1397,6 +1424,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     _add_project_arg(freeze_p)
 
+    subparsers.add_parser("help", help="show this help message and exit (same as -h/--help)")
+
     return parser
 
 
@@ -1509,7 +1538,16 @@ def _dispatch(argv: list[str] | None) -> int:
 
         return print_overview()
 
-    args = build_arg_parser().parse_args(raw_argv)
+    parser = build_arg_parser()
+    args = parser.parse_args(raw_argv)
+
+    if args.command == "help":
+        # Alias for -h/--help -- argparse gives every subcommand its own
+        # -h for free, but a bare `wpfreeze help` (no dash) is common
+        # enough muscle memory (git, docker, npm all support it) that its
+        # absence reads as a missing command rather than "just use -h".
+        parser.print_help()
+        return 0
 
     if args.command == "wizard":
         from wpfreeze.wizard import run_wizard

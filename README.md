@@ -20,6 +20,10 @@ web scraper and makes no attempt to be polite to sites it doesn't own.
   snapshots for anything the live site can't serve, and write a
   self-contained `report.html` that tells you exactly what's missing and
   why.
+- **Also does**: give `acquire --dry-run` a plain-language readiness
+  verdict — ready, worth a look, or needs attention — from the URL
+  inventory it just discovered, before you commit to a real crawl. See
+  "Dry-run readiness" below.
 - **Also does**: rebuild the raw capture into a servable static site
   (`wpfreeze build`). Internal links are rewritten to relative local paths,
   WordPress.com `/_static/` concat bundles are reassembled into local CSS/JS,
@@ -126,18 +130,24 @@ Choose [2]:
 Use Wayback Machine recovery for missing pages? [Y/n]:
 Prefer Wayback snapshots nearest to which date? (YYYY-MM-DD, blank = today):
 Do you have a WordPress XML export (WXR) for this site? (wp-admin: Tools -> Export -> All content) [y/N]:
+Enable offline search? (adds a Pagefind-powered search box to the archived site) [y/N]:
 Save this config as [www-example-com.yaml]:
 Wrote www-example-com.yaml
+See EXTRA-CONFIG-OPTIONS.md for other options you can add to it by hand.
 Run a dry-run now? (discovers URLs, fetches nothing) [Y/n]:
 ...
 Run the real acquisition now? [y/N]:
 ```
 
-The wizard writes a normal YAML config and offers to run a dry-run (finds
-every URL the site claims to have, fetches nothing — good for sizing up a
-site before committing) and then the real acquisition, right there in the
-same session. The file it writes is completely ordinary afterward — the
-normal way to run wpfreeze against it from here on is:
+In a real terminal, questions render bold and a couple of key lines
+(`Wrote ...`, the `EXTRA-CONFIG-OPTIONS.md` pointer) render in colour — set
+the standard [`NO_COLOR`](https://no-color.org) environment variable to get
+plain text instead; piped or redirected output already gets plain text
+automatically. The wizard writes a normal YAML config and offers to run a
+dry-run (finds every URL the site claims to have, fetches nothing — good
+for sizing up a site before committing) and then the real acquisition,
+right there in the same session. The file it writes is completely ordinary
+afterward — the normal way to run wpfreeze against it from here on is:
 
 ```bash
 wpfreeze freeze www-example-com
@@ -158,8 +168,10 @@ wpfreeze status  www-example-com
 (`--config www-example-com.yaml` still works too — see "Projects" below.)
 Everything the wizard doesn't ask about (`exclusions`,
 `extra_hosts`, `user_agent`) is left at sensible defaults — edit the YAML
-directly if a site needs something different there. See
-[`example-site.yaml`](example-site.yaml) for every option, annotated.
+directly if a site needs something different there. The wizard points at
+[`EXTRA-CONFIG-OPTIONS.md`](EXTRA-CONFIG-OPTIONS.md) for a short list of the
+options people tend to want next; see [`example-site.yaml`](example-site.yaml)
+for every option, annotated.
 
 ### A WordPress XML export makes this more complete
 
@@ -171,6 +183,39 @@ hide from both of those (private post types, custom post types, orphaned
 attachments) still gets caught, with no database access of any kind
 required. It's entirely optional — most real acquisitions won't have one,
 and omitting it is completely normal, not a degraded mode.
+
+### Dry-run readiness
+
+Every `--dry-run` ends with a plain-language verdict, computed from the
+URL inventory it just discovered — no page is ever fetched, so this is a
+sanity check on the inventory, not a review of the site itself:
+
+```
+$ wpfreeze acquire site-a --dry-run
+Dry run: 229 URL(s) discovered, nothing fetched.
+  by source: sitemap 229 (sources overlap; a URL can come from several)
+
+Readiness: Worth a look before you commit to a crawl.
+  - Only the sitemap is reachable as a live inventory source. An XML
+    export gives a second, independent list to cross-check against
+    (wp-admin -> Tools -> Export).
+Based on inventory discovery only -- this doesn't check page content,
+forms, or how the site will actually render once built.
+```
+
+Three tiers: **ready** (nothing to flag), **worth a look** (something's
+worth knowing but the crawl is fine to run), and **needs attention**
+(something looks wrong enough to fix first — nothing was discovered at
+all, or a reachable inventory source contributed zero URLs, usually a
+sign `base_url` or `exclusions` is misconfigured). What it can flag:
+whether the site's own inventory sources (sitemap, REST API, XML export)
+actually agree with each other, and whether a large share of what was
+found is WordPress archive/attachment pages rather than standalone
+content, worth excluding if unwanted. The same disclaimer prints every
+time and means what it says: this cannot know about forms, page-builder
+markup, or anything else that only shows up once pages are actually
+fetched and built — see `report.html`'s own "Action required" section
+after a real `acquire`/`build` for that.
 
 ## Running wpfreeze with no arguments
 
@@ -228,6 +273,7 @@ progress display per step, ending in a single combined summary:
 ```
 $ wpfreeze freeze landscapes
 ⠹ Acquiring site-c.example   pages 412/1163  assets 2204  ▸ /about/staff/   3m12s
+✓  Acquiring site-c.example  38m14s
 ...
 ⠼ Validating site-c.example   (vnu, no progress available)   0m48s
 Check external links now? (hits third-party hosts, can be slow) [y/N]
@@ -244,17 +290,20 @@ landscapes — done in 41m02s
 ```
 
 The progress line only ever appears in a real terminal — piped output,
-backgrounded, or CI still get the plain log lines they always have. A step
-that returns exit `2` (refused/failed) stops the sequence there and marks
-itself in the wrap-up; a step returning `1` (completed with gaps) doesn't
-stop it but does make `freeze`'s own final exit code `1`. `checklinks`
-stays out of the default sequence (it's slow and hits hosts wpfreeze
-doesn't control) but is offered once the declared steps finish — default
-answer is No, and a broken link found this way doesn't change `freeze`'s
-exit code, the same way `validate`'s findings don't. Every other
-subcommand (`acquire`, `build`, `validate`, `search-index`, `checklinks`)
-shows this same progress line and prints its own brief wrap-up when run on
-its own too.
+backgrounded, or CI still get the plain log lines they always have. Each
+step ends with a `✓` (green, bold) replacing the spinner, not just the
+spinner stopping wherever its last frame happened to land — that line is
+also what clears the terminal row cleanly before the step's own summary
+prints below it, so the two never run into each other. A step that returns
+exit `2` (refused/failed) stops the sequence there and marks itself in the
+wrap-up; a step returning `1` (completed with gaps) doesn't stop it but
+does make `freeze`'s own final exit code `1`. `checklinks` stays out of
+the default sequence (it's slow and hits hosts wpfreeze doesn't control)
+but is offered once the declared steps finish — default answer is No, and
+a broken link found this way doesn't change `freeze`'s exit code, the same
+way `validate`'s findings don't. Every other subcommand (`acquire`,
+`build`, `validate`, `search-index`, `checklinks`) shows this same
+progress line and prints its own brief wrap-up when run on its own too.
 
 Declare a different sequence, or add `checklinks`/`upload-script` to it,
 in the config:
@@ -289,6 +338,7 @@ wpfreeze rescan        <project> [--apply] [--profile-from-config]
 wpfreeze upload-script <project> [--site-dir DIR]
 wpfreeze search-index  <project> [--site-dir DIR]
 wpfreeze checklinks    <project> [--site-dir DIR] [--recheck]
+wpfreeze help                            # same as -h/--help; every subcommand also takes its own -h
 ```
 
 - **`wizard`** is the guided setup flow described in "Quickstart" above —
@@ -306,8 +356,9 @@ wpfreeze checklinks    <project> [--site-dir DIR] [--recheck]
   passed — that guard exists so a second `acquire` on the same output
   directory can never silently clobber a prior run's progress.
 - **`--dry-run`** does inventory discovery and nothing else: no fetching,
-  just a report of every URL the site claims to have. Good for sizing up a
-  site before committing to a real run.
+  just a report of every URL the site claims to have, plus a readiness
+  verdict on that inventory — see "Dry-run readiness" above. Good for
+  sizing up a site before committing to a real run.
 - **`build`** rewrites the capture into a servable static site under
   `<output_dir>/site` (or `--site-dir`). Network-free and non-destructive:
   it reads `raw/` and `manifest.json` and writes a separate tree, so it is
@@ -635,17 +686,23 @@ the local homepage with an ignored `?s=` query string. Setting
 fully client-side search, powered by [Pagefind](https://pagefind.app):
 the theme's *own* existing search form is wired up as-is, with no new
 visible UI until someone actually searches. It needs the form to survive
-the build in the first place, so `policy.strip_search_forms: false` (or
-`policy.strip_forms: false`) has to be set too — `wpfreeze` refuses to
-start with a `ConfigError` if you enable search without it, rather than
-silently building a site with no search box to wire up:
+the build in the first place, so as long as the config leaves
+`policy.strip_search_forms` unset, `load_config` defaults it to `false`
+for you the moment `search.enabled: true` is present — no second key to
+remember:
 
 ```yaml
-policy:
-  strip_search_forms: false
 search:
   enabled: true
 ```
+
+If you *explicitly* write `policy.strip_search_forms: true` (or
+`strip_forms: true`) next to `search.enabled: true`, that's a genuine
+contradiction — "keep the form" and "strip the form" at once — and
+`wpfreeze` still refuses to start with a `ConfigError`, rather than
+silently building a site with no search box to wire up. `wpfreeze wizard`
+asks about this directly ("Enable offline search?", default No) — no need
+to hand-edit the config just to turn search on.
 
 `build` then does two things: writes `site/assets/pagefind-search.js`
 (the wiring script) and a `<script>` tag on every page, and runs

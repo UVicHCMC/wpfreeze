@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from wpfreeze.wizard import (
+    EXTRA_CONFIG_OPTIONS_DOC,
     RecommendedCommand,
     build_config_dict,
     describe_configs,
@@ -28,6 +29,15 @@ def test_slugify_domain_replaces_dots():
     assert slugify_domain("https://www.site-c.example/") == "www-site-c-com"
 
 
+def test_extra_config_options_doc_exists_at_the_path_the_wizard_prints():
+    """run_wizard tells the user to go read EXTRA_CONFIG_OPTIONS_DOC --
+    a repo-root relative name, same convention as example-site.yaml (see
+    that constant's own comment). If the file ever gets renamed without
+    updating the constant, the wizard's own pointer would go stale."""
+    repo_root = Path(__file__).resolve().parent.parent
+    assert (repo_root / EXTRA_CONFIG_OPTIONS_DOC).is_file()
+
+
 def test_build_config_dict_no_xml_backup():
     ask = _answers(
         "example-com",  # name
@@ -37,6 +47,7 @@ def test_build_config_dict_no_xml_backup():
         "",  # wayback enabled default (yes)
         "",  # prefer_snapshots_near blank
         "n",  # xml_backup: no
+        "",  # search: default no
     )
     config_dict, suggested_path = build_config_dict(ask=ask, tell=lambda m: None)
 
@@ -46,15 +57,18 @@ def test_build_config_dict_no_xml_backup():
     assert config_dict["rate_limit"] == 1.0
     assert config_dict["wayback"]["enabled"] is True
     assert "xml_backup" not in config_dict
+    assert config_dict["search"] == {"enabled": False}
+    assert "policy" not in config_dict
     assert suggested_path == Path("example-com.yaml")
 
 
 def test_build_config_dict_adds_https_prefix_when_missing():
-    ask = _answers("example-com", "example.com", "", "", "n", "n")
+    ask = _answers("example-com", "example.com", "", "", "n", "n", "n")
     config_dict, _ = build_config_dict(ask=ask, tell=lambda m: None)
     assert config_dict["base_url"] == "https://example.com"
     assert config_dict["wayback"]["enabled"] is False
     assert "xml_backup" not in config_dict
+    assert config_dict["search"] == {"enabled": False}
 
 
 def test_build_config_dict_aggressive_preset_has_no_delay_but_wayback_stays_throttled():
@@ -66,6 +80,7 @@ def test_build_config_dict_aggressive_preset_has_no_delay_but_wayback_stays_thro
         "",  # wayback default yes
         "",  # snapshot date blank
         "n",  # xml_backup: no
+        "",  # search: default no
     )
     config_dict, _ = build_config_dict(ask=ask, tell=lambda m: None)
 
@@ -86,11 +101,17 @@ def test_build_config_dict_with_xml_backup():
         "",  # snapshot date blank
         "y",  # xml_backup: yes
         "/tmp/export.WordPress.xml",  # path
+        "y",  # search: yes
     )
     config_dict, _ = build_config_dict(ask=ask, tell=lambda m: None)
 
     assert config_dict["rate_limit"] == 2.0
     assert config_dict["xml_backup"] == "/tmp/export.WordPress.xml"
+    assert config_dict["search"] == {"enabled": True}
+    # No policy override written -- load_config itself now defaults
+    # policy.strip_search_forms to false whenever search.enabled is true
+    # and the config never addressed that key (see cli.py's load_config).
+    assert "policy" not in config_dict
 
 
 def test_build_config_dict_skips_name_question_when_name_given():
@@ -103,6 +124,7 @@ def test_build_config_dict_skips_name_question_when_name_given():
         "",
         "n",
         "n",
+        "n",  # search: no
     )
     config_dict, suggested_path = build_config_dict(ask=ask, tell=lambda m: None, name="foo")
 
@@ -139,6 +161,7 @@ def test_run_wizard_writes_config_and_offers_dry_run(tmp_path, monkeypatch):
         "",  # wayback enabled
         "",  # snapshot date
         "n",  # xml_backup: no
+        "n",  # search: no
         str(config_path),  # save-as path
         "y",  # dry run now
         "n",  # real run now
@@ -152,6 +175,7 @@ def test_run_wizard_writes_config_and_offers_dry_run(tmp_path, monkeypatch):
     assert written["base_url"] == "https://example.com"
     assert acquire_calls == [(False, True)]  # only the dry run happened
     assert any("Wrote" in m for m in messages)
+    assert any("EXTRA-CONFIG-OPTIONS.md" in m for m in messages)
 
 
 def test_run_wizard_auto_resumes_real_run_after_a_preceding_dry_run(tmp_path, monkeypatch):
@@ -181,6 +205,7 @@ def test_run_wizard_auto_resumes_real_run_after_a_preceding_dry_run(tmp_path, mo
         "",
         "",
         "n",  # xml_backup: no
+        "n",  # search: no
         str(config_path),
         "y",  # dry run now
         "y",  # real run now
@@ -213,6 +238,7 @@ def test_run_wizard_reports_full_resume_command_on_manifest_collision(tmp_path, 
         "",
         "",
         "n",  # xml_backup: no
+        "n",  # search: no
         str(config_path),
         "n",  # dry run now: no
         "y",  # real run now
@@ -255,6 +281,7 @@ def test_run_wizard_initial_name_skips_resume_offer_and_name_question(tmp_path, 
         "",  # rate preset
         "n",  # wayback: no
         "n",  # xml_backup: no
+        "n",  # search: no
         str(config_path),  # save-as path
         "n",  # dry run now
         "n",  # real run now
@@ -288,6 +315,7 @@ def test_run_wizard_then_freeze_offers_full_freeze_instead_of_acquire(tmp_path, 
         "",
         "n",
         "n",
+        "n",  # search: no
         str(config_path),
         "n",  # dry run now: no
         "y",  # run the full freeze now: yes
@@ -313,6 +341,7 @@ def test_run_wizard_then_freeze_declined_prints_freeze_hint(tmp_path, monkeypatc
         "",
         "n",
         "n",
+        "n",  # search: no
         str(config_path),
         "n",  # dry run now: no
         "n",  # run the full freeze now: no
@@ -335,6 +364,7 @@ def test_run_wizard_writes_freeze_block_into_generated_yaml(tmp_path, monkeypatc
         "",
         "",
         "n",  # xml_backup: no
+        "n",  # search: no
         str(config_path),
         "n",  # dry run now
         "n",  # real run now
@@ -343,6 +373,35 @@ def test_run_wizard_writes_freeze_block_into_generated_yaml(tmp_path, monkeypatc
 
     written = yaml.safe_load(config_path.read_text())
     assert written["freeze"] == {"steps": ["acquire", "build", "validate"]}
+
+
+def test_run_wizard_search_enabled_survives_load_config(tmp_path, monkeypatch):
+    """load_config raises ConfigError if search.enabled is true while
+    policy.strip_search_forms defaults to true -- but only when the config
+    explicitly sets strip_search_forms: true. A wizard-written config never
+    addresses that key at all, so load_config's own absent-key default
+    (see cli.py) must keep this loadable with no policy block at all."""
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "example-com.yaml"
+    ask = _answers(
+        "example-com",  # name
+        "https://example.com",
+        "",
+        "",
+        "",
+        "",
+        "n",  # xml_backup: no
+        "y",  # search: yes
+        str(config_path),
+        "n",  # dry run now
+        "n",  # real run now
+    )
+    exit_code = run_wizard(ask=ask, tell=lambda m: None)
+
+    assert exit_code == 0
+    written = yaml.safe_load(config_path.read_text())
+    assert written["search"] == {"enabled": True}
+    assert "policy" not in written
 
 
 # ---------------------------------------------------------------------------
@@ -711,6 +770,7 @@ def test_run_wizard_multiple_candidates_none_of_these_falls_through(tmp_path, mo
         "",
         "n",  # wayback: no
         "n",  # xml_backup: no
+        "n",  # search: no
         str(config_path),
         "n",
         "n",
@@ -745,6 +805,7 @@ def test_run_wizard_falls_through_to_full_flow_when_resume_declined(tmp_path, mo
         "",  # rate preset
         "n",  # wayback: no
         "n",  # xml_backup: no
+        "n",  # search: no
         str(config_path),  # save-as path
         "n",  # dry run now
         "n",  # real run now
@@ -772,6 +833,7 @@ def test_run_wizard_no_candidates_goes_straight_to_question_flow(tmp_path, monke
         "",  # rate preset
         "n",  # wayback: no (skips the follow-up snapshot-date question)
         "n",  # xml_backup: no
+        "n",  # search: no
         str(config_path),  # save-as path
         "n",  # dry run now
         "n",  # real run now

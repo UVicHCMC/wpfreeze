@@ -13,6 +13,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 import requests
@@ -22,6 +23,9 @@ from wpfreeze.crawl import is_excluded
 from wpfreeze.fetch import SUCCESS, FetchConfig, RateLimiter, fetch_with_retries
 from wpfreeze.manifest import Manifest
 from wpfreeze.urlnorm import SiteProfile, normalize_url
+
+if TYPE_CHECKING:
+    from wpfreeze.progress import Progress
 
 logger = logging.getLogger(__name__)
 
@@ -436,6 +440,7 @@ def discover_sitemaps(
     session: requests.Session,
     rate_limiter: RateLimiter,
     fetch_config: FetchConfig,
+    progress: "Progress | None" = None,
 ) -> bool:
     """Seed `manifest` from robots.txt's Sitemap: pointers plus the
     conventional sitemap locations, recursing through sitemap indexes to a
@@ -461,6 +466,8 @@ def discover_sitemaps(
     to_visit: list[tuple[str, str]] = []
 
     robots_outcome = fetch_with_retries(f"{base}/robots.txt", session, rate_limiter, fetch_config)
+    if progress is not None:
+        progress.tick(detail=f"{base}/robots.txt")
     if robots_outcome.category == SUCCESS:
         robots_text = robots_outcome.result.content.decode("utf-8", errors="replace")
         to_visit.extend((url, "robots.txt") for url in parse_robots_sitemaps(robots_text))
@@ -476,6 +483,8 @@ def discover_sitemaps(
             continue
         visited.add(sitemap_url)
         outcome = fetch_with_retries(sitemap_url, session, rate_limiter, fetch_config)
+        if progress is not None:
+            progress.tick(detail=sitemap_url)
         if outcome.category != SUCCESS:
             if provenance == "conventional location":
                 logger.debug("no sitemap at conventional location: %s", sitemap_url)
@@ -520,6 +529,7 @@ def discover_rest_api(
     session: requests.Session,
     rate_limiter: RateLimiter,
     fetch_config: FetchConfig,
+    progress: "Progress | None" = None,
 ) -> bool:
     """Seed `manifest` from every WP REST API collection, paginated to
     exhaustion. Degrades gracefully per collection: an unavailable or
@@ -535,6 +545,8 @@ def discover_rest_api(
         while page <= total_pages:
             url = rest_collection_url(base_url, collection, page=page)
             outcome = fetch_with_retries(url, session, rate_limiter, fetch_config)
+            if progress is not None:
+                progress.tick(detail=url)
             if outcome.category != SUCCESS:
                 logger.info("REST API collection unavailable: %s", collection)
                 break
@@ -574,14 +586,15 @@ def discover_inventory(
     session: requests.Session,
     rate_limiter: RateLimiter,
     fetch_config: FetchConfig,
+    progress: "Progress | None" = None,
 ) -> dict[str, bool]:
     """Stage 1 top level: seed `manifest` from every configured inventory
     source. Returns which sources were reachable, for the report."""
     sitemap_ok = discover_sitemaps(
-        manifest, base_url, profile, exclusions, session, rate_limiter, fetch_config
+        manifest, base_url, profile, exclusions, session, rate_limiter, fetch_config, progress
     )
     rest_ok = discover_rest_api(
-        manifest, base_url, profile, exclusions, session, rate_limiter, fetch_config
+        manifest, base_url, profile, exclusions, session, rate_limiter, fetch_config, progress
     )
     xml_ok = discover_wxr(manifest, base_url, xml_backup) if xml_backup is not None else False
 

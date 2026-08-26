@@ -14,11 +14,16 @@ from wpfreeze.manifest import (
     Status,
 )
 from wpfreeze.report import (
+    DRY_RUN_DISCLAIMER,
+    DryRunAssessment,
+    Finding,
     _referrers,
     _wayback_snapshot_date,
+    assess_dry_run,
     build_report_data,
     build_report_html,
     build_summary,
+    format_readiness,
     infer_inventory_sources_used,
     write_report_html,
     write_report_json,
@@ -250,3 +255,319 @@ def test_write_report_html_writes_file(tmp_path: Path):
     write_report_html(manifest, tmp_path, out_path)
     assert out_path.exists()
     assert "<html" in out_path.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Dry-run readiness assessment -- see CLAUDE-dry-run-readiness.md
+# ---------------------------------------------------------------------------
+
+
+def _seed(manifest: Manifest, provenance: str, urls) -> None:
+    for url in urls:
+        manifest.get_or_create(url, discovered_via=provenance)
+
+
+def test_assess_dry_run_r1_fires_when_nothing_beyond_base_url():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    sources = {"sitemap": False, "rest_api": False, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=False)
+    codes = {f.code for f in assessment.findings}
+    assert "nothing_discovered" in codes
+    assert assessment.verdict == "attention"
+
+
+def test_assess_dry_run_r1_does_not_fire_with_real_content():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    manifest.get_or_create("https://example.com/about/", discovered_via="sitemap")
+    sources = {"sitemap": True, "rest_api": False, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=False)
+    codes = {f.code for f in assessment.findings}
+    assert "nothing_discovered" not in codes
+
+
+def test_assess_dry_run_handles_a_single_record_without_dividing_by_zero():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    sources = {"sitemap": False, "rest_api": False, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=False)  # must not raise
+    assert assessment.verdict == "attention"
+
+
+def test_assess_dry_run_r2_fires_when_no_source_reachable():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    sources = {"sitemap": False, "rest_api": False, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=False)
+    codes = {f.code for f in assessment.findings}
+    assert "no_inventory_source" in codes
+
+
+def test_assess_dry_run_r2_does_not_fire_when_xml_backup_alone_seeded_urls():
+    """R2 and R1 can diverge: an XML export can seed real URLs even with
+    both live sources unreachable."""
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    _seed(manifest, "xml_backup", [f"https://example.com/post-{i}/" for i in range(5)])
+    sources = {"sitemap": False, "rest_api": False, "xml_backup": True}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=True)
+    codes = {f.code for f in assessment.findings}
+    assert "no_inventory_source" not in codes
+    assert "nothing_discovered" not in codes
+
+
+def test_assess_dry_run_r3_fires_for_a_single_live_source_with_no_xml_backup():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    _seed(manifest, "sitemap", [f"https://example.com/page-{i}/" for i in range(10)])
+    sources = {"sitemap": True, "rest_api": False, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=False)
+    finding = next(f for f in assessment.findings if f.code == "single_live_source")
+    assert finding.severity == "notice"
+    assert "sitemap" in finding.message
+
+
+def test_assess_dry_run_r3_suppressed_when_xml_backup_is_configured():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    _seed(manifest, "sitemap", [f"https://example.com/page-{i}/" for i in range(10)])
+    sources = {"sitemap": True, "rest_api": False, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=True)
+    codes = {f.code for f in assessment.findings}
+    assert "single_live_source" not in codes
+
+
+def test_assess_dry_run_r3_suppressed_when_r1_already_fired():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    sources = {"sitemap": True, "rest_api": False, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=False)
+    codes = {f.code for f in assessment.findings}
+    assert "nothing_discovered" in codes
+    assert "single_live_source" not in codes
+
+
+def test_assess_dry_run_r4_concern_when_reachable_source_contributes_nothing():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    _seed(manifest, "rest_api", [f"https://example.com/post-{i}/" for i in range(10)])
+    sources = {"sitemap": True, "rest_api": True, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=False)
+    finding = next(f for f in assessment.findings if f.code == "source_contributed_nothing")
+    assert finding.severity == "concern"
+    assert "sitemap" in finding.message
+    assert assessment.verdict == "attention"
+
+
+def test_assess_dry_run_r4_notice_when_one_source_is_under_ten_percent_of_the_other():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    _seed(manifest, "sitemap", [f"https://example.com/sitemap-{i}/" for i in range(5)])
+    _seed(manifest, "rest_api", [f"https://example.com/rest-{i}/" for i in range(100)])
+    sources = {"sitemap": True, "rest_api": True, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=False)
+    finding = next(f for f in assessment.findings if f.code == "source_underweight")
+    assert finding.severity == "notice"
+    assert "sitemap" in finding.message and "5" in finding.message and "100" in finding.message
+    assert assessment.verdict == "review"
+
+
+def test_assess_dry_run_r4_no_finding_for_an_ordinary_ratio():
+    """30/100 = 30% -- REST API routinely returns more than the sitemap
+    (attachments, users) without that being a problem; the rule is
+    directional and thresholded, not a bare "they differ" check."""
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    _seed(manifest, "sitemap", [f"https://example.com/sitemap-{i}/" for i in range(30)])
+    _seed(manifest, "rest_api", [f"https://example.com/rest-{i}/" for i in range(100)])
+    sources = {"sitemap": True, "rest_api": True, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=False)
+    codes = {f.code for f in assessment.findings}
+    assert "source_underweight" not in codes
+    assert "source_contributed_nothing" not in codes
+
+
+def test_assess_dry_run_r6_fires_for_a_large_share_of_low_value_archive_urls():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    _seed(manifest, "sitemap", [f"https://example.com/post-{i}/" for i in range(70)])
+    _seed(
+        manifest, "sitemap",
+        [f"https://example.com/2020/01/photo-{i}/attachment/" for i in range(30)],
+    )
+    sources = {"sitemap": True, "rest_api": False, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=True)
+    finding = next(f for f in assessment.findings if f.code == "low_value_archives")
+    assert finding.severity == "notice"
+    assert "attachment page" in finding.message
+    assert "30" in finding.message
+
+
+def test_assess_dry_run_r6_suppressed_below_the_twenty_url_floor():
+    """A small site with a genuinely high percentage of tag pages must not
+    trip R6 -- the floor exists precisely so a tiny site's one tag archive
+    doesn't read as a real finding."""
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    _seed(manifest, "sitemap", [f"https://example.com/post-{i}/" for i in range(7)])
+    manifest.get_or_create("https://example.com/tag/news/", discovered_via="sitemap")
+    sources = {"sitemap": True, "rest_api": False, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=True)
+    codes = {f.code for f in assessment.findings}
+    assert "low_value_archives" not in codes
+
+
+def test_assess_dry_run_r6_suppressed_below_the_ten_percent_threshold():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    _seed(manifest, "sitemap", [f"https://example.com/post-{i}/" for i in range(500)])
+    _seed(manifest, "sitemap", [f"https://example.com/tag/topic-{i}/" for i in range(25)])
+    sources = {"sitemap": True, "rest_api": False, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=True)
+    codes = {f.code for f in assessment.findings}
+    assert "low_value_archives" not in codes
+
+
+def test_assess_dry_run_r6_suppressed_when_r1_already_fired():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    sources = {"sitemap": False, "rest_api": False, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=False)
+    codes = {f.code for f in assessment.findings}
+    assert "nothing_discovered" in codes
+    assert "low_value_archives" not in codes
+
+
+def test_assess_dry_run_ignores_crawl_only_records_from_a_resumed_manifest():
+    """A dry run re-run over an output dir that already holds a completed
+    capture loads that run's full manifest (no collision guard on a dry
+    run) -- crawl:-discovered records must not dilute the inventory-only
+    percentages this feature depends on. Without the filter, 20 matched
+    URLs out of 526 total (~3.8%) would sit under R6's 10% threshold;
+    filtered to the 26 real inventory records, it's ~76.9% and fires."""
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    _seed(manifest, "sitemap", [f"https://example.com/post-{i}/" for i in range(5)])
+    _seed(manifest, "sitemap", [f"https://example.com/tag/topic-{i}/" for i in range(20)])
+    _seed(
+        manifest,
+        "crawl:https://example.com/post-0/",
+        [f"https://example.com/wp-content/uploads/img-{i}.jpg" for i in range(500)],
+    )
+    sources = {"sitemap": True, "rest_api": False, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=True)
+    codes = {f.code for f in assessment.findings}
+    assert "low_value_archives" in codes
+
+
+def test_assess_dry_run_concern_beats_notice_in_verdict():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    # sitemap reachable but contributes nothing -- concern
+    _seed(manifest, "rest_api", [f"https://example.com/post-{i}/" for i in range(70)])
+    _seed(manifest, "rest_api", [f"https://example.com/tag/topic-{i}/" for i in range(30)])
+    sources = {"sitemap": True, "rest_api": True, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=True)
+    severities = {f.severity for f in assessment.findings}
+    assert "concern" in severities and "notice" in severities
+    assert assessment.verdict == "attention"
+
+
+def test_assess_dry_run_ready_verdict_with_no_findings():
+    manifest = Manifest()
+    manifest.get_or_create("https://example.com/", discovered_via="base_url")
+    _seed(manifest, "sitemap", [f"https://example.com/post-{i}/" for i in range(50)])
+    _seed(manifest, "rest_api", [f"https://example.com/rest-{i}/" for i in range(60)])
+    sources = {"sitemap": True, "rest_api": True, "xml_backup": False}
+    assessment = assess_dry_run(manifest, sources, xml_backup_configured=True)
+    assert assessment.findings == ()
+    assert assessment.verdict == "ready"
+    assert assessment.headline == "Nothing to flag in the inventory."
+
+
+def test_format_readiness_includes_headline_findings_and_disclaimer():
+    assessment = DryRunAssessment(
+        verdict="review",
+        headline="Worth a look before you commit to a crawl.",
+        findings=(
+            Finding(
+                code="single_live_source",
+                severity="notice",
+                message="Only the sitemap is reachable as a live inventory source.",
+                suggestion="An XML export gives a second list to cross-check against.",
+            ),
+        ),
+    )
+    text = format_readiness(assessment)
+    assert "Worth a look before you commit to a crawl." in text
+    assert "Only the sitemap is reachable" in text
+    assert "An XML export gives a second list" in text
+    assert DRY_RUN_DISCLAIMER in text
+
+
+def test_format_readiness_ready_has_no_finding_bullets():
+    assessment = DryRunAssessment(verdict="ready", headline="Nothing to flag in the inventory.", findings=())
+    text = format_readiness(assessment)
+    assert "Nothing to flag in the inventory." in text
+    assert "  - " not in text
+    assert DRY_RUN_DISCLAIMER in text
+
+
+def test_write_report_json_readiness_null_when_not_passed(tmp_path: Path):
+    manifest = Manifest()
+    manifest.upsert(_record("https://example.com/", status=Status.FETCHED.value))
+    out_path = tmp_path / "report.json"
+    write_report_json(manifest, tmp_path, out_path)
+    loaded = json.loads(out_path.read_text())
+    assert loaded["readiness"] is None
+
+
+def test_write_report_json_readiness_populated_when_passed(tmp_path: Path):
+    manifest = Manifest()
+    manifest.upsert(_record("https://example.com/", status=Status.FETCHED.value))
+    assessment = DryRunAssessment(verdict="ready", headline="Nothing to flag in the inventory.", findings=())
+    out_path = tmp_path / "report.json"
+    write_report_json(manifest, tmp_path, out_path, readiness=assessment)
+    loaded = json.loads(out_path.read_text())
+    assert loaded["readiness"]["verdict"] == "ready"
+    assert loaded["readiness"]["findings"] == []
+
+
+def test_build_report_html_no_readiness_section_when_none(tmp_path: Path):
+    manifest = Manifest()
+    manifest.upsert(_record("https://example.com/", status=Status.FETCHED.value))
+    html = build_report_html(manifest, tmp_path)
+    assert 'id="readiness"' not in html
+
+
+def test_build_report_html_readiness_section_shown_when_present(tmp_path: Path):
+    manifest = Manifest()
+    manifest.upsert(_record("https://example.com/", status=Status.FETCHED.value))
+    assessment = DryRunAssessment(
+        verdict="attention",
+        headline="Something looks wrong; worth fixing before crawling.",
+        findings=(
+            Finding(
+                code="nothing_discovered",
+                severity="concern",
+                message="Only the seeded base_url was found.",
+                suggestion="Check base_url.",
+            ),
+        ),
+    )
+    html = build_report_html(manifest, tmp_path, readiness=assessment)
+    assert 'id="readiness"' in html
+    assert "badge-gap" in html
+    assert "Only the seeded base_url was found." in html
+    # DRY_RUN_DISCLAIMER itself isn't a substring of the escaped HTML (its
+    # apostrophe becomes &#x27;) -- check the punctuation-free prefix instead.
+    assert "Based on inventory discovery only" in html
+
+
+def test_build_report_html_readiness_review_uses_badge_review(tmp_path: Path):
+    manifest = Manifest()
+    manifest.upsert(_record("https://example.com/", status=Status.FETCHED.value))
+    assessment = DryRunAssessment(verdict="review", headline="Worth a look.", findings=())
+    html = build_report_html(manifest, tmp_path, readiness=assessment)
+    assert "badge-review" in html

@@ -15,9 +15,11 @@ first looks in the current directory for a site config with an existing,
 resumable run and offers to pick that back up (see find_resumable_configs)
 -- and only if there's none, or the user declines all of them, walks
 through building a new config interactively: base URL, output directory,
-politeness, Wayback recovery, and an optional WordPress XML export (WXR)
-to augment inventory completeness -- then writes a normal site YAML and
-offers to dry-run and run it immediately.
+politeness, Wayback recovery, an optional WordPress XML export (WXR) to
+augment inventory completeness, and whether to enable offline search --
+then writes a normal site YAML, points at EXTRA_CONFIG_OPTIONS_DOC for
+everything it didn't ask about, and offers to dry-run and run it
+immediately.
 
 Every question `run_wizard` asks maps onto the same SiteConfig/YAML shape
 load_config() already reads (see wpfreeze.cli) -- the file it writes is a
@@ -35,6 +37,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from wpfreeze.projects import validate_name
+from wpfreeze.style import bold, cyan, dim, green
 
 if TYPE_CHECKING:
     from wpfreeze.cli import SiteConfig
@@ -76,23 +79,29 @@ RATE_PRESETS: dict[str, tuple[str, float]] = {
 # Aggressive preset's own rate_limit is 0.
 _MIN_WAYBACK_RATE_LIMIT = 3.0
 
+# Repo-root, like example-site.yaml -- wpfreeze is run from a checkout, not
+# installed as a packaged resource (see pyproject.toml's packages.find,
+# which ships only the wpfreeze/ package itself). Kept as a bare relative
+# name, same as every other doc pointer this module and README.md print.
+EXTRA_CONFIG_OPTIONS_DOC = "EXTRA-CONFIG-OPTIONS.md"
+
 
 def _ask(prompt_text: str, default: str, ask: Callable[[str], str]) -> str:
     suffix = f" [{default}]" if default else ""
-    answer = ask(f"{prompt_text}{suffix}: ").strip()
+    answer = ask(f"{bold(prompt_text)}{suffix}: ").strip()
     return answer or default
 
 
 def _ask_required(prompt_text: str, ask: Callable[[str], str]) -> str:
     while True:
-        answer = ask(f"{prompt_text}: ").strip()
+        answer = ask(f"{bold(prompt_text)}: ").strip()
         if answer:
             return answer
 
 
 def _ask_yes_no(prompt_text: str, default: bool, ask: Callable[[str], str]) -> bool:
     suffix = "[Y/n]" if default else "[y/N]"
-    answer = ask(f"{prompt_text} {suffix} ").strip().lower()
+    answer = ask(f"{bold(prompt_text)} {suffix} ").strip().lower()
     if not answer:
         return default
     return answer in ("y", "yes")
@@ -322,7 +331,7 @@ def _offer_resume(
             return False, 0
         chosen_path, chosen_config = path, config
     else:
-        tell("Found existing runs that could be resumed:")
+        tell(bold("Found existing runs that could be resumed:"))
         for i, (path, config) in enumerate(candidates, start=1):
             summary = _describe_manifest(config.output_dir)
             tell(f"  {i}) {path.name} ({config.base_url}) -- {summary}")
@@ -337,7 +346,7 @@ def _offer_resume(
             return False, 0
         chosen_path, chosen_config = candidates[index]
 
-    tell(f"Resuming {chosen_path}...")
+    tell(dim(f"Resuming {chosen_path}..."))
     exit_code = run_acquire(chosen_config, resume=True, dry_run=False)
     tell(f"Acquisition finished (exit code {exit_code}). See {chosen_config.output_dir}/report.html")
     return True, exit_code
@@ -375,7 +384,7 @@ def build_config_dict(
 
     output_dir = _ask("Where should the output go?", f"./{DEFAULT_OUTPUT_ROOT}/{name}", ask)
 
-    tell("How nice are we being to the server?")
+    tell(bold("How nice are we being to the server?"))
     tell("  1) Gentle (2s between requests)")
     tell("  2) Normal (1s between requests) [default]")
     tell("  3) Aggressive (no delay between requests)")
@@ -393,6 +402,12 @@ def build_config_dict(
 
     xml_backup_path = _ask_xml_backup(ask, tell)
 
+    search_enabled = _ask_yes_no(
+        "Enable offline search? (adds a Pagefind-powered search box to the archived site)",
+        False,
+        ask,
+    )
+
     config_dict: dict = {
         "name": name,
         "base_url": base_url,
@@ -402,14 +417,24 @@ def build_config_dict(
         "exclusions": DEFAULT_EXCLUSIONS,
         "extra_hosts": [],
         "wayback": wayback_dict,
+        "search": {"enabled": search_enabled},
     }
     if xml_backup_path:
         config_dict["xml_backup"] = xml_backup_path
+    if search_enabled:
+        # No policy override written here: load_config itself now defaults
+        # policy.strip_search_forms to false whenever search.enabled is true
+        # and the config never addressed that key -- see its own comment.
+        # Nothing to duplicate here; an explicit policy.strip_search_forms:
+        # true would still be honoured (and rejected) by that same check.
+        tell(dim("(search.enabled leaves this site's own search form unstripped, in place, by default.)"))
 
     tell(
-        "(Exclusions, extra_hosts, and user_agent were left at their "
-        "defaults -- edit the written YAML directly if this site needs "
-        "something different.)"
+        dim(
+            "(Exclusions, extra_hosts, and user_agent were left at their "
+            "defaults -- edit the written YAML directly if this site needs "
+            "something different.)"
+        )
     )
 
     suggested_path = Path(f"{name}.yaml")
@@ -449,7 +474,8 @@ def run_wizard(
 
     config_path = Path(_ask("Save this config as", str(suggested_path), ask))
     config_path.write_text(yaml.safe_dump(config_dict, sort_keys=False), encoding="utf-8")
-    tell(f"Wrote {config_path}")
+    tell(green(f"Wrote {config_path}", bold_too=True))
+    tell(cyan(f"See {EXTRA_CONFIG_OPTIONS_DOC} for other options you can add to it by hand."))
 
     config = load_config(config_path)
 

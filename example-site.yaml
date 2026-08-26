@@ -144,7 +144,10 @@ policy:
   # reference, so submitting it as-is just navigates to the local homepage
   # with an ignored ?s= query string. It's raw material to repurpose --
   # unless you also turn on `search:` below, in which case `build` does
-  # the wiring itself.
+  # the wiring itself. NOTE: load_config only supplies its own false
+  # default here when this key is absent from the config entirely -- this
+  # file spells it out as `true`, so if you copy this file wholesale and
+  # then enable `search:` below, flip this line (or delete it) yourself.
   strip_search_forms: true
 
   # Remove feed links -- the <link rel="alternate" type="application/rss+xml">
@@ -220,9 +223,14 @@ vnu_jar: "./vnu.jar"
 # own existing search form to the local index, with no new visible UI
 # and no server. Needs the `pagefind` package (`pipx inject wpfreeze
 # 'pagefind[extended]'` for a pipx install) and requires the search form
-# to actually survive the build -- `strip_search_forms: false` (or
-# `strip_forms: false`) above -- otherwise wpfreeze refuses to start with
-# a ConfigError rather than silently building a site with nothing to wire
+# to actually survive the build. If your config leaves strip_search_forms
+# unset, load_config defaults it to false for you the moment enabled: true
+# is set here -- but this file spells strip_search_forms out explicitly
+# above (see its own comment), so flip it to `false` yourself if you copy
+# this template wholesale. An *explicit* `strip_search_forms: true` (or
+# `strip_forms: true`) alongside `enabled: true` here is a genuine
+# contradiction and still makes wpfreeze refuse to start with a
+# ConfigError, rather than silently building a site with nothing to wire
 # up. See "Offline search" in README.md for the full picture, including
 # why body_selectors is worth reading carefully before you set it.
 # search:

@@ -1,9 +1,13 @@
 """Stage 7 -- report generation: report.json and a single self-contained
-report.html, derived purely from an existing manifest (plus stat()'ing
-raw/ for byte sizes) -- no network, no refetching. This is exactly what
-`wpfreeze report` regenerates without running `acquire` again.
+report.html, derived from an existing manifest (plus stat()'ing raw/ for
+byte sizes) and, for a dry run only, the inventory-source reachability map
+`discover_inventory` returned -- no network, no refetching either way.
+`wpfreeze report` regenerates the manifest-only half without running
+`acquire` again; the dry-run readiness assessment is acquire-only, see
+`assess_dry_run`'s own docstring for why.
 
-See CLAUDE-acquire.md, "Stage 7 -- Report".
+See CLAUDE-acquire.md, "Stage 7 -- Report", and
+CLAUDE-dry-run-readiness.md for the readiness assessment's own design.
 """
 from __future__ import annotations
 
@@ -12,8 +16,11 @@ import json
 import logging
 import re
 from collections import Counter
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+
+from wpfreeze.style import green, red, yellow
 
 from wpfreeze.manifest import (
     FLAG_AUTH_GATED,
@@ -168,6 +175,247 @@ def infer_inventory_sources_used(manifest: Manifest) -> dict[str, bool]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Dry-run readiness assessment -- see CLAUDE-dry-run-readiness.md for the
+# full design rationale, the measured thresholds below, and the six
+# decisions (R5 cut, severity defined by actionability, etc.) this code
+# implements without re-arguing.
+# ---------------------------------------------------------------------------
+
+DRY_RUN_DISCLAIMER = (
+    "Based on inventory discovery only -- this doesn't check page content, "
+    "forms, or how the site will actually render once built."
+)
+
+# What "inventory-sourced" means for this feature: a record that at least
+# one of the three discovery sources (or the seeded base_url itself)
+# claimed. Deliberately excludes crawl:/wayback: provenance -- see the
+# resumed-manifest trap below, this is the one filter that makes every
+# percentage in this module mean what it says.
+_INVENTORY_PROVENANCE = frozenset({"sitemap", "rest_api", "xml_backup", "base_url"})
+
+# (category label, pattern). Soft, suggestion-only signals about WordPress
+# archive/attachment URL shapes -- deliberately NOT merged with
+# wizard.DEFAULT_EXCLUSIONS, which is a hard "never fetch this" list of
+# dead WordPress infrastructure. These are legitimate content some site
+# owners want archived and others don't; see CLAUDE-dry-run-readiness.md
+# Decision 5 for why the two lists must not become one.
+_LOW_VALUE_ARCHIVE_PATTERNS = (
+    ("attachment page", re.compile(r"/attachment/|[?&]attachment_id=")),
+    ("tag archive", re.compile(r"/tag/|[?&]tag=")),
+    ("category archive", re.compile(r"/category/|[?&]cat=")),
+    ("author archive", re.compile(r"/author/|[?&]author=")),
+    # Matches 0 inventory URLs on every real site measured so far --
+    # paginated archives are found by crawling, not by any inventory
+    # source, and that is expected, not a bug in the pattern. Kept because
+    # a Yoast sitemap can list them. See the Measured baseline table in
+    # CLAUDE-dry-run-readiness.md before "fixing" this to fire more.
+    ("paginated archive", re.compile(r"/page/\d+")),
+    ("date archive", re.compile(r"/\d{4}/\d{2}(/\d{2})?/?$")),
+)
+
+
+@dataclass(frozen=True)
+class Finding:
+    code: str  # stable machine id, e.g. "single_live_source" -- assert on this, not on message text
+    severity: str  # "notice" | "concern" -- concern is what pushes the verdict to "attention"
+    message: str  # what was observed
+    suggestion: str  # what you might do about it
+
+
+@dataclass(frozen=True)
+class DryRunAssessment:
+    verdict: str  # "ready" | "review" | "attention"
+    headline: str
+    findings: tuple[Finding, ...]
+
+
+def _inventory_records(manifest: Manifest) -> list[ManifestRecord]:
+    return [r for r in manifest.all() if _INVENTORY_PROVENANCE & set(r.discovered_via)]
+
+
+def _low_value_archive_counts(urls: list[str]) -> tuple[int, dict[str, int]]:
+    """Returns (count of distinct URLs matching at least one pattern, counts
+    per category). The two can differ -- a URL matching two categories is
+    counted once in the first, once in each in the second -- deliberately:
+    the threshold check needs the former, the message's breakdown needs
+    the latter."""
+    matched_urls: set[str] = set()
+    per_category: dict[str, int] = {}
+    for label, pattern in _LOW_VALUE_ARCHIVE_PATTERNS:
+        count = sum(1 for url in urls if pattern.search(url))
+        if count:
+            per_category[label] = count
+    for url in urls:
+        if any(pattern.search(url) for _, pattern in _LOW_VALUE_ARCHIVE_PATTERNS):
+            matched_urls.add(url)
+    return len(matched_urls), per_category
+
+
+def assess_dry_run(
+    manifest: Manifest,
+    sources: dict[str, bool],
+    *,
+    xml_backup_configured: bool,
+) -> DryRunAssessment:
+    """A heuristic readiness verdict from a dry run's inventory discovery
+    alone -- acquire-only (see write_report_json/write_report_html's
+    `readiness` parameter), never regenerated by `wpfreeze report`: that
+    command has no `sources` dict to work from (it reads manifest.json
+    alone), and faking one back from `infer_inventory_sources_used` can't
+    distinguish "reachable but contributed nothing" from "unreachable" --
+    exactly the distinction R4's concern tier is built on. A regenerated
+    verdict would silently disagree with the one `acquire` wrote, which is
+    worse than not showing one. See CLAUDE-dry-run-readiness.md Decision 3.
+
+    `xml_backup_configured` is deliberately a separate argument from
+    `sources["xml_backup"]`: the latter is False both when no export is
+    configured at all and when a configured one failed to read/parse, and
+    R3 needs to tell those apart.
+    """
+    inventory_records = _inventory_records(manifest)
+    total = len(inventory_records)
+    findings: list[Finding] = []
+
+    # R1 -- concern. Nothing beyond the seeded base_url itself.
+    nothing_discovered = total <= 1
+    if nothing_discovered:
+        findings.append(
+            Finding(
+                code="nothing_discovered",
+                severity="concern",
+                message="Only the seeded base_url was found -- no sitemap, REST API, or "
+                "XML export entry was kept.",
+                suggestion="Check that base_url is correct and reachable in a browser, and "
+                "that exclusions isn't matching everything.",
+            )
+        )
+
+    # R2 -- concern. No inventory source reachable at all. Distinct from
+    # R1: an XML export alone can seed real URLs with both live sources
+    # unreachable, so the two can diverge in either direction.
+    if not any(sources.values()):
+        findings.append(
+            Finding(
+                code="no_inventory_source",
+                severity="concern",
+                message="No inventory source (sitemap, REST API, or XML export) was reachable.",
+                suggestion="The crawl will work from the homepage's links alone, which can't "
+                "be cross-checked for completeness; consider exporting a WXR from wp-admin "
+                "(Tools -> Export) and setting xml_backup.",
+            )
+        )
+
+    sitemap_ok = bool(sources.get("sitemap"))
+    rest_ok = bool(sources.get("rest_api"))
+    sitemap_count = sum(1 for r in inventory_records if "sitemap" in r.discovered_via)
+    rest_count = sum(1 for r in inventory_records if "rest_api" in r.discovered_via)
+
+    # R3 -- notice. Exactly one of sitemap/REST API reachable, no XML
+    # export configured. Common and often fine (security plugins routinely
+    # block /wp-json/) -- worded as an FYI, not an alarm. Suppressed when
+    # R1 already fired: a single-source note is noise once "nothing was
+    # found at all" is already the headline.
+    if not nothing_discovered and sitemap_ok != rest_ok and not xml_backup_configured:
+        live_label = "sitemap" if sitemap_ok else "REST API"
+        findings.append(
+            Finding(
+                code="single_live_source",
+                severity="notice",
+                message=f"Only the {live_label} is reachable as a live inventory source.",
+                suggestion="An XML export gives a second, independent list to cross-check "
+                "against (wp-admin -> Tools -> Export).",
+            )
+        )
+
+    # R4 -- concern (source_contributed_nothing) or notice
+    # (source_underweight). The concern half is the highest-value rule
+    # here and is free: `sources[key]` is set True before _seed runs, so
+    # "reachable but yielded 0 in-scope URLs" is a real, cheap signal --
+    # near-certain misconfiguration (wrong host/base_path/exclusions), not
+    # a coincidence.
+    for key, label, count in (("sitemap", "sitemap", sitemap_count), ("rest_api", "REST API", rest_count)):
+        if sources.get(key) and count == 0:
+            findings.append(
+                Finding(
+                    code="source_contributed_nothing",
+                    severity="concern",
+                    message=f"The {label} was reachable but contributed 0 URLs to the inventory.",
+                    suggestion=f"Compare base_url against the URLs the {label} actually lists "
+                    "-- a mismatched host (www. vs bare), a wrong base_path on a multisite "
+                    "sub-path install, or an exclusions pattern matching everything are the "
+                    "usual causes.",
+                )
+            )
+
+    if sitemap_ok and rest_ok and sitemap_count > 0 and rest_count > 0:
+        low_count, high_count = sorted((sitemap_count, rest_count))
+        # Directional threshold, not symmetric: REST API > sitemap is the
+        # normal case (REST exposes attachments/users no sitemap lists),
+        # not a finding. Measured against five real sites before being
+        # set at 10% -- see CLAUDE-dry-run-readiness.md's Measured baseline.
+        if low_count / high_count < 0.10:
+            if sitemap_count < rest_count:
+                low_label, high_label = "sitemap", "REST API"
+            else:
+                low_label, high_label = "REST API", "sitemap"
+            findings.append(
+                Finding(
+                    code="source_underweight",
+                    severity="notice",
+                    message=f"The {low_label} contributed {low_count} URLs against the "
+                    f"{high_label}'s {high_count}.",
+                    suggestion="That gap is usually a sitemap plugin listing only part of "
+                    "the site, or (on a multisite sub-path install) a sitemap belonging to "
+                    "the network root rather than to this site.",
+                )
+            )
+
+    # R6 -- notice. A large, absolute-and-relative share of the inventory
+    # is WordPress archive/attachment pages, not standalone content.
+    # Suppressed when R1 already fired, same reasoning as R3.
+    if not nothing_discovered:
+        urls = [r.url for r in inventory_records]
+        matched_total, per_category = _low_value_archive_counts(urls)
+        if matched_total >= 20 and (matched_total / total) >= 0.10:
+            breakdown = ", ".join(
+                f"{count} {label}{'s' if count != 1 else ''}"
+                for label, count in sorted(per_category.items(), key=lambda kv: -kv[1])
+            )
+            findings.append(
+                Finding(
+                    code="low_value_archives",
+                    severity="notice",
+                    message=f"{breakdown} were found in the inventory.",
+                    suggestion="These are WordPress archive/attachment pages, not standalone "
+                    "content -- worth excluding (see EXTRA-CONFIG-OPTIONS.md) if you don't "
+                    "want them in the archive.",
+                )
+            )
+
+    severities = {f.severity for f in findings}
+    if "concern" in severities:
+        verdict, headline = "attention", "Something looks wrong; worth fixing before crawling."
+    elif "notice" in severities:
+        verdict, headline = "review", "Worth a look before you commit to a crawl."
+    else:
+        verdict, headline = "ready", "Nothing to flag in the inventory."
+
+    return DryRunAssessment(verdict=verdict, headline=headline, findings=tuple(findings))
+
+
+def format_readiness(assessment: DryRunAssessment) -> str:
+    """Console rendering -- a leading blank line so the caller can just
+    print() this straight after the existing 'by source' line with no
+    extra bookkeeping; see _run_acquire_locked's dry-run branch."""
+    color_fn = {"ready": green, "review": yellow, "attention": red}[assessment.verdict]
+    lines = ["", color_fn(f"Readiness: {assessment.headline}", bold_too=True)]
+    for finding in assessment.findings:
+        lines.append(f"  - {finding.message} {finding.suggestion}")
+    lines.append(DRY_RUN_DISCLAIMER)
+    return "\n".join(lines)
+
+
 def build_summary(
     manifest: Manifest,
     output_dir: Path,
@@ -192,10 +440,16 @@ def build_report_data(
     output_dir: Path,
     run_started: str | None = None,
     run_finished: str | None = None,
+    *,
+    readiness: DryRunAssessment | None = None,
 ) -> dict:
     return {
         "generated": utc_now(),
         "summary": build_summary(manifest, output_dir, run_started, run_finished),
+        # Always present (dry-run and real-run alike) so the schema never
+        # differs between them; null outside a dry run rather than a
+        # stale/regenerated verdict -- see assess_dry_run's own docstring.
+        "readiness": asdict(readiness) if readiness is not None else None,
         "records": [r.to_dict() for r in manifest.all()],
     }
 
@@ -206,8 +460,10 @@ def write_report_json(
     path: Path,
     run_started: str | None = None,
     run_finished: str | None = None,
+    *,
+    readiness: DryRunAssessment | None = None,
 ) -> None:
-    data = build_report_data(manifest, output_dir, run_started, run_finished)
+    data = build_report_data(manifest, output_dir, run_started, run_finished, readiness=readiness)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
@@ -218,6 +474,33 @@ def write_report_json(
 
 def _esc(value) -> str:
     return html_module.escape("" if value is None else str(value), quote=True)
+
+
+def _readiness_html(assessment: DryRunAssessment | None) -> str:
+    """Emits nothing at all when `assessment` is None -- a real (non-dry)
+    run's report, and a `wpfreeze report` regeneration, both pass None on
+    purpose (see assess_dry_run's docstring), so this section simply
+    doesn't exist on those reports rather than showing a stale verdict."""
+    if assessment is None:
+        return ""
+    badge_class = {"ready": "badge-ok", "review": "badge-review", "attention": "badge-gap"}[assessment.verdict]
+    if assessment.findings:
+        items = "".join(
+            f"<li><p>{_esc(finding.message)}</p>"
+            f'<div class="category-help"><p><strong>What you might do:</strong> '
+            f"{_esc(finding.suggestion)}</p></div></li>"
+            for finding in assessment.findings
+        )
+        body = f'<ul class="readiness-findings">{items}</ul>'
+    else:
+        body = "<p>No findings.</p>"
+    return f"""
+    <section id="readiness">
+      <h2>Dry-run readiness <span class="badge {badge_class}">{_esc(assessment.headline)}</span></h2>
+      {body}
+      <p class="section-intro">{_esc(DRY_RUN_DISCLAIMER)}</p>
+    </section>
+    """
 
 
 def _summary_html(summary: dict) -> str:
@@ -400,6 +683,9 @@ th { background: #f4f4f4; }
 .badge { padding: 0.2rem 0.6rem; border-radius: 1rem; font-size: 0.85rem; }
 .badge-gap { background: #fde2e2; color: #7a1212; }
 .badge-ok { background: #e2fde3; color: #14591c; }
+.badge-review { background: #fff4d6; color: #7a5200; }
+ul.readiness-findings { list-style: none; padding: 0; margin: 0.5rem 0 1rem; }
+ul.readiness-findings li { margin-bottom: 0.8rem; }
 details { margin-bottom: 1rem; }
 summary { cursor: pointer; font-weight: 600; }
 .filters { margin-bottom: 0.5rem; display: flex; gap: 0.5rem; }
@@ -422,6 +708,7 @@ ul.referrer-list li { margin: 0.15rem 0; }
   th, td { border-color: #444; }
   .badge-gap { background: #4a1f1f; color: #ff9d9d; }
   .badge-ok { background: #1f4a22; color: #9dffa3; }
+  .badge-review { background: #4a3a12; color: #ffd27a; }
   .section-intro { color: #aaa; }
   .category-help { background: #253044; border-left-color: #6a8fc7; }
   td details summary { color: #8fb3e8; }
@@ -455,7 +742,14 @@ _JS = """
 """
 
 
-def build_report_html(manifest: Manifest, output_dir: Path, run_started: str | None = None, run_finished: str | None = None) -> str:
+def build_report_html(
+    manifest: Manifest,
+    output_dir: Path,
+    run_started: str | None = None,
+    run_finished: str | None = None,
+    *,
+    readiness: DryRunAssessment | None = None,
+) -> str:
     summary = build_summary(manifest, output_dir, run_started, run_finished)
     return f"""<!doctype html>
 <html lang="en">
@@ -466,6 +760,7 @@ def build_report_html(manifest: Manifest, output_dir: Path, run_started: str | N
 </head>
 <body>
 <h1>wpfreeze acquisition report</h1>
+{_readiness_html(readiness)}
 {_summary_html(summary)}
 {_action_required_html(manifest)}
 {_wayback_html(manifest)}
@@ -482,5 +777,9 @@ def write_report_html(
     path: Path,
     run_started: str | None = None,
     run_finished: str | None = None,
+    *,
+    readiness: DryRunAssessment | None = None,
 ) -> None:
-    path.write_text(build_report_html(manifest, output_dir, run_started, run_finished), encoding="utf-8")
+    path.write_text(
+        build_report_html(manifest, output_dir, run_started, run_finished, readiness=readiness), encoding="utf-8"
+    )

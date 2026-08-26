@@ -239,15 +239,55 @@ def test_load_config_freeze_steps_rejects_duplicate(tmp_path: Path):
         load_config(path)
 
 
-def test_search_enabled_with_default_policy_raises_config_error(tmp_path: Path):
-    # strip_forms and strip_search_forms both default True, so a search
-    # form never survives the build -- nothing left to wire up.
+def test_search_enabled_with_no_policy_key_defaults_to_keeping_the_form(tmp_path: Path):
+    # search.enabled implies "keep this site's search form" when the config
+    # never addressed strip_search_forms at all -- the whole point of
+    # turning search on. No ConfigError, and the form survives the build.
     path = _write_yaml(
         tmp_path / "site.yaml",
         {"base_url": "https://example.com/", "output_dir": "out", "search": {"enabled": True}},
     )
+    config = load_config(path)  # must not raise
+    assert config.search.enabled is True
+    assert config.policy.strip_search_forms is False
+
+
+def test_search_enabled_with_explicit_strip_search_forms_true_raises(tmp_path: Path):
+    # An *explicit* strip_search_forms: true next to search.enabled: true is
+    # a real contradiction -- the config says both "keep the form" and
+    # "strip the form" -- and must still be rejected, not silently
+    # overridden by the absent-key default above.
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {
+            "base_url": "https://example.com/",
+            "output_dir": "out",
+            "policy": {"strip_search_forms": True},
+            "search": {"enabled": True},
+        },
+    )
     with pytest.raises(ConfigError, match="strip_search_forms"):
         load_config(path)
+
+
+def test_search_enabled_with_explicit_strip_forms_true_and_no_strip_search_forms_key_still_defaults(
+    tmp_path: Path,
+):
+    # strip_forms: true is just restating that dataclass field's own
+    # default -- it says nothing about strip_search_forms specifically, so
+    # it must not block the absent-key default from kicking in.
+    path = _write_yaml(
+        tmp_path / "site.yaml",
+        {
+            "base_url": "https://example.com/",
+            "output_dir": "out",
+            "policy": {"strip_forms": True},
+            "search": {"enabled": True},
+        },
+    )
+    config = load_config(path)  # must not raise
+    assert config.policy.strip_forms is True
+    assert config.policy.strip_search_forms is False
 
 
 def test_search_enabled_with_strip_search_forms_false_loads(tmp_path: Path):
@@ -381,6 +421,40 @@ def test_run_acquire_dry_run_fetches_nothing_beyond_inventory(tmp_path: Path):
         base_record = manifest.get(site.site_base + "/")
         assert base_record.status == Status.PENDING.value
         assert not (config.output_dir / "raw").exists()
+
+
+def test_run_acquire_dry_run_writes_a_readiness_verdict(tmp_path: Path, capsys):
+    """End-to-end: assess_dry_run is computed from the real discover_
+    inventory sources/manifest _run_acquire_locked has at hand, and reaches
+    the console, report.json, and report.html -- see
+    CLAUDE-dry-run-readiness.md for the individual rules' own unit tests
+    (test_report.py), this just proves the wiring."""
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        exit_code = run_acquire(config, resume=False, dry_run=True)
+        assert exit_code == 0
+
+        out = capsys.readouterr().out
+        assert "Readiness:" in out
+        assert "Based on inventory discovery only" in out
+
+        report = json.loads((config.output_dir / "report.json").read_text())
+        assert report["readiness"] is not None
+        assert report["readiness"]["verdict"] in ("ready", "review", "attention")
+
+        html = (config.output_dir / "report.html").read_text()
+        assert 'id="readiness"' in html
+
+
+def test_run_acquire_real_run_readiness_is_null(tmp_path: Path):
+    """readiness is acquire-dry-run-only -- a real (non-dry) run's report
+    carries a null verdict rather than a stale inventory-only one, since
+    a completed crawl has strictly better signals it isn't using here."""
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        run_acquire(config, resume=False, dry_run=False)
+        report = json.loads((config.output_dir / "report.json").read_text())
+        assert report["readiness"] is None
 
 
 def test_run_acquire_releases_lock_after_completion(tmp_path: Path):
@@ -589,6 +663,29 @@ def test_main_project_and_config_together_is_an_error(tmp_path: Path, monkeypatc
 def test_main_neither_project_nor_config_is_an_error(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert main(["status"]) == 2
+
+
+def test_main_help_prints_usage_and_exits_zero(capsys):
+    # `wpfreeze help` is a bare-word alias for -h/--help (git/docker/npm-
+    # style muscle memory) -- not project-addressed, must not fall into
+    # the project/--config resolution every other subcommand goes through.
+    exit_code = main(["help"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "usage: wpfreeze" in out
+    assert "acquire" in out and "freeze" in out
+
+
+def test_main_help_matches_bare_dash_h(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(["-h"])
+    assert exc_info.value.code == 0
+    dash_h_out = capsys.readouterr().out
+
+    main(["help"])
+    help_out = capsys.readouterr().out
+
+    assert dash_h_out == help_out
 
 
 def test_main_unknown_project_name_exits_2_with_known_names_listed(tmp_path: Path, monkeypatch, capsys):

@@ -34,8 +34,10 @@ Choose [2]:
 Use Wayback Machine recovery for missing pages? [Y/n]:
 Prefer Wayback snapshots nearest to which date? (YYYY-MM-DD, blank = today):
 Do you have a WordPress XML export (WXR) for this site? (wp-admin: Tools -> Export -> All content) [y/N]:
+Enable offline search? (adds a Pagefind-powered search box to the archived site) [y/N]:
 Save this config as [www-example-com.yaml]:
 Wrote www-example-com.yaml
+See EXTRA-CONFIG-OPTIONS.md for other options you can add to it by hand.
 Run a dry-run now? (discovers URLs, fetches nothing) [Y/n]:
 ...
 Run the real acquisition now? [y/N]:
@@ -50,7 +52,8 @@ end to end); each step is also available on its own, e.g.
 `wpfreeze acquire www-example-com --resume`, `wpfreeze report`, and
 `wpfreeze status`, all with no wizard involved. Exclusions, `extra_hosts`,
 and `user_agent` are left at their shipped defaults; edit the YAML
-directly if a site needs something different there.
+directly if a site needs something different there -- `EXTRA-CONFIG-OPTIONS.md`
+has a short list of what people tend to add first.
 
 If you answer yes to the WXR-export question, you'll be asked for the
 path to the file; it's written into the config as an optional
