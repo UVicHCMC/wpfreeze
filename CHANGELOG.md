@@ -104,7 +104,7 @@ for site owners retiring a site who need the result to *replace* the original.
 
 ### Known limitations
 
-- WXR exports alone cannot rebuild a working site; see `WXR-LIMITATIONS.md`.
+- WXR exports alone cannot rebuild a working site; see `the WXR limitations notes`.
 - VNU validation requires a JVM. It is offered only when `java` is on `PATH`.
 - Sites behind aggressive CDN rate limiting may need a slower `rate_limit`.
 - No CI. For a single-maintainer tool this is a deliberate omission.

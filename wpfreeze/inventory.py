@@ -1,6 +1,6 @@
 """Inventory stage: assemble the authoritative URL set before crawling.
 
-See CLAUDE-acquire.md, "Stage 1 -- Inventory". Parsing logic here is pure
+See the acquisition design notes, "Stage 1 -- Inventory". Parsing logic here is pure
 and network-free by design (the doc's test strategy requires the WXR
 parsing and the sitemap/REST parsing to be unit-testable against
 fixtures); the network-orchestrating functions call out to wpfreeze.fetch

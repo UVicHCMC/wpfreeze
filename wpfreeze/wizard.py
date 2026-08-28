@@ -251,7 +251,7 @@ def describe_configs(directory: Path = Path(".")) -> tuple[list[ConfigStatus], l
             status_lines = ("Not yet acquired.",)
             # freeze recommended between the dry-run and the bare acquire:
             # sizing a site up first is still worth keeping as its own
-            # leading option (CLAUDE-freeze-ux.md's own reasoning -- "useful
+            # leading option (the freeze UX design notes's own reasoning -- "useful
             # regardless of how the rest of the run proceeds"), but for a
             # project with nothing done yet, freeze -- not a lone acquire --
             # is the config's own declared normal path end to end (see

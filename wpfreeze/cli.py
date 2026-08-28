@@ -1,7 +1,7 @@
 """CLI entry point: argument parsing, YAML config loading/validation, and
 pipeline orchestration for `wpfreeze acquire|report|status`.
 
-See CLAUDE-acquire.md, "CLI" and "Configuration (YAML)".
+See the acquisition design notes, "CLI" and "Configuration (YAML)".
 """
 from __future__ import annotations
 
@@ -155,7 +155,7 @@ class FreezeSettings:
 # comment thread (`#comments` sits outside it). An explicit
 # `body_selectors: []` in a site's config opts back into the old
 # whole-<body> behaviour; leaving the key out entirely gets this instead.
-# NOT a live per-site detection scheme -- CLAUDE-search.md sec 13
+# NOT a live per-site detection scheme -- the offline-search design notes sec 13
 # explicitly rules that out ("same class of problem as guessing a
 # theme's content container by name") and asks for exactly this instead:
 # "a structural default plus an explicit per-site escape hatch, with the
@@ -169,7 +169,7 @@ DEFAULT_BODY_SELECTORS: tuple[str, ...] = ("body.wp-singular .entry-content",)
 @dataclass(frozen=True)
 class SearchSettings:
     # Master switch for offline search (Pagefind). Off by default -- see
-    # CLAUDE-search.md. Requires a search form to actually survive the
+    # the offline-search design notes. Requires a search form to actually survive the
     # build; see load_config's own check just below.
     enabled: bool = False
     # CSS selectors marking a page's real content for indexing. Beyond
@@ -203,7 +203,7 @@ class SearchSettings:
     # validation: like body_selectors/ignore_selectors, an entry that
     # matches nothing is a silent no-op, self-correcting because the page
     # keeps surfacing in scan_content_issues's echo report. See
-    # CLAUDE-search-content-checks.md sec 8a.
+    # the content-checks design notes sec 8a.
     exclude_pages: tuple[str, ...] = ()
     # Exact output paths (same format as exclude_pages) of pages already
     # reviewed and confirmed to be legitimately short by design -- a
@@ -430,7 +430,7 @@ def probe_site(
 ) -> SiteProfile:
     """Establish this run's SiteProfile with a handful of one-time probes:
     does the site serve https, does it prefer www or non-www, does it
-    prefer a trailing slash. See CLAUDE-acquire.md, "URL normalization"."""
+    prefer a trailing slash. See the acquisition design notes, "URL normalization"."""
     parsed = urlsplit(base_url)
     host = parsed.hostname or ""
     port_suffix = f":{parsed.port}" if parsed.port else ""
@@ -492,7 +492,7 @@ def _run_to_settled(
     exclusions, manifest_path, progress: "Progress | None" = None,
 ) -> None:
     """Interleave crawl -> Wayback recovery -> canonical cascade until no
-    pending work remains (Stage 2/4 joint fixpoint, see CLAUDE-acquire.md)."""
+    pending work remains (Stage 2/4 joint fixpoint, see the acquisition design notes)."""
     while True:
         crawl_fixpoint(
             manifest, profile, session, rate_limiter, fetch_config, raw_dir, exclusions,
@@ -1525,7 +1525,7 @@ _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
 def _configure_logging(output_dir: Path) -> None:
-    """Per CLAUDE-acquire.md, output_dir gets a logs/ directory alongside
+    """Per the acquisition design notes, output_dir gets a logs/ directory alongside
     raw/ and the reports. Console stays at INFO (meaningful progress); the
     file captures DEBUG (one line per fetch and below).
 

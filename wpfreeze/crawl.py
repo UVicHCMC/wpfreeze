@@ -1,7 +1,7 @@
 """Fixpoint crawl: fetch the manifest's pending queue, extract links,
 discover more pending URLs, and repeat until none remain.
 
-See CLAUDE-acquire.md, "Stage 2 -- Crawl to fixpoint".
+See the acquisition design notes, "Stage 2 -- Crawl to fixpoint".
 """
 from __future__ import annotations
 
@@ -240,7 +240,7 @@ def admit_link(link, profile: SiteProfile) -> str | None:
     how this page looks, so it is still fetched and localized under
     "render even if external".
 
-    Per CLAUDE-acquire.md, "Link extraction": <script> scanning is scoped
+    Per the acquisition design notes, "Link extraction": <script> scanning is scoped
     to internal hosts/uploads paths -- unlike genuine src/CSS/preload/
     og:image contexts, a script-derived match is only a URL-shaped-string
     heuristic (JS comments, license/source-map mentions, tracking config)

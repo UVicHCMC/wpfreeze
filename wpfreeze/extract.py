@@ -1,6 +1,6 @@
 """Link extraction: pull every URL a page renders or links to out of HTML/CSS.
 
-See CLAUDE-acquire.md, "Link extraction", for the attribute/context list
+See the acquisition design notes, "Link extraction", for the attribute/context list
 and the render-vs-hyperlink distinction this module encodes: src-like
 contexts, CSS urls, preloads, and og:image are renderable (localized even
 if external); href on <a> is a hyperlink (followed only if internal).

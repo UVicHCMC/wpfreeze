@@ -429,7 +429,7 @@ def test_run_acquire_dry_run_writes_a_readiness_verdict(tmp_path: Path, capsys):
     """End-to-end: assess_dry_run is computed from the real discover_
     inventory sources/manifest _run_acquire_locked has at hand, and reaches
     the console, report.json, and report.html -- see
-    CLAUDE-dry-run-readiness.md for the individual rules' own unit tests
+    the dry-run readiness design notes for the individual rules' own unit tests
     (test_report.py), this just proves the wiring."""
     with FixtureSite() as site:
         config = _config_for(site, tmp_path / "out")
@@ -1103,7 +1103,7 @@ def test_run_build_returns_2_when_pagefind_unavailable(tmp_path: Path, monkeypat
 
 
 # ---------------------------------------------------------------------------
-# search-enabled-but-no-search-form pushback (Part 4 of CLAUDE-freeze-ux.md)
+# search-enabled-but-no-search-form pushback (Part 4 of the freeze UX design notes)
 # ---------------------------------------------------------------------------
 
 

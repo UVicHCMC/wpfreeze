@@ -258,7 +258,7 @@ def test_write_report_html_writes_file(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Dry-run readiness assessment -- see CLAUDE-dry-run-readiness.md
+# Dry-run readiness assessment -- see the dry-run readiness design notes
 # ---------------------------------------------------------------------------
 
 

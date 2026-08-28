@@ -1,6 +1,6 @@
 """Stage 6 -- output path mapping and redirects.htaccess generation.
 
-See CLAUDE-acquire.md, "Stage 6 -- Output path mapping".
+See the acquisition design notes, "Stage 6 -- Output path mapping".
 """
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def internal_output_path(url_path: str) -> str:
 def external_asset_bucket(filename: str) -> str | None:
     """Well-known local folder for a renderable external asset, by
     extension; None means "no known bucket, use the host-namespaced
-    catch-all" (see CLAUDE-acquire.md)."""
+    catch-all" (see the acquisition design notes)."""
     ext = PurePosixPath(filename).suffix.lower()
     if ext in _FONT_EXTS:
         return "/assets/fonts/"

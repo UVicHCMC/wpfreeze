@@ -339,7 +339,7 @@ def test_store_bytes_child_then_parent_uses_leaf_name_for_parent(tmp_path: Path)
 
 
 def test_script_derived_external_url_is_not_queued(tmp_path: Path, monkeypatch):
-    """CLAUDE-acquire.md scopes <script> scanning to internal hosts/uploads
+    """the acquisition design notes scopes <script> scanning to internal hosts/uploads
     paths, and excludes script-derived matches from the "render even if
     external" allowance given to genuine src/CSS/preload/og:image contexts.
     A JS blob merely mentioning a third-party URL (license comment,

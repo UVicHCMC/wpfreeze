@@ -1,6 +1,6 @@
 """A hand-rolled, single-line terminal progress display -- no `rich`/`tqdm`/
 `blessed` dependency, per this project's "no dependencies without
-justification" rule (see CLAUDE-freeze-ux.md Part 2c).
+justification" rule (see the freeze UX design notes Part 2c).
 
 Correctness of the surrounding output comes before cuteness, in this order:
 

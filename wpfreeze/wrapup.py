@@ -1,6 +1,6 @@
 """Per-step timing and a short "what actually happened, where is it"
 summary for `wpfreeze freeze` and for an individual subcommand that did
-real work -- see CLAUDE-freeze-ux.md Part 2d.
+real work -- see the freeze UX design notes Part 2d.
 """
 from __future__ import annotations
 

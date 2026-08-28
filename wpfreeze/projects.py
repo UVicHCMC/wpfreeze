@@ -2,7 +2,7 @@
 a config path, for backward compatibility) to its site config.
 
 A "project" is just a site config, addressed by a short name instead of
-its file path -- see CLAUDE-freeze-ux.md Part 1/2. This module owns the
+its file path -- see the freeze UX design notes Part 1/2. This module owns the
 name-validation rule so `cli.load_config` and `wizard.build_config_dict`
 apply exactly the same one, rather than each hand-rolling a regex.
 

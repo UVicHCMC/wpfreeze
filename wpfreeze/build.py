@@ -826,7 +826,7 @@ def build_site(
                 # src=...> is already a correct relative local path, and
                 # the rewriter would otherwise try (and fail) to resolve
                 # it against the manifest lookup, inflating the
-                # unresolved-reference count. See CLAUDE-search.md sec. 5.
+                # unresolved-reference count. See the offline-search design notes sec. 5.
                 script_src = relative_link(record.output_path, SEARCH_ASSET_PATH)
                 apply_search(soup, search, stats.search, script_src, record.output_path)
             destination.write_text(str(soup), encoding="utf-8")
@@ -1041,7 +1041,7 @@ def write_build_report(
     reads the finished site_dir after build_site returns, not during its
     per-page loop, and run_search_index needs the identical result shape
     without ever calling build_site at all -- see
-    CLAUDE-search-content-checks.md sec 2). None means search was
+    the content-checks design notes sec 2). None means search was
     disabled, distinct from running and finding nothing.
     """
     path = output_dir / "build-report.json"

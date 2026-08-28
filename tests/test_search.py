@@ -615,7 +615,7 @@ def test_scan_password_protected_page_skipped_even_if_it_somehow_has_text(tmp_pa
 def test_scan_respects_sitewide_tagging_not_per_page(tmp_path: Path):
     # One page tagged anywhere makes Pagefind's rule sitewide: an untagged
     # page is NOT indexed at all (thin or otherwise), not whole-body
-    # fallback -- CLAUDE-search-content-checks.md sec 2's correctness trap.
+    # fallback -- the content-checks design notes sec 2's correctness trap.
     site_dir = tmp_path / "site"
     _write_page(
         site_dir, "/tagged.html",
@@ -761,7 +761,7 @@ def test_scan_sample_is_a_contiguous_normalized_run(tmp_path: Path):
     punctuation-free fixture (e.g. _words()) cannot distinguish "returns
     normalized text" from "returns the original text", which is exactly
     how the original version of this test shipped without catching that
-    the code was never verbatim (CLAUDE-search-content-checks-FIXES.md
+    the code was never verbatim (the content-checks review notes
     sec 2).
     """
     site_dir = tmp_path / "site"
@@ -807,7 +807,7 @@ def test_scan_extract_respects_ignore_selectors(tmp_path: Path):
 
 
 def test_scan_exclude_pages_composes_with_apply_search_end_to_end(tmp_path: Path):
-    """CLAUDE-search-content-checks.md sec 8a claims scan_content_issues
+    """the content-checks design notes sec 8a claims scan_content_issues
     needs no awareness of exclude_pages -- it composes for free through
     the sitewide-tagging mechanism apply_search already uses. Proves that
     claim by running the actual pipeline both functions sit in (apply_search
@@ -855,7 +855,7 @@ def test_content_issues_summary_reports_counts():
     # Both counts reported against pages_scanned, not bare counts -- the
     # design doc's sec 4c ">15% of pages flagged means the threshold is
     # wrong" guidance is unusable without the denominator. See
-    # CLAUDE-search-content-checks-FIXES.md sec 3.
+    # the content-checks review notes sec 3.
     assert "1 of 5 page(s) scanned" in summary
     assert "acknowledged" not in summary
 

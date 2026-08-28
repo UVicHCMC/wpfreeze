@@ -73,5 +73,4 @@ wpfreeze freeze your-site
 your-site`, `wpfreeze validate your-site` -- or address it by path instead
 of by its `name:` with `wpfreeze acquire --config your-site.yaml`)
 
-See that file's comments for every option, and `CLAUDE-acquire.md` for the
-full spec this tool implements.
+See that file's comments for every option.

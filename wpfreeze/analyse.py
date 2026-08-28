@@ -1,6 +1,6 @@
 """Stage 5 -- post-crawl analysis and flagging.
 
-See CLAUDE-acquire.md, "Stage 5 -- Analysis and flags" and "Canonical URL
+See the acquisition design notes, "Stage 5 -- Analysis and flags" and "Canonical URL
 cascade". Operates purely on an already-crawled Manifest plus the stored
 bytes under raw/ -- no network.
 """
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 _FETCHED_STATUSES = {Status.FETCHED.value, Status.FETCHED_WAYBACK.value}
 
 # A small, documented, extensible list of dynamic-plugin markup markers
-# (see CLAUDE-acquire.md Stage 5). Add more (class/id/script-handle
+# (see the acquisition design notes Stage 5). Add more (class/id/script-handle
 # patterns for other gallery/slider/form plugins) as real sites surface
 # them -- keep each entry's provenance obvious from its key.
 PLUGIN_MARKUP_PATTERNS: dict[str, list[re.Pattern]] = {
@@ -164,7 +164,7 @@ def apply_canonical_cascade(manifest: Manifest, profile: SiteProfile, raw_dir: P
 def _choose_hash_duplicate_canonical(records: list[ManifestRecord]) -> ManifestRecord:
     """Exclude WordPress resize-suffixed paths (-WIDTHxHEIGHT before the
     extension) if a non-suffixed member exists; otherwise earliest
-    first_seen. See CLAUDE-acquire.md, hash_duplicate flag."""
+    first_seen. See the acquisition design notes, hash_duplicate flag."""
     non_suffixed = [r for r in records if not _WP_RESIZE_SUFFIX_RE.search(urlsplit(r.url).path)]
     pool = non_suffixed or records
     return min(pool, key=lambda r: r.first_seen)

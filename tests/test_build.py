@@ -541,7 +541,7 @@ def test_search_enabled_writes_the_runtime_asset(tmp_path: Path):
 
 
 def test_search_enabled_does_not_inflate_unresolved_or_break_verification(tmp_path: Path):
-    """The regression test for the ordering hazard in CLAUDE-search.md
+    """The regression test for the ordering hazard in the offline-search design notes
     section 5: injecting the script tag before rewrite_soup would make the
     rewriter treat it as an unresolvable reference. Compare stats.unresolved
     directly against the same build with search off."""

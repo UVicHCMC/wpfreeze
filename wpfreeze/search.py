@@ -27,8 +27,8 @@ Five pieces, run in this order by `wpfreeze build`:
    echoing post teasers, most often. Read-only reporting, same as
    `pages_without_body_match`; never changes what gets indexed.
 
-See CLAUDE-search.md for the offline-search design, and
-CLAUDE-search-content-checks.md for scan_content_issues's own design
+See the offline-search design notes for the offline-search design, and
+the content-checks design notes for scan_content_issues's own design
 (algorithm, calibrated constants, why pairwise containment was tried and
 rejected) -- including why `body_selectors` is a page-*exclusion*
 mechanism and not just a region-narrower, and why the script tag has to
@@ -66,7 +66,7 @@ BUNDLE_SUBDIR = "pagefind"
 
 # scan_content_issues's constants -- calibrated against two real sites
 # (site-a.example, site-b.example), not guessed in the abstract.
-# See CLAUDE-search-content-checks.md sec 4c for the measured distribution
+# See the content-checks design notes sec 4c for the measured distribution
 # behind these numbers (a clean gap between ~0.30 and ~0.50 on both,
 # unrelated, sites) and sec 8 for why this is fixed-constant reporting,
 # not a config knob, in v1.
@@ -97,7 +97,7 @@ class SearchStats:
     # pages_without_body_match on purpose: that list means "the selector
     # should have matched and didn't, go look"; this one means "the owner
     # already decided about this page, nothing to review". See
-    # CLAUDE-search-content-checks.md sec 8a.
+    # the content-checks design notes sec 8a.
     pages_excluded_by_config: list[str] = field(default_factory=list)  # output paths
     forms_tagged: int = 0
     pages_without_form: list[str] = field(default_factory=list)  # output paths
@@ -136,7 +136,7 @@ class EchoedPage:
     """A page whose indexed text is mostly shared with other pages --
     typically a WordPress archive/category/blog-listing page (native or
     hand-built) that re-embeds other pages' content as teasers. See
-    CLAUDE-search-content-checks.md sec 4b for the corpus-wide echo-
+    the content-checks design notes sec 4b for the corpus-wide echo-
     fraction algorithm and why pairwise containment was tried and
     rejected (it missed the truncated-teaser case entirely)."""
 
@@ -158,7 +158,7 @@ class ContentIssues:
     """scan_content_issues's result. Deliberately NOT a field on
     SearchStats: run_search_index re-indexes an already-built site
     without running build_site's per-page loop at all, so it never has a
-    SearchStats to extend. See CLAUDE-search-content-checks.md sec 2."""
+    SearchStats to extend. See the content-checks design notes sec 2."""
 
     # Pages that were actually indexed (thin + shingle-eligible) --
     # deliberately excludes pages extract_indexed_text returned None for
@@ -395,7 +395,7 @@ def apply_search(
     rewritten to local paths -- the injected <script src=...> is already a
     correct relative local path, and if the rewriter sees it first it will
     try (and fail) to resolve it against the manifest lookup, inflating
-    the unresolved-reference count. See CLAUDE-search.md section 5.
+    the unresolved-reference count. See the offline-search design notes section 5.
 
     `page_output` is only used to record output paths in the stats lists;
     it defaults to "" so tests can call this with a bare soup and no page
@@ -419,7 +419,7 @@ def apply_search(
         # exclusion mechanism -- this just opts a page out of the existing
         # one. Does not touch the form-tagging above: an excluded page can
         # still host a working search box, only its own content stops
-        # being indexed. See CLAUDE-search-content-checks.md sec 8a.
+        # being indexed. See the content-checks design notes sec 8a.
         stats.pages_excluded_by_config.append(page_output)
     else:
         matched_here = False
@@ -614,7 +614,7 @@ def extract_indexed_text(
 
 def _detect_sitewide_tagging(html_paths: list[Path]) -> bool:
     """Whether ANY page site-wide carries data-pagefind-body -- Pagefind's
-    own sitewide rule (CLAUDE-search.md sec 2): if any page has the
+    own sitewide rule (the offline-search design notes sec 2): if any page has the
     attribute, every page site-wide is restricted to tagged regions, and
     an untagged page is dropped from the index entirely rather than
     falling back to whole-body.
@@ -665,7 +665,7 @@ def scan_content_issues(
     still need apply_search to re-tag markup, so those still need a
     rebuild -- same existing constraint as indexing itself.)
 
-    See CLAUDE-search-content-checks.md for the full design: sec 2 for why
+    See the content-checks design notes for the full design: sec 2 for why
     this reads the finished site_dir rather than in-memory build state and
     the sitewide-tagging correctness trap handled below, sec 4 for the
     thin-content and echo-fraction algorithms.

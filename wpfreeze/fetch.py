@@ -1,6 +1,6 @@
 """Fetcher: rate-limited, retrying HTTP client with failure classification.
 
-See CLAUDE-acquire.md, "Stage 3 -- Failure classification and retry":
+See the acquisition design notes, "Stage 3 -- Failure classification and retry":
 transient errors (timeout/connection error/429/5xx) retry with exponential
 backoff up to a configurable attempt limit; everything terminal --
 including exhausted retries -- becomes a Wayback candidate, distinguished

@@ -6,8 +6,8 @@ byte sizes) and, for a dry run only, the inventory-source reachability map
 `acquire` again; the dry-run readiness assessment is acquire-only, see
 `assess_dry_run`'s own docstring for why.
 
-See CLAUDE-acquire.md, "Stage 7 -- Report", and
-CLAUDE-dry-run-readiness.md for the readiness assessment's own design.
+See the acquisition design notes, "Stage 7 -- Report", and
+the dry-run readiness design notes for the readiness assessment's own design.
 """
 from __future__ import annotations
 
@@ -176,7 +176,7 @@ def infer_inventory_sources_used(manifest: Manifest) -> dict[str, bool]:
 
 
 # ---------------------------------------------------------------------------
-# Dry-run readiness assessment -- see CLAUDE-dry-run-readiness.md for the
+# Dry-run readiness assessment -- see the dry-run readiness design notes for the
 # full design rationale, the measured thresholds below, and the six
 # decisions (R5 cut, severity defined by actionability, etc.) this code
 # implements without re-arguing.
@@ -198,7 +198,7 @@ _INVENTORY_PROVENANCE = frozenset({"sitemap", "rest_api", "xml_backup", "base_ur
 # archive/attachment URL shapes -- deliberately NOT merged with
 # wizard.DEFAULT_EXCLUSIONS, which is a hard "never fetch this" list of
 # dead WordPress infrastructure. These are legitimate content some site
-# owners want archived and others don't; see CLAUDE-dry-run-readiness.md
+# owners want archived and others don't; see the dry-run readiness design notes
 # Decision 5 for why the two lists must not become one.
 _LOW_VALUE_ARCHIVE_PATTERNS = (
     ("attachment page", re.compile(r"/attachment/|[?&]attachment_id=")),
@@ -209,7 +209,7 @@ _LOW_VALUE_ARCHIVE_PATTERNS = (
     # paginated archives are found by crawling, not by any inventory
     # source, and that is expected, not a bug in the pattern. Kept because
     # a Yoast sitemap can list them. See the Measured baseline table in
-    # CLAUDE-dry-run-readiness.md before "fixing" this to fire more.
+    # the dry-run readiness design notes before "fixing" this to fire more.
     ("paginated archive", re.compile(r"/page/\d+")),
     ("date archive", re.compile(r"/\d{4}/\d{2}(/\d{2})?/?$")),
 )
@@ -237,7 +237,7 @@ def inventory_records(manifest: Manifest) -> list[ManifestRecord]:
     branch needs it too, for the same reason assess_dry_run does: a dry
     run has no collision guard and will happily load an existing
     manifest.json from a completed prior run (see "the resumed-manifest
-    trap" in CLAUDE-dry-run-readiness.md) -- `len(manifest)` in that case
+    trap" in the dry-run readiness design notes) -- `len(manifest)` in that case
     counts thousands of crawl-discovered assets that were never part of
     this dry run's own inventory discovery at all."""
     return [r for r in manifest.all() if _INVENTORY_PROVENANCE & set(r.discovered_via)]
@@ -275,7 +275,7 @@ def assess_dry_run(
     distinguish "reachable but contributed nothing" from "unreachable" --
     exactly the distinction R4's concern tier is built on. A regenerated
     verdict would silently disagree with the one `acquire` wrote, which is
-    worse than not showing one. See CLAUDE-dry-run-readiness.md Decision 3.
+    worse than not showing one. See the dry-run readiness design notes Decision 3.
 
     `xml_backup_configured` is deliberately a separate argument from
     `sources["xml_backup"]`: the latter is False both when no export is
@@ -362,7 +362,7 @@ def assess_dry_run(
         # Directional threshold, not symmetric: REST API > sitemap is the
         # normal case (REST exposes attachments/users no sitemap lists),
         # not a finding. Measured against five real sites before being
-        # set at 10% -- see CLAUDE-dry-run-readiness.md's Measured baseline.
+        # set at 10% -- see the dry-run readiness design notes's Measured baseline.
         if low_count / high_count < 0.10:
             if sitemap_count < rest_count:
                 low_label, high_label = "sitemap", "REST API"

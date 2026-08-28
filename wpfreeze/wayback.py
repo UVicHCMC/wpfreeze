@@ -1,6 +1,6 @@
 """Wayback Machine recovery for records that couldn't be fetched live.
 
-See CLAUDE-acquire.md, "Stage 4 -- Wayback recovery". Fetches the
+See the acquisition design notes, "Stage 4 -- Wayback recovery". Fetches the
 original bytes via the CDX API's `id_` timestamp suffix -- never
 Wayback's own rewritten HTML, which would poison Module 2's link
 rewriting downstream.
