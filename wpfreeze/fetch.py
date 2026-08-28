@@ -43,7 +43,7 @@ _LOCKOUT_STATUSES = {401, 403}
 # private page), so it backs the whole host off starting from the very
 # first occurrence rather than waiting for a run of them. See
 # RateLimiter.note_response and the project notes' 2026-08-20 entry -- found via
-# a real crawl of site-b.example, where `rate_limit: 0.0` plus
+# a real crawl of a live WordPress site, where `rate_limit: 0.0` plus
 # concurrency=2 tripped the host's rate limiting on ~31% of its pages,
 # and the pre-existing lockout mechanism (401/403-only) never noticed
 # because nothing tracked repeated 429s at all.

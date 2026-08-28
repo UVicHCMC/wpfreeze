@@ -26,7 +26,7 @@ def _answers(*values):
 
 
 def test_slugify_domain_replaces_dots():
-    assert slugify_domain("https://www.site-c.example/") == "www-site-c-com"
+    assert slugify_domain("https://www.example-site.com/") == "www-example-site-com"
 
 
 def test_extra_config_options_doc_exists_at_the_path_the_wizard_prints():

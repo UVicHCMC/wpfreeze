@@ -65,7 +65,7 @@ SEARCH_ASSET_PATH = "/assets/pagefind-search.js"
 BUNDLE_SUBDIR = "pagefind"
 
 # scan_content_issues's constants -- calibrated against two real sites
-# (site-a.example, site-b.example), not guessed in the abstract.
+# (two real WordPress sites), not guessed in the abstract.
 # See the content-checks design notes sec 4c for the measured distribution
 # behind these numbers (a clean gap between ~0.30 and ~0.50 on both,
 # unrelated, sites) and sec 8 for why this is fixed-constant reporting,

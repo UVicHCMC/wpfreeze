@@ -76,9 +76,9 @@ def test_resolve_project_by_explicit_name(tmp_path: Path):
 
 
 def test_resolve_project_by_filename_stem(tmp_path: Path):
-    path = _write_config(tmp_path / "site-a.yaml", None)
+    path = _write_config(tmp_path / "examplesite.yaml", None)
 
-    project = resolve_project("site-a", tmp_path)
+    project = resolve_project("examplesite", tmp_path)
 
     assert project.path == path
 

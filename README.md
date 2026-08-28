@@ -201,7 +201,7 @@ URL inventory it just discovered — no page is ever fetched, so this is a
 sanity check on the inventory, not a review of the site itself:
 
 ```
-$ wpfreeze acquire site-a --dry-run
+$ wpfreeze acquire examplesite --dry-run
 Dry run: 229 URL(s) discovered, nothing fetched.
   by source: sitemap 229 (sources overlap; a URL can come from several)
 
@@ -255,7 +255,7 @@ wpfreeze -- static-archive WordPress sites
 
 Found 2 site configs in this directory:
 
-  landscapes  (https://site-c.example, landscapes.yaml)
+  examplesite  (https://example.com, examplesite.yaml)
     Acquired: 519 fetched, 0 pending, 519 total. Built: yes.
     wpfreeze status    landscapes
     wpfreeze build     landscapes   (safe to re-run any time)
@@ -281,22 +281,22 @@ its `freeze.steps` key (default: `acquire`, `build`, `validate`), one
 progress display per step, ending in a single combined summary:
 
 ```
-$ wpfreeze freeze landscapes
-⠹ Acquiring site-c.example   pages 412/1163  assets 2204  ▸ /about/staff/   3m12s
-✓  Acquiring site-c.example  38m14s
+$ wpfreeze freeze examplesite
+⠹ Acquiring example.com   pages 412/1163  assets 2204  ▸ /about/staff/   3m12s
+✓  Acquiring example.com  38m14s
 ...
-⠼ Validating site-c.example   (vnu, no progress available)   0m48s
+⠼ Validating example.com   (vnu, no progress available)   0m48s
 Check external links now? (hits third-party hosts, can be slow) [y/N]
 
-landscapes — done in 41m02s
+examplesite — done in 41m02s
   acquire   38m14s
   build      2m31s
   validate     17s
 
-  Built site   output/landscapes/site/
-  Report       output/landscapes/report.html
-  Checklist    output/landscapes/cleanup-todo.html
-  Logs         output/landscapes/logs/
+  Built site   output/examplesite/site/
+  Report       output/examplesite/report.html
+  Checklist    output/examplesite/cleanup-todo.html
+  Logs         output/examplesite/logs/
 ```
 
 The progress line only ever appears in a real terminal — piped output,
@@ -484,7 +484,7 @@ running unattended (piped output, CI, a script), prints the list of what
 ```
 $ wpfreeze build nope
 There is no project called nope.
-Projects in this directory: site-a, landscapes, site-b
+Projects in this directory: examplesite, blogarchive, oldjournal
 ```
 
 ## What you get

@@ -143,7 +143,7 @@ class FreezeSettings:
 # conventions (wp-singular vs. archive/category/blog, wrapped in
 # .entry-content), which hold for most non-page-builder themes. Real-world
 # discovery, not a guess made in the abstract: found by comparing an
-# untuned site-a.example index against a tuned one -- the untuned
+# untuned real-site index against a tuned one -- the untuned
 # default let WordPress's own archive/category/blog-listing templates
 # (which re-embed each post's full .entry-content as a teaser, also
 # wrapped in its own <article>) compete with the real page in results,

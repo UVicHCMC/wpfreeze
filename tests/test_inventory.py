@@ -301,18 +301,27 @@ def test_discover_wxr_returns_false_on_unparseable_file(tmp_path: Path):
 # re-export of the same site produces a different file with different
 # counts. The hand-built fixture above is the permanent regression suite;
 # this is just a sanity check against one real-world data point.
-REAL_WXR_PATH = FIXTURES_DIR.parent.parent / "site-c.WordPress.2026-07-08.xml"
+# Any real WXR export dropped in the repo root (they are gitignored) is
+# picked up. Discovered by glob rather than named: which site the export
+# came from is nobody else's business, and a contributor with a different
+# export should get the same sanity check rather than a skip.
+_REAL_WXR_CANDIDATES = sorted(FIXTURES_DIR.parent.parent.glob("*.WordPress.*.xml"))
+REAL_WXR_PATH = _REAL_WXR_CANDIDATES[0] if _REAL_WXR_CANDIDATES else None
 
 
-@pytest.mark.skipif(not REAL_WXR_PATH.exists(), reason="real-world WXR sample not present locally")
+@pytest.mark.skipif(REAL_WXR_PATH is None, reason="no real-world WXR sample present locally")
 def test_parse_wxr_xml_handles_real_world_export():
     from wpfreeze.inventory import _is_kept_published
 
     document = parse_wxr_xml(REAL_WXR_PATH.read_bytes())
-    assert len(document.items) == 1483
+    # Structural, not exact counts: a re-export of the same site -- let alone
+    # somebody else's export -- produces different totals. The hand-built
+    # fixture above is the permanent regression suite; this only asserts that
+    # real-world data parses and classifies sanely at scale.
+    assert len(document.items) > 100
 
     attachment_items = [item for item in document.items if item.post_type == "attachment"]
-    assert len(attachment_items) == 953
+    assert attachment_items, "a real export should contain attachments"
     assert all(_is_kept_published(item) for item in attachment_items)
 
     junk_types = {

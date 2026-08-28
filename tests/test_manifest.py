@@ -211,7 +211,7 @@ def test_get_or_create_chases_multi_hop_redirect_chain():
 
 
 def test_get_or_create_terminates_on_a_redirect_cycle_instead_of_recursing_forever():
-    """Real bug, surfaced on a live crawl (site-b.example): a
+    """Real bug, surfaced on a live crawl of a real site: a
     WordPress slug that never settles between its raw-Unicode and
     percent-encoded spellings, each 301-ing to the other, forever. The
     while loop's cycle detection correctly stops walking, but an earlier
