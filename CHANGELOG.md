@@ -63,6 +63,16 @@ for site owners retiring a site who need the result to *replace* the original.
   count and age, and explains how to start fresh if you decline. Unattended runs
   are never prompted and resume as before.
 
+- `build` unwraps WordPress login and admin links — `wp-login.php`,
+  `/wp-admin/`, and WordPress.com's hosted `/log-in`. Dead plumbing on an
+  archive in the same sense as the forms and feed links `build` already
+  strips: nobody can log in to a static copy, and following one sends a
+  visitor to the live site's login screen. The visible text is kept; only the
+  destination goes. Off with `policy: {strip_login_links: false}`.
+- `freeze.unattended: true` makes `freeze` behave in a terminal exactly as it
+  does when piped — it never prompts. Set it together with `checklinks` in
+  `freeze.steps` for a genuinely hands-off full run.
+
 ### Fixed in this release
 
 - `acquire`'s step timer counted time spent waiting at the interactive

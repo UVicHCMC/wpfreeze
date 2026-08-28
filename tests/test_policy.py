@@ -661,3 +661,46 @@ def test_matomo_self_hosted_tracker_is_removed_by_path():
     html = '<script src="https://mysite.com/matomo/matomo.js"></script>'
     _, stats = _apply(html)
     assert stats.telemetry_removed == 1
+
+
+def test_login_links_are_unwrapped_not_deleted():
+    """WordPress login/admin links are dead plumbing on an archive -- nobody
+    can log in to a static copy. Found in the 2026-08-28 sign-off run, where
+    247 WordPress.com /log-in URLs were 71% of the broken-links report."""
+    from bs4 import BeautifulSoup
+    from wpfreeze.policy import Policy, PolicyStats, apply_policy
+
+    html = """
+    <html><body>
+      <li><a href="https://wordpress.com/log-in?redirect_to=https%3A%2F%2Fx">Log in</a></li>
+      <li><a href="https://example.com/wp-login.php">Site login</a></li>
+      <li><a href="/wp-admin/">Dashboard</a></li>
+      <li><a href="https://example.com/about/">About</a></li>
+      <li><a href="https://example.com/blog/how-to-secure-wp-admin-guide/">A post</a></li>
+    </body></html>
+    """
+    soup = BeautifulSoup(html, "html5lib")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(), stats)
+
+    assert stats.login_links_removed == 3
+    hrefs = [a["href"] for a in soup.find_all("a", href=True)]
+    assert hrefs == [
+        "https://example.com/about/",
+        "https://example.com/blog/how-to-secure-wp-admin-guide/",
+    ], hrefs
+    # Unwrapped, not deleted: the visible text survives.
+    text = soup.get_text()
+    for label in ("Log in", "Site login", "Dashboard"):
+        assert label in text
+
+
+def test_login_link_stripping_can_be_turned_off():
+    from bs4 import BeautifulSoup
+    from wpfreeze.policy import Policy, PolicyStats, apply_policy
+
+    soup = BeautifulSoup('<a href="https://wordpress.com/log-in">Log in</a>', "html5lib")
+    stats = PolicyStats()
+    apply_policy(soup, Policy(strip_login_links=False), stats)
+    assert stats.login_links_removed == 0
+    assert soup.find("a") is not None

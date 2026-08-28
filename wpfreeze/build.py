@@ -1096,6 +1096,8 @@ def format_build_summary(stats: BuildStats) -> str:
             f"{p.forms_removed} form(s), {p.feeds_removed} feed link(s), "
             f"{p.wp_meta_links_removed} WP protocol-discovery link(s)"
         )
+    if p.login_links_removed:
+        lines.append(f"  {p.login_links_removed} login/admin link(s) unwrapped (dead on an archive)")
     if p.dead_fragment_links_removed or p.comment_count_blurbs_removed:
         lines.append(
             f"  (also: {p.dead_fragment_links_removed} dead in-page link(s) unwrapped, "

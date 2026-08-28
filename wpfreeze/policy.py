@@ -277,6 +277,13 @@ class Policy:
     strip_forms: bool = True
     strip_feeds: bool = True
     strip_wp_meta_links: bool = True
+    # WordPress login/admin links -- wp-login.php, /wp-admin/, and
+    # WordPress.com's hosted /log-in endpoint. Dead WordPress plumbing on an
+    # archive in exactly the sense strip_forms and strip_feeds already mean:
+    # nobody can log in to a static copy, and following one sends a visitor
+    # to the live site's login screen. Unwrapped rather than deleted, so any
+    # visible text stays put (see _strip_login_links).
+    strip_login_links: bool = True
     # Only meaningful when strip_forms removes a comment form's wrapper (see
     # _comment_wrapper): whether the "N comments" post-meta blurb built
     # around the now-dead #respond link is removed outright (True, the
@@ -369,6 +376,7 @@ class PolicyStats:
     # or, when it sits in a "comments-number" blurb, the whole blurb removed
     # instead (comment_count_blurbs_removed). See _clean_dead_fragment_links.
     dead_fragment_links_removed: int = 0
+    login_links_removed: int = 0
     comment_count_blurbs_removed: int = 0
     # Divi newsletter-module captions removed alongside their form -- see
     # _newsletter_caption_sibling. Not every "newsletter" removal has one
@@ -506,6 +514,57 @@ def _clean_dead_fragment_links(
         else:
             anchor.unwrap()
             stats.dead_fragment_links_removed += 1
+
+
+# Matched against a link's path, case-insensitively. wp-login.php covers
+# logout too (WordPress routes ?action=logout through the same script).
+_LOGIN_PATH_MARKERS = ("/wp-login.php", "/wp-admin")
+# WordPress.com's hosted equivalent: the "Log in" link its themes put in the
+# meta widget of every page, each carrying its own ?redirect_to= query, so
+# they do not even dedupe to one URL.
+_WPCOM_LOGIN_HOSTS = ("wordpress.com",)
+_WPCOM_LOGIN_PATHS = ("/log-in", "/wp-login.php")
+
+
+def _is_login_link(href: str) -> bool:
+    """True for a WordPress login/admin URL, on this site or on
+    WordPress.com's hosted login endpoint.
+
+    Deliberately path-based rather than host-based for the self-hosted
+    markers: a login link may be written absolute, protocol-relative, or
+    site-relative, and all three are equally dead on an archive.
+    """
+    if not href:
+        return False
+    try:
+        parts = urlsplit(href)
+    except ValueError:
+        return False
+    path = (parts.path or "").lower().rstrip("/")
+    host = (parts.hostname or "").lower()
+
+    if any(path.endswith(marker) or f"{marker}/" in f"{path}/" for marker in _LOGIN_PATH_MARKERS):
+        return True
+    if host.endswith(_WPCOM_LOGIN_HOSTS) and path in _WPCOM_LOGIN_PATHS:
+        return True
+    return False
+
+
+def _strip_login_links(soup: BeautifulSoup, stats: PolicyStats) -> None:
+    """Unwrap WordPress login/admin anchors, keeping their visible text.
+
+    Unwrapped rather than decomposed for the same reason dead fragment
+    links are: removing body text is a more invasive edit than removing a
+    dead destination, and a themed "Log in" sitting in a meta widget is
+    harmless as plain text. Found in the 2026-08-28 sign-off run, where
+    247 WordPress.com /log-in URLs -- one per page, each with its own
+    ?redirect_to= query -- made up 71% of the "broken external links"
+    report, all of them 403s from bot protection rather than real breakage.
+    """
+    for anchor in soup.find_all("a", href=True):
+        if _is_login_link(anchor["href"]):
+            anchor.unwrap()
+            stats.login_links_removed += 1
 
 
 def _is_search_form(form) -> bool:
@@ -711,3 +770,5 @@ def apply_policy(
         _strip_feeds(soup, stats)
     if policy.strip_wp_meta_links:
         _strip_wp_meta_links(soup, stats)
+    if policy.strip_login_links:
+        _strip_login_links(soup, stats)

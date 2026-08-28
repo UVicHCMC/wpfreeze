@@ -64,10 +64,21 @@ default syncs the built site plus the human-facing reports to `remote`;
 ```yaml
 freeze:
   steps: [acquire, build, validate, checklinks]
+  unattended: true
 ```
 
-Defaults to `acquire, build, validate`. Add `checklinks` to also check
-external links every run, or `upload-script` to regenerate `upload.sh`.
+`steps` defaults to `acquire, build, validate`. Add `checklinks` to also
+check external links every run, or `upload-script` to regenerate
+`upload.sh`.
+
+`unattended` (default `false`) makes `freeze` behave in a real terminal
+exactly as it already does when its output is piped: it never asks a
+question. Both prompts go — the confirmation before resuming an existing
+acquisition (it resumes), and the end-of-run offer to check external links
+(it does not run, unless you listed `checklinks` above). For a genuinely
+hands-off full run, set `unattended: true` **and** list `checklinks` in
+`steps`. Leave it off if you are watching the run: being asked is the
+point of the prompts.
 
 ## Crawl concurrency
 

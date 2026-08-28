@@ -592,10 +592,20 @@ touching the capture, so re-running is always safe. In that tree:
 - **Live-web machinery is stripped** so the archive is genuinely
   self-contained: analytics and tag managers (third-party *and* the
   self-hosted analytics plugins WordPress serves from its own domain),
-  `<form>` elements (dead or leaky on a static site), and dead RSS/Atom feed
-  links. All on by default and configurable per site — see the `policy:`
-  block in [`example-site.yaml`](example-site.yaml). Counts of what was
-  removed appear in the build summary.
+  `<form>` elements (dead or leaky on a static site), dead RSS/Atom feed
+  links, and WordPress login/admin links. All on by default and configurable
+  per site — see the `policy:` block in
+  [`example-site.yaml`](example-site.yaml). Counts of what was removed appear
+  in the build summary.
+- **Login and admin links are unwrapped** (`wp-login.php`, `/wp-admin/`, and
+  WordPress.com's hosted `/log-in`). Nobody can log in to a static copy, and
+  following one sends a visitor to the live site's login screen. The visible
+  text stays; only the dead destination goes. This matters more than it
+  sounds: a WordPress.com theme puts a "Log in" link on every page, each with
+  its own `?redirect_to=` query, so they do not even dedupe — on a real
+  248-page site they were 228 distinct external URLs and **66% of everything
+  `checklinks` reported as broken**, all of them bot-protection 403s rather
+  than genuine breakage. Turn off with `policy: {strip_login_links: false}`.
 - **A WordPress core comment form's caption goes with it, not just the
   form.** Detected by its `id="respond"`/`class="comment-respond"`
   wrapper — WordPress's own hardcoded markup, not something a theme's

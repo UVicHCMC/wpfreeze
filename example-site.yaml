@@ -89,6 +89,11 @@ wayback:
 # you always want it as a declared step.
 freeze:
   steps: [acquire, build, validate]
+  # true makes freeze behave in a real terminal exactly as it does when
+  # piped: it never asks a question -- no resume confirmation, no
+  # end-of-run checklinks offer. For a fully hands-off run, set this and
+  # add `checklinks` to steps above.
+  unattended: false
 
 # Content policy for `wpfreeze build` -- what to strip when turning the raw
 # capture into a servable static site. All three default to true: the point
@@ -163,6 +168,16 @@ policy:
   # a live PHP backend a static archive doesn't have. rel="canonical" is a
   # genuine self-reference and is left alone.
   strip_wp_meta_links: true
+
+  # Unwrap WordPress login/admin links -- wp-login.php, /wp-admin/, and
+  # WordPress.com's hosted /log-in endpoint. Nobody can log in to a static
+  # copy, and following one sends a visitor to the live site's login
+  # screen. Unwrapped, not deleted: the visible text stays, only the dead
+  # destination goes. A WordPress.com theme puts a "Log in" link on every
+  # page, each with its own ?redirect_to= query, so they don't dedupe --
+  # on one real 248-page site that was 228 distinct external URLs and 66%
+  # of everything checklinks called broken, all bot-protection 403s.
+  strip_login_links: true
 
   # Lift <style> blocks that are byte-identical across many pages into a
   # single shared stylesheet, linked from each page instead of repeated

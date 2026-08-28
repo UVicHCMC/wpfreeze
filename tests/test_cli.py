@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import requests
 import yaml
+from dataclasses import replace
 
 from wpfreeze.cli import (
     ConfigError,
@@ -2112,3 +2113,38 @@ def test_unknown_project_tty_declined_exits_2(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
 
     assert main(["build", "foo"]) == 2
+
+
+def test_freeze_unattended_defaults_to_false_and_parses(tmp_path: Path):
+    from wpfreeze.cli import load_config
+
+    base = {"base_url": "https://example.com/", "output_dir": str(tmp_path / "o"), "name": "p"}
+    plain = tmp_path / "a.yaml"
+    plain.write_text(yaml.safe_dump(base))
+    assert load_config(plain).freeze.unattended is False
+
+    on = tmp_path / "b.yaml"
+    on.write_text(yaml.safe_dump({**base, "freeze": {"unattended": True}}))
+    assert load_config(on).freeze.unattended is True
+
+
+def test_unattended_freeze_asks_nothing_even_in_a_terminal(tmp_path: Path, monkeypatch):
+    """Greg, 2026-08-28: freeze must be able to run genuinely hands-off. Both
+    prompts go -- the resume confirmation and the checklinks offer."""
+    import wpfreeze.cli as cli
+    from wpfreeze.cli import FreezeSettings
+
+    config = _tty_config(tmp_path, monkeypatch)
+    config = replace(config, freeze=FreezeSettings(unattended=True))
+    _manifest_at(tmp_path)
+    (config.output_dir / "site").mkdir(parents=True, exist_ok=True)
+
+    def _fail(*a, **k):
+        raise AssertionError("an unattended freeze must not prompt")
+
+    monkeypatch.setattr("builtins.input", _fail)
+    for name in ("run_acquire", "run_build", "run_validate"):
+        monkeypatch.setattr(cli, name, lambda *a, **k: 0)
+    monkeypatch.setattr(cli, "run_checklinks", lambda *a, **k: pytest.fail("checklinks was not declared"))
+
+    assert cli.run_freeze(config, "proj") == 0

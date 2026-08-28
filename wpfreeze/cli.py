@@ -127,6 +127,15 @@ FREEZE_PERMITTED_STEPS: tuple[str, ...] = (
 @dataclass(frozen=True)
 class FreezeSettings:
     steps: tuple[str, ...] = DEFAULT_FREEZE_STEPS
+    # `freeze.unattended: true` makes freeze behave in a real terminal
+    # exactly as it already does when its output is piped: it never asks a
+    # question. Both of freeze's prompts are suppressed -- the
+    # resume confirmation (it resumes) and the end-of-run checklinks offer
+    # (it does not run, unless `checklinks` is a declared step). For a
+    # genuinely hands-off full run, set this AND list `checklinks` in
+    # `steps`. Default False: an interactive operator is better served by
+    # being asked, which is why the prompts exist.
+    unattended: bool = False
 
 
 # load_config's default for `search.body_selectors` when a site's config
@@ -328,7 +337,8 @@ def load_config(path: Path) -> SiteConfig:
         duplicate_steps = [s for s in freeze_steps if s in seen_steps or seen_steps.add(s)]  # type: ignore[func-returns-value]
         if duplicate_steps:
             raise ConfigError(f"freeze.steps: duplicate step(s) {duplicate_steps!r} -- list each step once")
-    freeze = FreezeSettings(steps=freeze_steps)
+    freeze_unattended = bool(freeze_raw.get("unattended", False))
+    freeze = FreezeSettings(steps=freeze_steps, unattended=freeze_unattended)
 
     return SiteConfig(
         base_url=raw["base_url"].rstrip("/") + "/",
@@ -1254,7 +1264,7 @@ def run_freeze(config: SiteConfig, project: str) -> int:
     """
     manifest_path = config.output_dir / "manifest.json"
     resume = manifest_path.exists()
-    if resume and not _confirm_resume(manifest_path, project):
+    if resume and not config.freeze.unattended and not _confirm_resume(manifest_path, project):
         return 0
 
     step_runners: dict[str, Callable[[], int]] = {
@@ -1346,6 +1356,8 @@ def _maybe_offer_checklinks_at_end(config: SiteConfig, summary: RunSummary) -> N
     long network operation on its own."""
     if "checklinks" in config.freeze.steps:
         return  # already ran as a declared step -- don't ask twice
+    if config.freeze.unattended:
+        return  # `freeze.unattended: true` -- never prompt (see FreezeSettings)
     if not (config.output_dir / "site").exists():
         return  # nothing built to scan
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
