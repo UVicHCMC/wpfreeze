@@ -2,6 +2,7 @@ import inspect
 import logging
 import os
 import sys
+import types
 import warnings
 
 import pytest
@@ -127,6 +128,14 @@ def _describe_drift(before: dict, after: dict) -> list[str]:
         if modname not in known_modules:
             continue
         if was is None:
+            # Importing wpfreeze.wizard binds `wizard` as an attribute of the
+            # already-known parent package, so a lazy submodule import slips
+            # past the known_modules filter above and gets reported as a leak.
+            # Only shows up when a subset of the suite runs (a full run has
+            # usually imported everything already), which is exactly when it
+            # is most annoying: `pytest tests/test_cli.py` errored on it.
+            if isinstance(getattr(sys.modules.get(modname), attr, None), types.ModuleType):
+                continue
             drift.append(f"{modname}.{attr} was added")
         elif now is None:
             drift.append(f"{modname}.{attr} was deleted")

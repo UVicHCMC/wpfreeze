@@ -527,15 +527,29 @@ def run_acquire(
 
     summary = RunSummary(project=config.name, base_url=config.base_url, output_dir=output_dir)
     host = urlsplit(config.base_url).hostname or config.base_url
+    manifest: Manifest | None = None
+
+    def _acquire() -> int:
+        nonlocal manifest
+        exit_code, manifest = _run_acquire_locked(
+            config, resume, dry_run, output_dir, raw_dir, manifest_path, progress
+        )
+        return exit_code
+
     try:
         with Progress(f"Acquiring {host}") as progress:
-            exit_code = time_step(
-                summary,
-                "acquire",
-                lambda: _run_acquire_locked(
-                    config, resume, dry_run, output_dir, raw_dir, manifest_path, progress, offer_followups
-                ),
-            )
+            exit_code = time_step(summary, "acquire", _acquire)
+
+        # Deliberately outside time_step: these prompt, and a human can sit
+        # at a prompt for hours (2026-08-27: a 12m crawl was reported as
+        # "acquire 4h19m" because the offers ran inside the timed closure
+        # and swallowed the wait plus the whole nested build+validate).
+        # Each offered step is timed and recorded separately instead, the
+        # same way `freeze` does it. Still inside the lock, so lock
+        # semantics are unchanged by this fix.
+        if offer_followups and not dry_run and manifest is not None:
+            _maybe_offer_diagnostics(manifest, output_dir, config.base_url)
+            _maybe_offer_build_and_validate(config, summary)
     finally:
         lock.release()
 
@@ -552,8 +566,10 @@ def _run_acquire_locked(
     raw_dir: Path,
     manifest_path: Path,
     progress: "Progress | None" = None,
-    offer_followups: bool = True,
-) -> int:
+) -> tuple[int, Manifest]:
+    """Returns (exit_code, manifest). The manifest comes back so `run_acquire`
+    can run the interactive follow-up offers *outside* its own timed step --
+    see the comment there."""
     manifest = Manifest.load(manifest_path) if manifest_path.exists() else Manifest()
 
     session = requests.Session()
@@ -609,7 +625,7 @@ def _run_acquire_locked(
         print(f"Dry run: {len(inventory_records(manifest))} URL(s) discovered, nothing fetched.")
         print(f"  by source: {_describe_inventory_sources(manifest, sources)}")
         print(format_readiness(assessment))
-        return 0
+        return 0, manifest
 
     _run_to_settled(
         manifest, profile, config, session, rate_limiter, wayback_rate_limiter, fetch_config, raw_dir,
@@ -633,11 +649,7 @@ def _run_acquire_locked(
     if progress is not None:
         progress.finish()
 
-    if offer_followups:
-        _maybe_offer_diagnostics(manifest, output_dir, config.base_url)
-        _maybe_offer_build_and_validate(config)
-
-    return 1 if manifest.has_gaps() else 0
+    return (1 if manifest.has_gaps() else 0), manifest
 
 
 def _latest_log_path(output_dir: Path) -> Path | None:
@@ -668,7 +680,7 @@ def _maybe_offer_diagnostics(manifest: Manifest, output_dir: Path, base_url: str
     run_diagnose_for(manifest, output_dir, base_url)
 
 
-def _maybe_offer_build_and_validate(config: SiteConfig) -> None:
+def _maybe_offer_build_and_validate(config: SiteConfig, summary: RunSummary) -> None:
     """Same reasoning as _maybe_offer_diagnostics: only prompts in a real
     interactive terminal, since `acquire` is routinely launched unattended
     and a blocking input() here would hang a run that already finished.
@@ -688,7 +700,11 @@ def _maybe_offer_build_and_validate(config: SiteConfig) -> None:
         return
     if answer not in ("", "y", "yes"):
         return
-    if run_build(config, None, verify=True) == 2:
+    # print_wrapup=False, and timed into the caller's summary: otherwise
+    # each offered step prints its own near-identical artefact block and
+    # the run ends with three of them in a row, acquire's arriving last
+    # despite being first (2026-08-27).
+    if time_step(summary, "build", lambda: run_build(config, None, verify=True, print_wrapup=False)) == 2:
         return  # run_build already printed why (e.g. no manifest found)
 
     if shutil.which("java") is None:
@@ -700,7 +716,7 @@ def _maybe_offer_build_and_validate(config: SiteConfig) -> None:
         return
     if answer not in ("", "y", "yes"):
         return
-    run_validate(config, None)
+    time_step(summary, "validate", lambda: run_validate(config, None, print_wrapup=False))
 
 
 def run_diagnose_for(manifest: Manifest, output_dir: Path, base_url: str) -> Path:

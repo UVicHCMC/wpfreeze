@@ -22,6 +22,7 @@ from wpfreeze.cli import (
     run_status,
 )
 from wpfreeze.fetch import RateLimiter
+from wpfreeze.wrapup import RunSummary, StepTiming
 from wpfreeze.manifest import Manifest, Status
 
 from fixture_site import FixtureSite
@@ -1470,6 +1471,68 @@ def _tty_config(tmp_path: Path, monkeypatch) -> SiteConfig:
     return SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
 
 
+def test_acquire_step_timing_excludes_time_spent_in_followup_prompts(tmp_path: Path, monkeypatch):
+    """Regression, found in the 2026-08-27 sign-off run: a 12-minute crawl was
+    reported as "acquire 4h19m". The interactive follow-up offers ran inside
+    the closure time_step was timing, so the acquire step absorbed both the
+    human's wait at the prompt and the whole nested build+validate."""
+    import time as _time
+
+    import wpfreeze.cli as cli
+
+    config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
+    config.output_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(cli, "_run_acquire_locked", lambda *a, **k: (0, Manifest()))
+    monkeypatch.setattr(cli, "_maybe_offer_diagnostics", lambda *a, **k: None)
+
+    def _slow_offer(cfg, summary):
+        _time.sleep(0.4)  # stands in for a human sitting at the prompt
+        summary.steps.append(StepTiming(step="build", seconds=0.01, exit_code=0))
+
+    monkeypatch.setattr(cli, "_maybe_offer_build_and_validate", _slow_offer)
+
+    captured: dict[str, RunSummary] = {}
+
+    def _capture(summary):
+        captured["summary"] = summary
+        return ""
+
+    monkeypatch.setattr(cli, "format_wrapup", _capture)
+
+    assert cli.run_acquire(config, resume=False, dry_run=False) == 0
+
+    steps = {t.step: t.seconds for t in captured["summary"].steps}
+    assert "acquire" in steps and "build" in steps
+    # The whole point: the prompt wait lands nowhere near the acquire step.
+    assert steps["acquire"] < 0.2, f"acquire absorbed the prompt wait: {steps['acquire']}s"
+
+
+def test_offered_build_and_validate_are_timed_as_separate_steps(tmp_path: Path, monkeypatch):
+    """They must also suppress their own wrap-ups -- otherwise the run ends
+    with three near-identical artefact blocks in a row (2026-08-27)."""
+    import wpfreeze.cli as cli
+
+    config = _tty_config(tmp_path, monkeypatch)
+    prompts = iter(["y", "y"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(prompts))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/java")
+
+    kwargs_seen: list[dict] = []
+    monkeypatch.setattr(cli, "run_build", lambda *a, **k: kwargs_seen.append(k) or 0)
+    monkeypatch.setattr(cli, "run_validate", lambda *a, **k: kwargs_seen.append(k) or 0)
+
+    summary = _summary(config)
+    cli._maybe_offer_build_and_validate(config, summary)
+
+    assert [t.step for t in summary.steps] == ["build", "validate"]
+    assert all(k.get("print_wrapup") is False for k in kwargs_seen), kwargs_seen
+
+
+def _summary(config: SiteConfig) -> RunSummary:
+    return RunSummary(project=config.name, base_url=config.base_url, output_dir=config.output_dir)
+
+
 def test_build_validate_offer_skipped_when_not_a_tty(tmp_path: Path, monkeypatch):
     from wpfreeze.cli import _maybe_offer_build_and_validate
 
@@ -1480,7 +1543,7 @@ def test_build_validate_offer_skipped_when_not_a_tty(tmp_path: Path, monkeypatch
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     config = SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out")
 
-    _maybe_offer_build_and_validate(config)  # must not raise/hang
+    _maybe_offer_build_and_validate(config, _summary(config))  # must not raise/hang
 
 
 def test_build_validate_offer_declines_build_skips_validate(tmp_path: Path, monkeypatch):
@@ -1493,7 +1556,7 @@ def test_build_validate_offer_declines_build_skips_validate(tmp_path: Path, monk
     monkeypatch.setattr(cli, "run_build", lambda *a, **k: build_called.append(1) or 0)
     monkeypatch.setattr(cli, "run_validate", lambda *a, **k: validate_called.append(1) or 0)
 
-    cli._maybe_offer_build_and_validate(config)
+    cli._maybe_offer_build_and_validate(config, _summary(config))
 
     assert build_called == []
     assert validate_called == []
@@ -1511,7 +1574,7 @@ def test_build_validate_offer_runs_both_when_accepted_and_java_present(tmp_path:
     monkeypatch.setattr(cli, "run_build", lambda *a, **k: build_called.append(1) or 0)
     monkeypatch.setattr(cli, "run_validate", lambda *a, **k: validate_called.append(1) or 0)
 
-    cli._maybe_offer_build_and_validate(config)
+    cli._maybe_offer_build_and_validate(config, _summary(config))
 
     assert build_called == [1]
     assert validate_called == [1]
@@ -1539,7 +1602,7 @@ def test_build_validate_offer_skips_validate_offer_without_java(tmp_path: Path, 
     validate_called = []
     monkeypatch.setattr(cli, "run_validate", lambda *a, **k: validate_called.append(1) or 0)
 
-    cli._maybe_offer_build_and_validate(config)
+    cli._maybe_offer_build_and_validate(config, _summary(config))
 
     assert validate_called == []
     assert "java" in capsys.readouterr().out.lower()
@@ -1566,7 +1629,7 @@ def test_build_validate_offer_skips_validate_when_build_hard_fails(tmp_path: Pat
     validate_called = []
     monkeypatch.setattr(cli, "run_validate", lambda *a, **k: validate_called.append(1) or 0)
 
-    cli._maybe_offer_build_and_validate(config)
+    cli._maybe_offer_build_and_validate(config, _summary(config))
 
     assert validate_called == []
 
