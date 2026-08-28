@@ -1529,6 +1529,59 @@ def test_offered_build_and_validate_are_timed_as_separate_steps(tmp_path: Path, 
     assert all(k.get("print_wrapup") is False for k in kwargs_seen), kwargs_seen
 
 
+def _manifest_at(tmp_path: Path) -> Path:
+    out = tmp_path / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "manifest.json"
+    Manifest().save(path)
+    return path
+
+
+def test_confirm_resume_never_prompts_when_not_a_tty(tmp_path: Path, monkeypatch):
+    """An unanswered prompt must not be able to abort a scheduled re-freeze."""
+    import wpfreeze.cli as cli
+
+    def _fail(*a, **k):
+        raise AssertionError("input() must not be called for an unattended run")
+
+    monkeypatch.setattr("builtins.input", _fail)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    assert cli._confirm_resume(_manifest_at(tmp_path), "proj") is True
+
+
+def test_confirm_resume_accepts(tmp_path: Path, monkeypatch, capsys):
+    import wpfreeze.cli as cli
+
+    _tty_config(tmp_path, monkeypatch)
+    monkeypatch.setattr("builtins.input", lambda _: "")
+    assert cli._confirm_resume(_manifest_at(tmp_path), "proj") is True
+    assert "already exists" in capsys.readouterr().out
+
+
+def test_confirm_resume_declines_and_explains_how_to_start_fresh(tmp_path: Path, monkeypatch, capsys):
+    import wpfreeze.cli as cli
+
+    _tty_config(tmp_path, monkeypatch)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    assert cli._confirm_resume(_manifest_at(tmp_path), "proj") is False
+    out = capsys.readouterr().out
+    assert "Stopped, nothing changed" in out
+    assert "wpfreeze freeze proj" in out
+
+
+def test_freeze_declining_the_resume_prompt_runs_no_steps(tmp_path: Path, monkeypatch):
+    """Backing out must be inert -- no crawl, no build, exit 0."""
+    import wpfreeze.cli as cli
+
+    config = _tty_config(tmp_path, monkeypatch)
+    _manifest_at(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    for name in ("run_acquire", "run_build", "run_validate"):
+        monkeypatch.setattr(cli, name, lambda *a, **k: pytest.fail("no step may run"))
+
+    assert cli.run_freeze(config, "proj") == 0
+
+
 def _summary(config: SiteConfig) -> RunSummary:
     return RunSummary(project=config.name, base_url=config.base_url, output_dir=config.output_dir)
 

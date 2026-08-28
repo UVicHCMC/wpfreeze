@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 import requests
 import yaml
 
+from wpfreeze import __version__
 from wpfreeze.analyse import (
     apply_canonical_cascade,
     flag_ambiguous_canonical,
@@ -1253,6 +1254,8 @@ def run_freeze(config: SiteConfig, project: str) -> int:
     """
     manifest_path = config.output_dir / "manifest.json"
     resume = manifest_path.exists()
+    if resume and not _confirm_resume(manifest_path, project):
+        return 0
 
     step_runners: dict[str, Callable[[], int]] = {
         "acquire": lambda: run_acquire(
@@ -1294,6 +1297,45 @@ def run_freeze(config: SiteConfig, project: str) -> int:
     if had_error:
         return 2
     return 1 if had_gap else 0
+
+
+def _confirm_resume(manifest_path: Path, project: str) -> bool:
+    """`freeze` resumes an existing capture rather than re-crawling from
+    scratch, which is the right default but is invisible: the operator sees
+    a fast run and can easily believe they got a fresh one. Greg's call,
+    2026-08-28 -- say what is about to happen and let them back out.
+
+    Unattended runs are never prompted and always resume, exactly as
+    before: an unanswered prompt must not be able to abort a scheduled
+    re-freeze.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return True
+
+    output_dir = manifest_path.parent
+    try:
+        records = len(Manifest.load(manifest_path))
+        when = datetime.fromtimestamp(manifest_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        detail = f"{records} record(s), last updated {when}"
+    except Exception:
+        # A manifest too damaged to read is exactly when the operator most
+        # needs to be asked rather than silently resumed into.
+        detail = "unreadable"
+
+    print(f"An acquisition already exists in {output_dir} ({detail}).")
+    print("`freeze` will resume it rather than crawling the site from scratch.")
+    try:
+        answer = input("Resume it? [Y/n] ").strip().lower()
+    except EOFError:
+        return True
+    if answer in ("", "y", "yes"):
+        return True
+
+    print(
+        f"Stopped, nothing changed. To start fresh, move or remove {output_dir} "
+        f"(or point `output_dir` elsewhere), then run `wpfreeze freeze {project}` again."
+    )
+    return False
 
 
 def _maybe_offer_checklinks_at_end(config: SiteConfig, summary: RunSummary) -> None:
@@ -1338,6 +1380,10 @@ def _add_project_arg(p: argparse.ArgumentParser) -> None:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wpfreeze")
+    # Reported from the installed distribution's metadata via
+    # wpfreeze.__version__, so `wpfreeze --version` and pyproject.toml can
+    # never disagree.
+    parser.add_argument("--version", action="version", version=f"wpfreeze {__version__}")
     # Not required: no subcommand at all prints the non-interactive overview
     # (see print_overview in wpfreeze.wizard) -- `wizard` below is the
     # interactive flow that used to be the no-args default.

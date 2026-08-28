@@ -88,12 +88,18 @@ pipx install git+https://github.com/<you>/wpfreeze.git
 public host configured yet.)
 
 Offline search (see "Offline search" below) needs one more package, which
-a plain `pipx install` does not pull in — `pipx`'s isolated environment
-needs `pipx inject`, not `pip install`, to add a package to an app it
-already manages:
+a plain install does not pull in. Ask for it with the `search` extra:
 
 ```bash
-pipx inject wpfreeze 'pagefind[extended]'   # only if you want offline search
+pipx install 'wpfreeze[search] @ git+https://github.com/<you>/wpfreeze.git'
+```
+
+If wpfreeze is already installed, add it to the existing environment
+instead — `pipx`'s environment is isolated, so this needs `pipx inject`
+rather than `pip install`:
+
+```bash
+pipx inject wpfreeze 'pagefind[extended]'
 ```
 
 If you'd rather not use `pipx`, a plain `pip install git+https://...` works
@@ -309,6 +315,23 @@ way `validate`'s findings don't. Every other subcommand (`acquire`,
 `build`, `validate`, `search-index`, `checklinks`) shows this same
 progress line and prints its own brief wrap-up when run on its own too.
 
+If the project has already been acquired, `freeze` resumes that capture
+rather than crawling the site again — which is the right default, but is
+easy to miss when the run then finishes suspiciously fast. So it says what
+it found and lets you back out first:
+
+```
+An acquisition already exists in output/landscapes (5412 record(s), last updated 2026-08-26 14:07).
+`freeze` will resume it rather than crawling the site from scratch.
+Resume it? [Y/n]
+```
+
+Declining changes nothing on disk and exits 0, with a reminder of how to
+start fresh (move or remove the output directory, or point `output_dir`
+somewhere else). Unattended runs — anything without a real terminal — are
+never prompted and resume exactly as before, so a scheduled re-freeze
+can't be stalled by a question nobody is there to answer.
+
 Declare a different sequence, or add `checklinks`/`upload-script` to it,
 in the config:
 
@@ -343,6 +366,7 @@ wpfreeze upload-script <project> [--site-dir DIR]
 wpfreeze search-index  <project> [--site-dir DIR]
 wpfreeze checklinks    <project> [--site-dir DIR] [--recheck]
 wpfreeze help                            # same as -h/--help; every subcommand also takes its own -h
+wpfreeze --version                       # the installed version
 ```
 
 - **`wizard`** is the guided setup flow described in "Quickstart" above —

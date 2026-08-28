@@ -79,11 +79,29 @@ RATE_PRESETS: dict[str, tuple[str, float]] = {
 # Aggressive preset's own rate_limit is 0.
 _MIN_WAYBACK_RATE_LIMIT = 3.0
 
-# Repo-root, like example-site.yaml -- wpfreeze is run from a checkout, not
-# installed as a packaged resource (see pyproject.toml's packages.find,
-# which ships only the wpfreeze/ package itself). Kept as a bare relative
-# name, same as every other doc pointer this module and README.md print.
 EXTRA_CONFIG_OPTIONS_DOC = "EXTRA-CONFIG-OPTIONS.md"
+SETUP_DOC = "SETUP.md"
+
+
+def doc_pointer(name: str) -> str:
+    """The most useful pointer we can give to a repo-root doc file.
+
+    These used to be printed as bare relative filenames, on the strength of
+    an assumption that wpfreeze always runs from a checkout. That stopped
+    being true once a packaged install worked: run from any other
+    directory, `See EXTRA-CONFIG-OPTIONS.md` resolves to nothing. Confirmed
+    in the 2026-08-27 sign-off run, where it was the first thing printed
+    after the wizard wrote the config.
+
+    Resolves to an absolute path whenever the docs are actually on disk
+    beside the package (a checkout, or an editable install, which is how
+    wpfreeze is installed). Otherwise it says where the file lives rather
+    than naming a path that isn't there.
+    """
+    candidate = Path(__file__).resolve().parent.parent / name
+    if candidate.is_file():
+        return str(candidate)
+    return f"{name} (in the wpfreeze source distribution)"
 
 
 def _ask(prompt_text: str, default: str, ask: Callable[[str], str]) -> str:
@@ -315,7 +333,7 @@ def print_overview(directory: Path = Path("."), tell: Callable[[str], None] = pr
         tell("")
 
     tell("Starting a new site, or fixing a config that isn't loading? Run `wpfreeze wizard`")
-    tell("for a guided walkthrough, or see SETUP.md.")
+    tell(f"for a guided walkthrough, or see {doc_pointer(SETUP_DOC)}.")
 
     return 0
 
@@ -489,7 +507,7 @@ def run_wizard(
     config_path = Path(_ask("Save this config as", str(suggested_path), ask))
     config_path.write_text(yaml.safe_dump(config_dict, sort_keys=False), encoding="utf-8")
     tell(green(f"Wrote {config_path}", bold_too=True))
-    tell(cyan(f"See {EXTRA_CONFIG_OPTIONS_DOC} for other options you can add to it by hand."))
+    tell(cyan(f"See {doc_pointer(EXTRA_CONFIG_OPTIONS_DOC)} for other options you can add to it by hand."))
 
     config = load_config(config_path)
 

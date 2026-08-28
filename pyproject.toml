@@ -1,6 +1,6 @@
 [project]
 name = "wpfreeze"
-version = "0.1.0"
+version = "1.0.0"
 description = "Acquires a complete, verified local copy of a WordPress site's pages and assets, with Wayback Machine recovery for missing content."
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -14,7 +14,7 @@ dependencies = [
     "PyYAML",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
     "Operating System :: POSIX :: Linux",
