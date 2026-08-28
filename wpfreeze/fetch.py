@@ -132,14 +132,25 @@ class RateLimiter:
     - Any single 429 (HTTP's own "you are being rate limited" status --
       unlike 401/403 this needs no run-length threshold, because there is
       no ambiguous "maybe it's just one private page" case to guard
-      against). Honours a `Retry-After` header when the server sends one;
-      falls back to the same escalating cooldown otherwise.
+      against). Honours a `Retry-After` header when the server sends one,
+      clamped to `lockout_cooldown_max`; falls back to the same escalating
+      cooldown otherwise.
+
+    `lockout_threshold=None` switches the 401/403 rule off entirely while
+    leaving 429 handling intact. That is right for `checklinks` and wrong
+    for `acquire`, and the difference is whose site is being fetched. When
+    acquiring, a run of denials from the site you are copying really does
+    mean you have been banned and should stop. When checking outbound
+    links, 403 is an ordinary answer from a third-party host -- bot
+    protection, a login wall, a paywall -- and is a result to report, not a
+    signal to slow down. Treating it as a lockout made checklinks
+    unusable against any bot-protected host (2026-08-28).
     """
 
     def __init__(
         self,
         rate_limit: float,
-        lockout_threshold: int = DEFAULT_LOCKOUT_THRESHOLD,
+        lockout_threshold: int | None = DEFAULT_LOCKOUT_THRESHOLD,
         lockout_cooldown: float = DEFAULT_LOCKOUT_COOLDOWN,
         lockout_cooldown_max: float = DEFAULT_LOCKOUT_COOLDOWN_MAX,
     ) -> None:
@@ -163,9 +174,20 @@ class RateLimiter:
             time.sleep(sleep_for)
 
     def _back_off_host(self, host: str, cooldown: float) -> None:
-        """Caller must hold self._lock."""
+        """Push `host` out to at least `cooldown` seconds from now. Caller
+        must hold self._lock.
+
+        Takes a maximum rather than adding, so repeated reports never stack.
+        Adding was a real defect: note_response fires once per *attempt* and
+        once per *worker*, so several threads seeing the same 429 -- or a
+        long run of 403s from one host -- each piled another cooldown onto
+        an already-future time. checklinks against a WordPress.com site hit
+        exactly this: ~500 bot-blocked /log-in URLs, escalating to the
+        1800s cap, accumulated a 48-hour backlog on one host and looked to
+        the operator like an infinite hang (2026-08-28).
+        """
         now = time.monotonic()
-        self._next_allowed[host] = max(self._next_allowed.get(host, now), now) + cooldown
+        self._next_allowed[host] = max(self._next_allowed.get(host, now), now + cooldown)
 
     def note_response(self, host: str, status: int, retry_after: float | None = None) -> None:
         """Record an HTTP status for `host`, called once per attempt (see
@@ -185,8 +207,14 @@ class RateLimiter:
                 strikes = self._rate_limit_strikes.get(host, 0)
                 self._rate_limit_strikes[host] = strikes + 1
                 if retry_after is not None:
-                    cooldown = retry_after
+                    # Clamped to the same ceiling the default backoff uses.
+                    # An uncapped Retry-After lets any remote host stall the
+                    # run for as long as it likes -- `Retry-After: 86400` is
+                    # a legal answer and would park that host for a day.
+                    cooldown = min(retry_after, self._lockout_cooldown_max)
                     source = "Retry-After"
+                    if retry_after > self._lockout_cooldown_max:
+                        source = f"Retry-After {retry_after:.0f}s, capped"
                 else:
                     cooldown = min(self._lockout_cooldown * (2**strikes), self._lockout_cooldown_max)
                     source = "default backoff"
@@ -195,6 +223,9 @@ class RateLimiter:
                     f"429 (rate limited) from {host} -- backing off {cooldown:.1f}s "
                     f"({source}) before {host} is fetched again."
                 )
+            elif self._lockout_threshold is None:
+                # Lockout detection disabled -- see the constructor.
+                pass
             elif status not in _LOCKOUT_STATUSES:
                 self._consecutive_denied[host] = 0
             else:

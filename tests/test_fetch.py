@@ -444,3 +444,76 @@ def test_parse_retry_after_http_date_in_past_clamps_to_zero():
     past = datetime.now(timezone.utc) - timedelta(seconds=30)
     result = _parse_retry_after(format_datetime(past, usegmt=True))
     assert result == 0.0
+
+
+def test_repeated_backoffs_do_not_accumulate_without_bound():
+    """Regression, 2026-08-28. _back_off_host used to add each cooldown to
+    an already-future next_allowed, so a long run of denials from one host
+    stacked cooldowns without limit. checklinks against a WordPress.com
+    site hit it: ~500 bot-blocked /log-in URLs returning 403 built a
+    48-hour backlog on one host, which read as an infinite hang.
+
+    Escalation by strike count is deliberate and stays; what must not
+    happen is unbounded accumulation past the cap.
+    """
+    limiter = RateLimiter(0.0, lockout_threshold=5, lockout_cooldown=60.0, lockout_cooldown_max=1800.0)
+    for _ in range(500):
+        limiter.note_response("wordpress.com", 403)
+
+    backlog = limiter._next_allowed["wordpress.com"] - time.monotonic()
+    assert backlog <= 1800.0, f"cooldowns accumulated past the cap: {backlog:.0f}s"
+
+
+def test_concurrent_reports_of_one_429_do_not_stack():
+    """Several workers each report the same 429 for the same host; they
+    should agree on one cooldown, not add one apiece."""
+    limiter = RateLimiter(0.0, lockout_cooldown_max=1800.0)
+    for _ in range(4):
+        limiter.note_response("example.com", 429, retry_after=30.0)
+
+    backlog = limiter._next_allowed["example.com"] - time.monotonic()
+    assert 25.0 <= backlog <= 35.0, f"expected ~30s, got {backlog:.1f}s"
+
+
+def test_retry_after_is_capped():
+    """An uncapped Retry-After lets any remote host park the run for as
+    long as it likes; 86400 is a legal value."""
+    limiter = RateLimiter(0.0, lockout_cooldown_max=1800.0)
+    limiter.note_response("example.com", 429, retry_after=86400.0)
+
+    backlog = limiter._next_allowed["example.com"] - time.monotonic()
+    assert backlog <= 1800.0, f"Retry-After was not capped: {backlog:.0f}s"
+
+
+def test_lockout_detection_can_be_disabled_for_link_checking():
+    """checklinks deliberately fetches third-party hosts, where 403 is an
+    ordinary answer (bot protection, login walls) and a result to report
+    rather than a signal to back off. 429 handling must survive."""
+    limiter = RateLimiter(0.0, lockout_threshold=None, lockout_cooldown=60.0)
+    for _ in range(50):
+        limiter.note_response("wordpress.com", 403)
+    start = time.monotonic()
+    limiter.wait("wordpress.com")
+    assert time.monotonic() - start < 0.1, "403s must not back off a host for checklinks"
+
+    limiter.note_response("wordpress.com", 429, retry_after=0.3)
+    start = time.monotonic()
+    limiter.wait("wordpress.com")
+    assert time.monotonic() - start >= 0.25, "429 backoff must still apply"
+
+
+def test_check_links_disables_lockout_detection():
+    """The wiring, not just the capability."""
+    import wpfreeze.linkcheck as linkcheck
+
+    captured = {}
+    real = linkcheck.RateLimiter
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    import unittest.mock as mock
+    with mock.patch.object(linkcheck, "RateLimiter", _spy):
+        linkcheck.check_links([], user_agent="ua", rate_limit=0.0, workers=1)
+    assert captured.get("lockout_threshold", "missing") is None

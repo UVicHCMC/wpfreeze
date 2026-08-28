@@ -69,6 +69,20 @@ for site owners retiring a site who need the result to *replace* the original.
   follow-up prompts: a 12-minute crawl was reported as `acquire 4h19m`. Offered
   steps are now timed individually, and a run ends with one wrap-up instead of
   three.
+- `checklinks` could stall indefinitely on a host that serves 403 to bots.
+  Two compounding causes: a run of 401/403 responses was read as a site-side
+  lockout and escalated the host's cooldown to the 1800s cap, and each backoff
+  was *added* to an already-future time rather than taking a maximum, so the
+  cooldowns accumulated without bound. Checking a WordPress.com site, whose
+  every page carries a bot-blocked `/log-in` link, built a 48-hour backlog on
+  one host. Backoffs no longer accumulate — which also fixes concurrent workers
+  stacking one shared 429 — and `checklinks` no longer treats 401/403 as a
+  lockout at all: from a third-party host that is an ordinary answer and a
+  result to report, not a signal to slow down. `acquire` keeps the lockout
+  detection, where a run of denials really does mean the site has banned you.
+- A server-supplied `Retry-After` was honoured without an upper bound, so any
+  remote host could park a run for as long as it liked. It is now clamped to
+  the same ceiling the default backoff already used.
 - The wizard printed doc pointers as bare relative filenames, which resolved to
   nothing when wpfreeze ran anywhere but a checkout. They now resolve to
   absolute paths when the docs are on disk beside the package — a checkout or

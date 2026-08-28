@@ -165,7 +165,10 @@ def check_links(
     these are hosts wpfreeze doesn't own, so a link-checker hammering them
     is exactly the behaviour that module's 429 handling exists to avoid."""
     fetch_config = FetchConfig(user_agent=user_agent)
-    rate_limiter = RateLimiter(rate_limit)
+    # lockout_threshold=None: a 403 from someone else's server is a link-check
+    # result, not evidence that we have been banned. See RateLimiter's
+    # docstring -- 429 backoff stays on.
+    rate_limiter = RateLimiter(rate_limit, lockout_threshold=None)
     session = requests.Session()
     results: dict[str, LinkCheckResult] = {}
     if progress is not None:
