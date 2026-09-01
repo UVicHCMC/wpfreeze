@@ -2129,7 +2129,7 @@ def test_freeze_unattended_defaults_to_false_and_parses(tmp_path: Path):
 
 
 def test_unattended_freeze_asks_nothing_even_in_a_terminal(tmp_path: Path, monkeypatch):
-    """Greg, 2026-08-28: freeze must be able to run genuinely hands-off. Both
+    """`freeze` must be able to run genuinely hands-off. Both
     prompts go -- the resume confirmation and the checklinks offer."""
     import wpfreeze.cli as cli
     from wpfreeze.cli import FreezeSettings

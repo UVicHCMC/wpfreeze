@@ -81,17 +81,14 @@ pipx ensurepath
 Then install wpfreeze itself:
 
 ```bash
-pipx install git+https://github.com/<you>/wpfreeze.git
+pipx install git+https://github.com/UVicHCMC/wpfreeze.git
 ```
-
-(Replace the URL with wherever this repo actually ends up — there's no
-public host configured yet.)
 
 Offline search (see "Offline search" below) needs one more package, which
 a plain install does not pull in. Ask for it with the `search` extra:
 
 ```bash
-pipx install 'wpfreeze[search] @ git+https://github.com/<you>/wpfreeze.git'
+pipx install 'wpfreeze[search] @ git+https://github.com/UVicHCMC/wpfreeze.git'
 ```
 
 If wpfreeze is already installed, add it to the existing environment
@@ -108,7 +105,7 @@ identically, just without the automatic environment isolation.
 ### For development
 
 ```bash
-git clone https://github.com/<you>/wpfreeze.git
+git clone https://github.com/UVicHCMC/wpfreeze.git
 cd wpfreeze
 python3 -m venv .venv
 source .venv/bin/activate

@@ -12,8 +12,8 @@ than just the underlying mechanism being correct on its own. Still not
 the same as triggering a 429 from a real, live WordPress host under real
 network conditions -- deliberately not attempted here, since provoking
 that against a real site not under our control would be inconsiderate
-to the site owner and contrary to wpfreeze's own politeness design. See
-the project notes for that standing gap.
+to the site owner and contrary to wpfreeze's own politeness design.
+That remains a standing gap in coverage.
 """
 from __future__ import annotations
 

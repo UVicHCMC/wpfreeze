@@ -12,7 +12,7 @@ Split into two halves on purpose:
   the current state, read one key, translate it into a state-machine call,
   repeat. This part has no automated test coverage -- curses needs a real
   terminal to initialize, the same limitation this codebase already has
-  for the search-results-panel JS (see the project notes) -- so keep it thin enough
+  for the search-results-panel JS -- so keep it thin enough
   that "obviously correct by reading it" plus a manual smoke test in a
   real terminal is enough.
 

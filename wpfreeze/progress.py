@@ -29,8 +29,8 @@ Correctness of the surrounding output comes before cuteness, in this order:
    `threading.Event` it wakes on rather than sleeps blindly through, so
    shutdown is immediate, not a timeout wait. `daemon=True` besides, so
    even a `join()` that somehow never got a chance to run cannot keep the
-   process alive. Greg's 2026-08-26 call, reversing the original "no
-   background thread" design here specifically because tick-driven-only
+   process alive. A deliberate reversal of the original "no background
+   thread" design here, made because tick-driven-only
    redraws made slow-cadence phases like inventory discovery (~1 tick/sec)
    look completely frozen rather than "slightly jerky."
 4. Cheap: a tick is an integer increment plus a monotonic-clock compare
@@ -55,7 +55,7 @@ from types import TracebackType
 
 from wpfreeze.style import green
 
-# Ten-frame braille cycle -- Greg's call, 2026-08-25: it animates smoothly
+# Ten-frame braille cycle -- chosen because it animates smoothly
 # because every frame carries the same visual weight, unlike a mixed-glyph
 # snowflake cycle, which flickers.
 _SPINNER_UTF8 = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -63,7 +63,7 @@ _SPINNER_ASCII = "-\\|/"
 
 # What replaces the spinner glyph on finish() -- a clear "done" signal
 # rather than the spinner just stopping wherever its last frame happened to
-# land, which read as frozen/stuck rather than complete (Greg, 2026-08-26).
+# land, which read as frozen/stuck rather than complete.
 _DONE_GLYPH_UTF8 = "✓"
 _DONE_GLYPH_ASCII = "OK"
 

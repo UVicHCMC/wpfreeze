@@ -1312,8 +1312,8 @@ def run_freeze(config: SiteConfig, project: str) -> int:
 def _confirm_resume(manifest_path: Path, project: str) -> bool:
     """`freeze` resumes an existing capture rather than re-crawling from
     scratch, which is the right default but is invisible: the operator sees
-    a fast run and can easily believe they got a fresh one. Greg's call,
-    2026-08-28 -- say what is about to happen and let them back out.
+    a fast run and can easily believe they got a fresh one -- so say what
+    is about to happen and let them back out.
 
     Unattended runs are never prompted and always resume, exactly as
     before: an unanswered prompt must not be able to abort a scheduled
@@ -1349,7 +1349,7 @@ def _confirm_resume(manifest_path: Path, project: str) -> bool:
 
 
 def _maybe_offer_checklinks_at_end(config: SiteConfig, summary: RunSummary) -> None:
-    """Greg's call, 2026-08-25: `checklinks` stays out of freeze.steps'
+    """`checklinks` stays out of freeze.steps'
     defaults (network-heavy, hits third-party hosts the site owner doesn't
     control), but `freeze` offers it once the declared sequence finishes.
     Declining is the default -- an unanswered prompt must never start a

@@ -23,6 +23,10 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP :: Site Management",
 ]
 
+[project.urls]
+Homepage = "https://github.com/UVicHCMC/wpfreeze"
+Repository = "https://github.com/UVicHCMC/wpfreeze"
+
 [project.optional-dependencies]
 search = ["pagefind[extended]"]
 
