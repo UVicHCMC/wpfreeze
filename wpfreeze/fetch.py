@@ -144,7 +144,7 @@ class RateLimiter:
     links, 403 is an ordinary answer from a third-party host -- bot
     protection, a login wall, a paywall -- and is a result to report, not a
     signal to slow down. Treating it as a lockout made checklinks
-    unusable against any bot-protected host (2026-08-28).
+    unusable against any bot-protected host.
     """
 
     def __init__(
@@ -184,7 +184,7 @@ class RateLimiter:
         an already-future time. checklinks against a WordPress.com site hit
         exactly this: ~500 bot-blocked /log-in URLs, escalating to the
         1800s cap, accumulated a 48-hour backlog on one host and looked to
-        the operator like an infinite hang (2026-08-28).
+        the operator like an infinite hang.
         """
         now = time.monotonic()
         self._next_allowed[host] = max(self._next_allowed.get(host, now), now + cooldown)

@@ -552,7 +552,7 @@ def run_acquire(
             exit_code = time_step(summary, "acquire", _acquire)
 
         # Deliberately outside time_step: these prompt, and a human can sit
-        # at a prompt for hours (2026-08-27: a 12m crawl was reported as
+        # at a prompt for hours (a 12m crawl was reported as
         # "acquire 4h19m" because the offers ran inside the timed closure
         # and swallowed the wait plus the whole nested build+validate).
         # Each offered step is timed and recorded separately instead, the
@@ -714,7 +714,7 @@ def _maybe_offer_build_and_validate(config: SiteConfig, summary: RunSummary) -> 
     # print_wrapup=False, and timed into the caller's summary: otherwise
     # each offered step prints its own near-identical artefact block and
     # the run ends with three of them in a row, acquire's arriving last
-    # despite being first (2026-08-27).
+    # despite being first.
     if time_step(summary, "build", lambda: run_build(config, None, verify=True, print_wrapup=False)) == 2:
         return  # run_build already printed why (e.g. no manifest found)
 

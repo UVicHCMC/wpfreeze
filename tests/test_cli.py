@@ -1511,7 +1511,7 @@ def test_acquire_step_timing_excludes_time_spent_in_followup_prompts(tmp_path: P
 
 def test_offered_build_and_validate_are_timed_as_separate_steps(tmp_path: Path, monkeypatch):
     """They must also suppress their own wrap-ups -- otherwise the run ends
-    with three near-identical artefact blocks in a row (2026-08-27)."""
+    with three near-identical artefact blocks in a row."""
     import wpfreeze.cli as cli
 
     config = _tty_config(tmp_path, monkeypatch)

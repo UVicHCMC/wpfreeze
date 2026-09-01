@@ -447,7 +447,7 @@ def test_parse_retry_after_http_date_in_past_clamps_to_zero():
 
 
 def test_repeated_backoffs_do_not_accumulate_without_bound():
-    """Regression, 2026-08-28. _back_off_host used to add each cooldown to
+    """Regression. _back_off_host used to add each cooldown to
     an already-future next_allowed, so a long run of denials from one host
     stacked cooldowns without limit. checklinks against a WordPress.com
     site hit it: ~500 bot-blocked /log-in URLs returning 403 built a
