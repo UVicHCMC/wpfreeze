@@ -16,7 +16,7 @@ from wpfreeze.projects import (
 
 
 def test_validate_name_accepts_ordinary_name():
-    assert validate_name("landscapes") == "landscapes"
+    assert validate_name("examplesite") == "examplesite"
 
 
 def test_validate_name_accepts_digits_dash_underscore_dot():
@@ -41,7 +41,7 @@ def test_validate_name_rejects_embedded_double_dot():
 
 
 def test_normalize_name_lowercases_and_trims():
-    assert normalize_name("  Landscapes  ") == "landscapes"
+    assert normalize_name("  Examplesite  ") == "examplesite"
 
 
 # ---------------------------------------------------------------------------
@@ -58,21 +58,21 @@ def _write_config(path: Path, name: str | None, base_url: str = "https://example
 
 
 def test_list_projects_lists_every_config(tmp_path: Path):
-    _write_config(tmp_path / "landscapes.yaml", "landscapes")
+    _write_config(tmp_path / "examplesite.yaml", "examplesite")
     _write_config(tmp_path / "other.yaml", None)  # falls back to stem "other"
 
     projects = list_projects(tmp_path)
 
-    assert sorted(p.name for p in projects) == ["landscapes", "other"]
+    assert sorted(p.name for p in projects) == ["examplesite", "other"]
 
 
 def test_resolve_project_by_explicit_name(tmp_path: Path):
-    path = _write_config(tmp_path / "site1.yaml", "landscapes")
+    path = _write_config(tmp_path / "site1.yaml", "examplesite")
 
-    project = resolve_project("landscapes", tmp_path)
+    project = resolve_project("examplesite", tmp_path)
 
     assert project.path == path
-    assert project.name == "landscapes"
+    assert project.name == "examplesite"
 
 
 def test_resolve_project_by_filename_stem(tmp_path: Path):
@@ -84,31 +84,31 @@ def test_resolve_project_by_filename_stem(tmp_path: Path):
 
 
 def test_resolve_project_by_path(tmp_path: Path):
-    path = _write_config(tmp_path / "landscapes.yaml", "landscapes")
+    path = _write_config(tmp_path / "examplesite.yaml", "examplesite")
 
     project = resolve_project(str(path), tmp_path)
 
     assert project.path == path
-    assert project.name == "landscapes"
+    assert project.name == "examplesite"
 
 
 def test_resolve_project_is_case_insensitive(tmp_path: Path):
-    path = _write_config(tmp_path / "landscapes.yaml", "Landscapes")
+    path = _write_config(tmp_path / "examplesite.yaml", "Examplesite")
 
-    project = resolve_project("LANDSCAPES", tmp_path)
+    project = resolve_project("EXAMPLESITE", tmp_path)
 
     assert project.path == path
 
 
 def test_resolve_project_not_found_lists_known_names(tmp_path: Path):
-    _write_config(tmp_path / "landscapes.yaml", "landscapes")
+    _write_config(tmp_path / "examplesite.yaml", "examplesite")
     _write_config(tmp_path / "other.yaml", None)
 
     with pytest.raises(ProjectNotFound) as excinfo:
         resolve_project("nope", tmp_path)
 
     assert "nope" in str(excinfo.value)
-    assert "landscapes" in str(excinfo.value)
+    assert "examplesite" in str(excinfo.value)
     assert "other" in str(excinfo.value)
 
 

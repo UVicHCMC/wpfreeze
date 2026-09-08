@@ -1,6 +1,6 @@
 """Per-step timing and a short "what actually happened, where is it"
 summary for `wpfreeze freeze` and for an individual subcommand that did
-real work -- see the freeze UX design notes Part 2d.
+real work.
 """
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ class StepTiming:
     step: str  # "acquire", "build", ...
     seconds: float
     exit_code: int
+    note: str = ""  # e.g. "skipped (no HTML checker available)" -- shown instead of an exit-code marker
 
 
 @dataclass
@@ -81,11 +82,14 @@ def format_wrapup(summary: RunSummary) -> str:
     lines = [f"{summary.project} — done in {format_duration(total_seconds)}"]
     for timing in summary.steps:
         duration = format_duration(timing.seconds)
-        marker = ""
-        if timing.exit_code == 2:
+        if timing.note:
+            marker = f" — {timing.note}"
+        elif timing.exit_code == 2:
             marker = f" — failed (exit {timing.exit_code})"
         elif timing.exit_code == 1:
             marker = f" — completed with gaps (exit {timing.exit_code})"
+        else:
+            marker = ""
         lines.append(f"  {timing.step:<10}{duration:>7}{marker}")
 
     artefacts = artefact_paths(summary.output_dir)

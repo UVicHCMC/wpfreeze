@@ -5,9 +5,6 @@ byte sizes) and, for a dry run only, the inventory-source reachability map
 `wpfreeze report` regenerates the manifest-only half without running
 `acquire` again; the dry-run readiness assessment is acquire-only, see
 `assess_dry_run`'s own docstring for why.
-
-See the acquisition design notes, "Stage 7 -- Report", and
-the dry-run readiness design notes for the readiness assessment's own design.
 """
 from __future__ import annotations
 
@@ -176,10 +173,10 @@ def infer_inventory_sources_used(manifest: Manifest) -> dict[str, bool]:
 
 
 # ---------------------------------------------------------------------------
-# Dry-run readiness assessment -- see the dry-run readiness design notes for the
-# full design rationale, the measured thresholds below, and the six
-# decisions (R5 cut, severity defined by actionability, etc.) this code
-# implements without re-arguing.
+# Dry-run readiness assessment. The thresholds below are measured, not
+# guessed (see the per-check comments), and severity is defined by
+# actionability -- "needs attention" only when there is something concrete
+# to fix before crawling.
 # ---------------------------------------------------------------------------
 
 DRY_RUN_DISCLAIMER = (
@@ -198,8 +195,8 @@ _INVENTORY_PROVENANCE = frozenset({"sitemap", "rest_api", "xml_backup", "base_ur
 # archive/attachment URL shapes -- deliberately NOT merged with
 # wizard.DEFAULT_EXCLUSIONS, which is a hard "never fetch this" list of
 # dead WordPress infrastructure. These are legitimate content some site
-# owners want archived and others don't; see the dry-run readiness design notes
-# Decision 5 for why the two lists must not become one.
+# owners want archived and others don't -- a soft suggestion here must not
+# turn into a hard "never fetch" there, so the two lists stay separate.
 _LOW_VALUE_ARCHIVE_PATTERNS = (
     ("attachment page", re.compile(r"/attachment/|[?&]attachment_id=")),
     ("tag archive", re.compile(r"/tag/|[?&]tag=")),
@@ -208,8 +205,9 @@ _LOW_VALUE_ARCHIVE_PATTERNS = (
     # Matches 0 inventory URLs on every real site measured so far --
     # paginated archives are found by crawling, not by any inventory
     # source, and that is expected, not a bug in the pattern. Kept because
-    # a Yoast sitemap can list them. See the Measured baseline table in
-    # the dry-run readiness design notes before "fixing" this to fire more.
+    # a Yoast sitemap can list them. Measured to match 0 inventory URLs on
+    # every real site so far -- check that again before "fixing" this to
+    # fire more.
     ("paginated archive", re.compile(r"/page/\d+")),
     ("date archive", re.compile(r"/\d{4}/\d{2}(/\d{2})?/?$")),
 )
@@ -236,10 +234,10 @@ def inventory_records(manifest: Manifest) -> list[ManifestRecord]:
     Public (not `_`-prefixed) because `_run_acquire_locked`'s dry-run
     branch needs it too, for the same reason assess_dry_run does: a dry
     run has no collision guard and will happily load an existing
-    manifest.json from a completed prior run (see "the resumed-manifest
-    trap" in the dry-run readiness design notes) -- `len(manifest)` in that case
-    counts thousands of crawl-discovered assets that were never part of
-    this dry run's own inventory discovery at all."""
+    manifest.json from a completed prior run (the resumed-manifest trap) --
+    `len(manifest)` in that case counts thousands of crawl-discovered
+    assets that were never part of this dry run's own inventory discovery
+    at all."""
     return [r for r in manifest.all() if _INVENTORY_PROVENANCE & set(r.discovered_via)]
 
 
@@ -275,7 +273,7 @@ def assess_dry_run(
     distinguish "reachable but contributed nothing" from "unreachable" --
     exactly the distinction R4's concern tier is built on. A regenerated
     verdict would silently disagree with the one `acquire` wrote, which is
-    worse than not showing one. See the dry-run readiness design notes Decision 3.
+    worse than not showing one.
 
     `xml_backup_configured` is deliberately a separate argument from
     `sources["xml_backup"]`: the latter is False both when no export is
@@ -361,8 +359,8 @@ def assess_dry_run(
         low_count, high_count = sorted((sitemap_count, rest_count))
         # Directional threshold, not symmetric: REST API > sitemap is the
         # normal case (REST exposes attachments/users no sitemap lists),
-        # not a finding. Measured against five real sites before being
-        # set at 10% -- see the dry-run readiness design notes's Measured baseline.
+        # not a finding. The 10% ratio was measured against five real
+        # sites.
         if low_count / high_count < 0.10:
             if sitemap_count < rest_count:
                 low_label, high_label = "sitemap", "REST API"

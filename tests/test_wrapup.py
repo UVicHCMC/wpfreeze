@@ -34,7 +34,7 @@ def test_artefact_paths_empty_output_dir(tmp_path: Path):
 
 
 def test_format_wrapup_marks_non_zero_step():
-    summary = RunSummary(project="landscapes", base_url="https://example.com/", output_dir=Path("out"))
+    summary = RunSummary(project="examplesite", base_url="https://example.com/", output_dir=Path("out"))
     summary.steps.append(StepTiming(step="acquire", seconds=5, exit_code=0))
     summary.steps.append(StepTiming(step="build", seconds=5, exit_code=1))
 
@@ -46,14 +46,28 @@ def test_format_wrapup_marks_non_zero_step():
 
 
 def test_format_wrapup_marks_failed_step():
-    summary = RunSummary(project="landscapes", base_url="https://example.com/", output_dir=Path("out"))
+    summary = RunSummary(project="examplesite", base_url="https://example.com/", output_dir=Path("out"))
     summary.steps.append(StepTiming(step="acquire", seconds=5, exit_code=2))
 
     assert "failed (exit 2)" in format_wrapup(summary)
 
 
+def test_format_wrapup_shows_a_step_note_instead_of_an_exit_marker():
+    summary = RunSummary(project="examplesite", base_url="https://example.com/", output_dir=Path("out"))
+    summary.steps.append(StepTiming(step="build", seconds=5, exit_code=0))
+    summary.steps.append(
+        StepTiming(step="validate", seconds=0, exit_code=0, note="skipped (no HTML checker available)")
+    )
+
+    text = format_wrapup(summary)
+    validate_line = next(line for line in text.splitlines() if "validate" in line)
+    assert "skipped (no HTML checker available)" in validate_line
+    # a note replaces the exit-code marker, it does not stack with it
+    assert "exit" not in validate_line
+
+
 def test_time_step_records_timing_and_returns_exit_code():
-    summary = RunSummary(project="landscapes", base_url="https://example.com/", output_dir=Path("out"))
+    summary = RunSummary(project="examplesite", base_url="https://example.com/", output_dir=Path("out"))
 
     exit_code = time_step(summary, "build", lambda: 0)
 

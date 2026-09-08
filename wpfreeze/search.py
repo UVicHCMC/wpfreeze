@@ -27,12 +27,13 @@ Five pieces, run in this order by `wpfreeze build`:
    echoing post teasers, most often. Read-only reporting, same as
    `pages_without_body_match`; never changes what gets indexed.
 
-See the offline-search design notes for the offline-search design, and
-the content-checks design notes for scan_content_issues's own design
-(algorithm, calibrated constants, why pairwise containment was tried and
-rejected) -- including why `body_selectors` is a page-*exclusion*
-mechanism and not just a region-narrower, and why the script tag has to
-be injected after link rewriting rather than before it.
+Two things worth knowing up front, both explained at their point of use
+below: `body_selectors` is a page-*exclusion* mechanism, not just a
+region-narrower (Pagefind's own sitewide-tagging rule), and the search
+`<script>` tag has to be injected *after* link rewriting, not before.
+scan_content_issues's constants are calibrated against real sites, not
+guessed; pairwise containment was tried for echo detection and rejected
+(it missed the truncated-teaser case).
 """
 from __future__ import annotations
 
@@ -64,12 +65,11 @@ logger = logging.getLogger(__name__)
 SEARCH_ASSET_PATH = "/assets/pagefind-search.js"
 BUNDLE_SUBDIR = "pagefind"
 
-# scan_content_issues's constants -- calibrated against two real sites
-# (two real WordPress sites), not guessed in the abstract.
-# See the content-checks design notes sec 4c for the measured distribution
-# behind these numbers (a clean gap between ~0.30 and ~0.50 on both,
-# unrelated, sites) and sec 8 for why this is fixed-constant reporting,
-# not a config knob, in v1.
+# scan_content_issues's constants -- calibrated against two real,
+# unrelated WordPress sites, not guessed in the abstract: both showed a
+# clean gap between echo fractions of ~0.30 and ~0.50. Fixed constants,
+# not config knobs: this is reporting, and a wrong threshold shows up as
+# an implausible flag rate rather than silently mangling the index.
 SHINGLE_SIZE = 5
 MIN_WORDS = 25
 ECHO_THRESHOLD = 0.5
@@ -96,8 +96,7 @@ class SearchStats:
     # Pages skipped entirely by search.exclude_pages -- kept separate from
     # pages_without_body_match on purpose: that list means "the selector
     # should have matched and didn't, go look"; this one means "the owner
-    # already decided about this page, nothing to review". See
-    # the content-checks design notes sec 8a.
+    # already decided about this page, nothing to review".
     pages_excluded_by_config: list[str] = field(default_factory=list)  # output paths
     forms_tagged: int = 0
     pages_without_form: list[str] = field(default_factory=list)  # output paths
@@ -135,10 +134,10 @@ class ThinContentPage:
 class EchoedPage:
     """A page whose indexed text is mostly shared with other pages --
     typically a WordPress archive/category/blog-listing page (native or
-    hand-built) that re-embeds other pages' content as teasers. See
-    the content-checks design notes sec 4b for the corpus-wide echo-
-    fraction algorithm and why pairwise containment was tried and
-    rejected (it missed the truncated-teaser case entirely)."""
+    hand-built) that re-embeds other pages' content as teasers. The
+    corpus-wide echo-fraction algorithm is in scan_content_issues below;
+    pairwise containment was tried and rejected (it missed the
+    truncated-teaser case entirely)."""
 
     page: str  # output path -- the aggregator/duplicate page
     echo_fraction: float
@@ -158,18 +157,18 @@ class ContentIssues:
     """scan_content_issues's result. Deliberately NOT a field on
     SearchStats: run_search_index re-indexes an already-built site
     without running build_site's per-page loop at all, so it never has a
-    SearchStats to extend. See the content-checks design notes sec 2."""
+    SearchStats to extend."""
 
     # Pages that were actually indexed (thin + shingle-eligible) --
     # deliberately excludes pages extract_indexed_text returned None for
     # (not indexed at all; that's pages_without_body_match's business) and
     # pages policy.py emptied by removing a WordPress password prompt
     # (already reported under "Password-protected pages"; see
-    # _PASSWORD_PROTECTED_MARKER). This is the denominator the design doc's sec 4c calibration note
-    # needs: ">15% of pages flagged is evidence the threshold is wrong,
-    # not that 15% of pages are broken" is unusable without it, which is
-    # why format_content_issues_summary reports counts against this total
-    # rather than bare counts.
+    # _PASSWORD_PROTECTED_MARKER). This is the denominator the calibration
+    # rule of thumb needs: ">15% of pages flagged is evidence the threshold
+    # is wrong, not that 15% of pages are broken" is unusable without it,
+    # which is why format_content_issues_summary reports counts against
+    # this total rather than bare counts.
     pages_scanned: int = 0
     thin_pages: list[ThinContentPage] = field(default_factory=list)
     echoed_pages: list[EchoedPage] = field(default_factory=list)
@@ -395,7 +394,7 @@ def apply_search(
     rewritten to local paths -- the injected <script src=...> is already a
     correct relative local path, and if the rewriter sees it first it will
     try (and fail) to resolve it against the manifest lookup, inflating
-    the unresolved-reference count. See the offline-search design notes section 5.
+    the unresolved-reference count.
 
     `page_output` is only used to record output paths in the stats lists;
     it defaults to "" so tests can call this with a bare soup and no page
@@ -419,7 +418,7 @@ def apply_search(
         # exclusion mechanism -- this just opts a page out of the existing
         # one. Does not touch the form-tagging above: an excluded page can
         # still host a working search box, only its own content stops
-        # being indexed. See the content-checks design notes sec 8a.
+        # being indexed.
         stats.pages_excluded_by_config.append(page_output)
     else:
         matched_here = False
@@ -614,8 +613,8 @@ def extract_indexed_text(
 
 def _detect_sitewide_tagging(html_paths: list[Path]) -> bool:
     """Whether ANY page site-wide carries data-pagefind-body -- Pagefind's
-    own sitewide rule (the offline-search design notes sec 2): if any page has the
-    attribute, every page site-wide is restricted to tagged regions, and
+    own sitewide rule: if any page has the attribute, every page site-wide
+    is restricted to tagged regions, and
     an untagged page is dropped from the index entirely rather than
     falling back to whole-body.
 
@@ -665,10 +664,10 @@ def scan_content_issues(
     still need apply_search to re-tag markup, so those still need a
     rebuild -- same existing constraint as indexing itself.)
 
-    See the content-checks design notes for the full design: sec 2 for why
-    this reads the finished site_dir rather than in-memory build state and
-    the sitewide-tagging correctness trap handled below, sec 4 for the
-    thin-content and echo-fraction algorithms.
+    It reads the finished site_dir rather than in-memory build state (so
+    run_search_index can reuse it), and handles the sitewide-tagging
+    correctness trap below; the thin-content and echo-fraction algorithms
+    are further down this module.
     """
     html_paths = sorted(p for p in site_dir.rglob("*.html") if p.is_file())
 
@@ -755,9 +754,9 @@ def format_content_issues_summary(issues: ContentIssues) -> str:
     block (no repeated "Search:" header), see cli.py's run_build.
 
     Both counts are reported against issues.pages_scanned (not bare
-    counts) because the design doc's sec 4c calibration guidance --
-    ">15% of pages flagged is evidence the threshold is wrong, not that
-    15% of pages are broken" -- is unusable without the denominator.
+    counts) because the calibration rule of thumb -- ">15% of pages
+    flagged is evidence the threshold is wrong, not that 15% of pages are
+    broken" -- is unusable without the denominator.
     """
     scanned = issues.pages_scanned
     acknowledged = sum(1 for p in issues.thin_pages if p.acknowledged)

@@ -1,10 +1,8 @@
-"""Fetcher: rate-limited, retrying HTTP client with failure classification.
-
-See the acquisition design notes, "Stage 3 -- Failure classification and retry":
-transient errors (timeout/connection error/429/5xx) retry with exponential
-backoff up to a configurable attempt limit; everything terminal --
-including exhausted retries -- becomes a Wayback candidate, distinguished
-only by a flag explaining why (see wpfreeze.manifest.FLAG_*).
+"""Stage 3 -- rate-limited, retrying HTTP client with failure
+classification. Transient errors (timeout/connection error/429/5xx) retry
+with exponential backoff up to a configurable attempt limit; everything
+terminal -- including exhausted retries -- becomes a Wayback candidate,
+distinguished only by a flag explaining why (see wpfreeze.manifest.FLAG_*).
 """
 from __future__ import annotations
 

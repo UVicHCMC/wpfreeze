@@ -204,11 +204,15 @@ policy:
 # entirely if you don't have one, nothing forces a decision either way.
 # xml_backup: "./site-export.WordPress.xml"
 
-# Optional. Path to a vnu.jar (the Nu Html Checker), used by
-# `wpfreeze validate` to check the built site's HTML/CSS. Omit this key
-# entirely to have `validate` auto-download and cache the latest release
-# itself -- only set it to pin a specific jar (e.g. for reproducibility,
-# or on a machine without network access to GitHub).
+# Optional. A checker for `wpfreeze validate` (the Nu Html Checker, VNU),
+# used to check the built site's HTML/CSS. Either a .jar (run with a system
+# `java`) or a path to a `vnu` executable -- the launcher from the
+# validator project's self-contained `vnu.linux.zip`, or one your distro
+# packages. Omit this key entirely to have `validate` fetch and cache a
+# checker itself: the ~32 MB vnu.jar when `java` is on PATH and can run it,
+# otherwise the ~66 MB self-contained build that needs no Java (Linux).
+# Set it for reproducibility, or on a machine with no route to GitHub. A
+# pinned checker that cannot run is reported, not silently replaced.
 vnu_jar: "./vnu.jar"
 
 # Optional. Destinations for `wpfreeze upload-script`, which writes

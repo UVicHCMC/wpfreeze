@@ -2,9 +2,9 @@
 a config path, for backward compatibility) to its site config.
 
 A "project" is just a site config, addressed by a short name instead of
-its file path -- see the freeze UX design notes Part 1/2. This module owns the
-name-validation rule so `cli.load_config` and `wizard.build_config_dict`
-apply exactly the same one, rather than each hand-rolling a regex.
+its file path. This module owns the name-validation rule so
+`cli.load_config` and `wizard.build_config_dict` apply exactly the same
+one, rather than each hand-rolling a regex.
 
 `list_projects`/`resolve_project` import `wizard`/`cli` inside their own
 bodies, never at module scope: `cli.load_config` and `wizard.py` (module

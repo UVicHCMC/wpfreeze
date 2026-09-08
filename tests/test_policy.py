@@ -665,8 +665,8 @@ def test_matomo_self_hosted_tracker_is_removed_by_path():
 
 def test_login_links_are_unwrapped_not_deleted():
     """WordPress login/admin links are dead plumbing on an archive -- nobody
-    can log in to a static copy. Found in the 2026-08-28 sign-off run, where
-    247 WordPress.com /log-in URLs were 71% of the broken-links report."""
+    can log in to a static copy. On one real site, 247 WordPress.com
+    /log-in URLs were 71% of the broken-links report."""
     from bs4 import BeautifulSoup
     from wpfreeze.policy import Policy, PolicyStats, apply_policy
 

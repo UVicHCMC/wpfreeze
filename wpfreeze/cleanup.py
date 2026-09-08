@@ -606,8 +606,8 @@ def _thin_content_lines(entries: list[dict]) -> list[str]:
 def _thin_content_section(build_report: dict | None) -> tuple[list[str], bool]:
     """Pages scan_content_issues found indexed but holding almost no text
     -- a blind spot pages_without_body_match can't see, since the selector
-    DID match. See the content-checks design notes sec 4a. `content_issues`
-    is None when search is disabled or scan_content_issues hasn't run
+    DID match. `content_issues` is None when search is disabled or
+    scan_content_issues hasn't run
     (an older build-report.json); an empty list when it ran and found
     nothing to flag -- both produce no section, deliberately not
     distinguished here the same way the other search sections don't.
@@ -658,8 +658,8 @@ def _echoed_content_section(build_report: dict | None) -> tuple[list[str], bool]
     """Pages scan_content_issues found mostly duplicating other pages --
     typically a WordPress archive/category/blog-listing page (native or
     hand-built) whose indexed text is assembled from other pages' content,
-    so one piece of content competes with itself in search results. See
-    the content-checks design notes sec 4b for the echo-fraction algorithm.
+    so one piece of content competes with itself in search results. The
+    echo-fraction algorithm itself lives in scan_content_issues (search.py).
     """
     if build_report is None:
         return ([], False)

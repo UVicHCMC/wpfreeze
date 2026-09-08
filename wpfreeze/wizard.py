@@ -28,6 +28,7 @@ work on it with no wizard involved.
 """
 from __future__ import annotations
 
+import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,27 +82,34 @@ _MIN_WAYBACK_RATE_LIMIT = 3.0
 
 EXTRA_CONFIG_OPTIONS_DOC = "EXTRA-CONFIG-OPTIONS.md"
 SETUP_DOC = "SETUP.md"
+EXAMPLE_CONFIG = "example-site.yaml"
+
+# Repo-root docs (SETUP.md, EXTRA-CONFIG-OPTIONS.md) are deliberately not
+# shipped inside the package; an installed copy points at them on GitHub.
+_DOCS_BASE_URL = "https://github.com/UVicHCMC/wpfreeze/blob/main/"
 
 
 def doc_pointer(name: str) -> str:
-    """The most useful pointer we can give to a repo-root doc file.
+    """The most useful pointer we can give to one of the repo-root doc
+    files (SETUP.md, EXTRA-CONFIG-OPTIONS.md).
 
-    These used to be printed as bare relative filenames, on the strength of
-    an assumption that wpfreeze always runs from a checkout. That stopped
-    being true once a packaged install worked: run from any other
-    directory, `See EXTRA-CONFIG-OPTIONS.md` resolves to nothing. Confirmed
-    in the 2026-08-27 sign-off run, where it was the first thing printed
-    after the wizard wrote the config.
-
-    Resolves to an absolute path whenever the docs are actually on disk
-    beside the package (a checkout, or an editable install, which is how
-    wpfreeze is installed). Otherwise it says where the file lives rather
-    than naming a path that isn't there.
+    Bare relative filenames only resolve when wpfreeze runs from a
+    checkout; from anywhere else `See EXTRA-CONFIG-OPTIONS.md` points at
+    nothing, and these files are not packaged. So: an absolute path when
+    the file is on disk beside the package (a checkout, or an editable
+    install), otherwise its URL on GitHub.
     """
-    candidate = Path(__file__).resolve().parent.parent / name
-    if candidate.is_file():
-        return str(candidate)
-    return f"{name} (in the wpfreeze source distribution)"
+    on_disk = Path(__file__).resolve().parent.parent / name
+    if on_disk.is_file():
+        return str(on_disk)
+    return _DOCS_BASE_URL + name
+
+
+def example_config_path() -> Path:
+    """The annotated `example-site.yaml`. Unlike the docs above it *is*
+    bundled in the package (see pyproject's package-data), so this resolves
+    the same in a checkout and an installed copy."""
+    return Path(__file__).resolve().parent / EXAMPLE_CONFIG
 
 
 def _ask(prompt_text: str, default: str, ask: Callable[[str], str]) -> str:
@@ -251,9 +259,9 @@ def describe_configs(directory: Path = Path(".")) -> tuple[list[ConfigStatus], l
             status_lines = ("Not yet acquired.",)
             # freeze recommended between the dry-run and the bare acquire:
             # sizing a site up first is still worth keeping as its own
-            # leading option (the freeze UX design notes's own reasoning -- "useful
-            # regardless of how the rest of the run proceeds"), but for a
-            # project with nothing done yet, freeze -- not a lone acquire --
+            # leading option (useful regardless of how the rest of the run
+            # proceeds), but for a project with nothing done yet, freeze --
+            # not a lone acquire --
             # is the config's own declared normal path end to end (see
             # README's Quickstart, which already leads with it). Left out of
             # the resumable-run and already-acquired branches below on
@@ -404,9 +412,10 @@ def build_config_dict(
     """Runs the question flow and returns (config_dict, suggested_yaml_path).
     Does not write anything -- callers decide when/whether to persist.
 
-    `name` pre-seeds the project name (Part 3's "start one?" flow already
-    knows it) and skips the name question entirely; otherwise it's asked
-    first, before the URL question, with no default offered."""
+    `name` pre-seeds the project name (the "no config by that name --
+    start one?" flow in cli.py already knows it) and skips the name
+    question entirely; otherwise it's asked first, before the URL
+    question, with no default offered."""
     if name is None:
         name = _ask_name(ask)
 
@@ -492,6 +501,25 @@ def run_wizard(
     """
     from wpfreeze.cli import DEFAULT_FREEZE_STEPS, load_config, run_acquire, run_freeze  # deferred: cli imports this module
 
+    # The wizard is a series of input() prompts start to finish. With the
+    # real `input` and no terminal to answer it (piped, redirected, CI),
+    # the very first prompt raises EOFError -- which used to escape as a
+    # double traceback via main()'s last-resort handler. Refuse cleanly
+    # instead, and point at the non-interactive path. Tests pass their own
+    # `ask`, so this only trips a genuine `wpfreeze wizard` with nowhere to
+    # read from.
+    #
+    # stdin only, deliberately: `wpfreeze wizard | tee setup.log` still has
+    # a human at the keyboard, and refusing that because stdout is a pipe
+    # would be refusing a reasonable thing to do.
+    if ask is input and not sys.stdin.isatty():
+        tell(
+            "`wpfreeze wizard` is interactive and needs a terminal. Run it in one, or "
+            f"copy {example_config_path()}, fill it in, and run `wpfreeze freeze <name>` "
+            f"-- see {doc_pointer(SETUP_DOC)}."
+        )
+        return 2
+
     if initial_name is None:
         handled, exit_code = _offer_resume(find_resumable_configs(), ask, tell)
         if handled:
@@ -507,7 +535,8 @@ def run_wizard(
     config_path = Path(_ask("Save this config as", str(suggested_path), ask))
     config_path.write_text(yaml.safe_dump(config_dict, sort_keys=False), encoding="utf-8")
     tell(green(f"Wrote {config_path}", bold_too=True))
-    tell(cyan(f"See {doc_pointer(EXTRA_CONFIG_OPTIONS_DOC)} for other options you can add to it by hand."))
+    tell(cyan(f"See {doc_pointer(EXTRA_CONFIG_OPTIONS_DOC)} for the common extras, or"))
+    tell(cyan(f"{example_config_path()} for every option, annotated."))
 
     config = load_config(config_path)
 

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from wpfreeze.cli import load_config
 from wpfreeze.wizard import (
     EXTRA_CONFIG_OPTIONS_DOC,
     RecommendedCommand,
@@ -30,12 +31,41 @@ def test_slugify_domain_replaces_dots():
 
 
 def test_extra_config_options_doc_exists_at_the_path_the_wizard_prints():
-    """run_wizard tells the user to go read EXTRA_CONFIG_OPTIONS_DOC --
-    a repo-root relative name, same convention as example-site.yaml (see
-    that constant's own comment). If the file ever gets renamed without
-    updating the constant, the wizard's own pointer would go stale."""
+    """run_wizard tells the user to go read EXTRA_CONFIG_OPTIONS_DOC. In a
+    checkout it's a repo-root file; if it's ever renamed without updating
+    the constant, the wizard's own pointer (and its GitHub-URL fallback on
+    an installed copy) would go stale."""
     repo_root = Path(__file__).resolve().parent.parent
     assert (repo_root / EXTRA_CONFIG_OPTIONS_DOC).is_file()
+
+
+def test_example_config_is_bundled_in_the_package():
+    """Unlike the .md docs, example-site.yaml ships inside the package so
+    an installed copy has it on disk -- example_config_path() must resolve
+    to a real file, and load_config must accept it."""
+    from wpfreeze.wizard import example_config_path
+
+    path = example_config_path()
+    assert path.is_file()
+    assert path.parent.name == "wpfreeze"  # beside the package's .py files
+    load_config(path)  # must not raise
+
+
+def test_doc_pointer_resolves_on_disk_in_a_checkout():
+    from wpfreeze import wizard
+
+    assert wizard.doc_pointer(wizard.SETUP_DOC) == str(
+        Path(wizard.__file__).resolve().parent.parent / "SETUP.md"
+    )
+
+
+def test_doc_pointer_falls_back_to_a_github_url_when_not_on_disk():
+    """On an installed copy the .md docs aren't beside the package; the
+    pointer must be a fetchable URL, not a bare filename."""
+    from wpfreeze import wizard
+
+    pointer = wizard.doc_pointer("NOPE-not-a-real-doc.md")
+    assert pointer == "https://github.com/UVicHCMC/wpfreeze/blob/main/NOPE-not-a-real-doc.md"
 
 
 def test_build_config_dict_no_xml_backup():
@@ -115,9 +145,9 @@ def test_build_config_dict_with_xml_backup():
 
 
 def test_build_config_dict_skips_name_question_when_name_given():
-    """Part 3's 'start one?' flow already knows the name -- passing it must
-    consume no prompt for it, and the scripted list must be exhausted with
-    nothing left over."""
+    """The 'start one?' flow (cli.py's _offer_new_project) already knows the
+    name -- passing it must consume no prompt for it, and the scripted list
+    must be exhausted with nothing left over."""
     ask = _answers(
         "https://example.com",  # base_url -- no name question first
         "",
@@ -133,6 +163,85 @@ def test_build_config_dict_skips_name_question_when_name_given():
     assert suggested_path == Path("foo.yaml")
     with pytest.raises(StopIteration):
         ask("anything")  # every scripted answer above was consumed, none left
+
+
+def test_run_wizard_refuses_cleanly_when_stdin_is_not_a_terminal(monkeypatch, capsys):
+    """With the real input() and no terminal, the first prompt raises
+    EOFError, which used to escape as a double traceback. It must exit 2
+    with a pointer to the non-interactive path instead."""
+    import sys as _sys
+
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(_sys.stdout, "isatty", lambda: True)
+
+    exit_code = run_wizard()  # default ask=input
+
+    assert exit_code == 2
+    out = capsys.readouterr().out
+    assert "interactive" in out
+    assert "SETUP.md" in out
+
+
+def test_run_wizard_runs_with_a_terminal_on_stdin_even_when_stdout_is_piped(tmp_path, monkeypatch):
+    """`wpfreeze wizard | tee setup.log` still has a human at the keyboard.
+    The guard asks about stdin -- the stream the prompts are read from --
+    and not about stdout, so a redirected transcript is not mistaken for
+    an unattended run."""
+    import sys as _sys
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
+
+    answers = iter(
+        [
+            "example-com",  # name
+            "https://example.com",
+            "",
+            "",
+            "",
+            "",
+            "n",  # xml_backup: no
+            "n",  # search: no
+            str(tmp_path / "example-com.yaml"),
+            "n",  # dry run now: no
+            "n",  # real run now: no
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+
+    # `ask=input` explicitly, resolving to the patched builtin: the guard
+    # only applies to the real prompt function (`ask is input`), so this is
+    # how a scripted run gets to be *inside* the guarded path rather than
+    # around it.
+    exit_code = run_wizard(ask=input)
+
+    assert exit_code == 0
+    assert (tmp_path / "example-com.yaml").is_file()
+
+
+def test_run_wizard_with_a_custom_ask_is_unaffected_by_the_tty_guard(tmp_path, monkeypatch):
+    """The guard keys off `ask is input`, so tests (and any embedder
+    supplying its own prompt function) still run under a non-tty."""
+    import sys as _sys
+
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+    monkeypatch.chdir(tmp_path)
+
+    from wpfreeze.cli import SiteConfig
+
+    monkeypatch.setattr(
+        "wpfreeze.cli.load_config",
+        lambda path: SiteConfig(base_url="https://example.com/", output_dir=tmp_path / "out"),
+    )
+    monkeypatch.setattr("wpfreeze.cli.run_acquire", lambda *a, **k: 0)
+
+    config_path = tmp_path / "example-com.yaml"
+    ask = _answers(
+        "example-com", "https://example.com", "", "", "", "", "n", "n", str(config_path), "n", "n"
+    )
+    assert run_wizard(ask=ask, tell=lambda m: None) == 0
+    assert config_path.exists()
 
 
 def test_run_wizard_writes_config_and_offers_dry_run(tmp_path, monkeypatch):

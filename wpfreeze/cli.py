@@ -1,14 +1,11 @@
 """CLI entry point: argument parsing, YAML config loading/validation, and
 pipeline orchestration for `wpfreeze acquire|report|status`.
-
-See the acquisition design notes, "CLI" and "Configuration (YAML)".
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import re
-import shutil
 import sys
 import time
 from collections import Counter
@@ -65,13 +62,13 @@ from wpfreeze.upload import write_upload_script
 from wpfreeze.urlnorm import SiteProfile, scope_profile_from_config
 from wpfreeze.validate import (
     VnuUnavailable,
-    ensure_vnu_jar,
     format_validation_summary,
+    resolve_vnu,
     validate_site,
     write_validation_report,
 )
 from wpfreeze.wayback import recover_via_wayback
-from wpfreeze.wrapup import RunSummary, format_wrapup, time_step
+from wpfreeze.wrapup import RunSummary, StepTiming, format_wrapup, time_step
 
 logger = logging.getLogger(__name__)
 
@@ -117,8 +114,12 @@ class UploadSettings:
 # inside an existing command just because config enables it" rule).
 DEFAULT_FREEZE_STEPS: tuple[str, ...] = ("acquire", "build", "validate")
 
-# Every step name freeze.steps may name. Kept as the literal set of run_*
-# dispatch keys run_freeze builds its step_runners dict from -- see there.
+# Every step name freeze.steps may name. Every entry must be runnable by
+# run_freeze: all but "validate" come from the step_runners dict it
+# builds, and "validate" is handled by _freeze_validate_step beside it.
+# test_cli.py pins that correspondence -- without it, a step added here
+# and nowhere else fails with a KeyError mid-freeze instead of a
+# ConfigError at load time.
 FREEZE_PERMITTED_STEPS: tuple[str, ...] = (
     "acquire", "build", "validate", "diagnose", "report", "checklinks", "search-index", "upload-script",
 )
@@ -155,11 +156,10 @@ class FreezeSettings:
 # comment thread (`#comments` sits outside it). An explicit
 # `body_selectors: []` in a site's config opts back into the old
 # whole-<body> behaviour; leaving the key out entirely gets this instead.
-# NOT a live per-site detection scheme -- the offline-search design notes sec 13
-# explicitly rules that out ("same class of problem as guessing a
-# theme's content container by name") and asks for exactly this instead:
-# "a structural default plus an explicit per-site escape hatch, with the
-# checklist telling the owner when the default is hurting them." A page-
+# NOT a live per-site detection scheme -- that would be the same class of
+# problem as guessing a theme's content container by name. This is a
+# structural default plus an explicit per-site escape hatch, with the
+# checklist telling the owner when the default is hurting them. A page-
 # builder theme (Divi, Elementor) that never emits `.entry-content` still
 # fails safely -- the page just matches nothing and shows up in the
 # cleanup checklist's "Pages not covered by search", not silently.
@@ -168,9 +168,9 @@ DEFAULT_BODY_SELECTORS: tuple[str, ...] = ("body.wp-singular .entry-content",)
 
 @dataclass(frozen=True)
 class SearchSettings:
-    # Master switch for offline search (Pagefind). Off by default -- see
-    # the offline-search design notes. Requires a search form to actually survive the
-    # build; see load_config's own check just below.
+    # Master switch for offline search (Pagefind). Off by default. Requires
+    # a search form to actually survive the build; see load_config's own
+    # check just below.
     enabled: bool = False
     # CSS selectors marking a page's real content for indexing. Beyond
     # narrowing *what* gets indexed on a matching page, setting this to
@@ -202,8 +202,7 @@ class SearchSettings:
     # by selector from a page that must stay indexed. No load-time
     # validation: like body_selectors/ignore_selectors, an entry that
     # matches nothing is a silent no-op, self-correcting because the page
-    # keeps surfacing in scan_content_issues's echo report. See
-    # the content-checks design notes sec 8a.
+    # keeps surfacing in scan_content_issues's echo report.
     exclude_pages: tuple[str, ...] = ()
     # Exact output paths (same format as exclude_pages) of pages already
     # reviewed and confirmed to be legitimately short by design -- a
@@ -233,7 +232,7 @@ class SiteConfig:
     base_url: str
     output_dir: Path
     # Short handle for this project -- what project-addressed commands
-    # (`wpfreeze build landscapes`) match against. Non-defaulted would break
+    # (`wpfreeze build examplesite`) match against. Non-defaulted would break
     # every existing positional SiteConfig(...) construction in the tests;
     # load_config always sets it for real, defaulting to the config
     # filename's stem when the YAML omits `name:` (see load_config).
@@ -247,7 +246,7 @@ class SiteConfig:
     wayback: WaybackSettings = field(default_factory=WaybackSettings)
     xml_backup: Path | None = None  # optional: a WordPress XML export (WXR) to augment inventory
     policy: Policy = field(default_factory=Policy)  # content stripping for `build`
-    vnu_jar: Path | None = None  # optional: pin a specific vnu.jar; unset auto-downloads/caches the latest
+    vnu_jar: Path | None = None  # optional: pin a checker for `validate` -- a .jar (run via java) or a `vnu` executable; unset auto-fetches one (see validate.resolve_vnu)
     upload: UploadSettings = field(default_factory=UploadSettings)  # upload.sh destination; see `upload-script`
     search: SearchSettings = field(default_factory=SearchSettings)  # offline search (Pagefind); see `search-index`
     freeze: FreezeSettings = field(default_factory=FreezeSettings)  # what `wpfreeze freeze` runs, and in what order
@@ -430,7 +429,7 @@ def probe_site(
 ) -> SiteProfile:
     """Establish this run's SiteProfile with a handful of one-time probes:
     does the site serve https, does it prefer www or non-www, does it
-    prefer a trailing slash. See the acquisition design notes, "URL normalization"."""
+    prefer a trailing slash."""
     parsed = urlsplit(base_url)
     host = parsed.hostname or ""
     port_suffix = f":{parsed.port}" if parsed.port else ""
@@ -492,7 +491,7 @@ def _run_to_settled(
     exclusions, manifest_path, progress: "Progress | None" = None,
 ) -> None:
     """Interleave crawl -> Wayback recovery -> canonical cascade until no
-    pending work remains (Stage 2/4 joint fixpoint, see the acquisition design notes)."""
+    pending work remains (the Stage 2/4 joint fixpoint)."""
     while True:
         crawl_fixpoint(
             manifest, profile, session, rate_limiter, fetch_config, raw_dir, exclusions,
@@ -698,10 +697,11 @@ def _maybe_offer_build_and_validate(config: SiteConfig, summary: RunSummary) -> 
 
     Two separate prompts, not one bundled offer: `build` is disk-only,
     deterministic, and fast, so there is no real downside to offering it
-    unconditionally. `validate` needs a JVM plus a downloaded vnu.jar --
-    the one of the two that can actually fail in a given environment -- so
-    it is only offered if `java` is on PATH at all, and only after a
-    successful build (nothing to validate otherwise).
+    unconditionally. `validate` needs a checker (a system `java` plus a
+    downloaded vnu.jar, or the self-contained runtime image) and only runs
+    after a successful build -- but resolve_vnu handles a missing checker
+    with a clear message, so it is offered unconditionally too rather than
+    pre-guarded on `java`.
     """
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         return
@@ -718,9 +718,6 @@ def _maybe_offer_build_and_validate(config: SiteConfig, summary: RunSummary) -> 
     if time_step(summary, "build", lambda: run_build(config, None, verify=True, print_wrapup=False)) == 2:
         return  # run_build already printed why (e.g. no manifest found)
 
-    if shutil.which("java") is None:
-        print("Java not found on PATH; skipping the offer to validate (VNU needs a JVM).")
-        return
     try:
         answer = input("Validate the built site's HTML/CSS with VNU? [Y/n] ").strip().lower()
     except EOFError:
@@ -1014,41 +1011,68 @@ def _confirm_search_with_no_forms(config: SiteConfig, stats: BuildStats, progres
 
 
 def run_validate(
-    config: SiteConfig, site_dir: Path | None, write_todo: bool = True, *, print_wrapup: bool = True
+    config: SiteConfig,
+    site_dir: Path | None,
+    write_todo: bool = True,
+    *,
+    print_wrapup: bool = True,
+    vnu_cmd: list[str] | None = None,
 ) -> int:
     """Check the built site's HTML/CSS with VNU.
 
-    No config needed to enable this: unless `vnu_jar` pins a specific jar,
-    a cached copy of the latest release is fetched/refreshed automatically
-    (see validate.ensure_vnu_jar) into a directory shared across configs,
-    since the checker isn't site-specific.
+    No config needed to enable this: unless `vnu_jar` pins a checker, one
+    is fetched and cached automatically (see validate.resolve_vnu) into a
+    directory shared across configs, since the checker isn't site-specific
+    -- the ~32 MB `vnu.jar` when a system `java` is present, otherwise the
+    self-contained ~66 MB `vnu.linux.zip` runtime image.
 
     Informational only: these are markup defects in the site's own
     theme/plugins, not something wpfreeze's rewriting caused or can fix,
     so this never fails the build over someone else's markup -- unlike
     `build`'s own broken-reference check, it always exits 0 once it has
-    successfully run.
+    successfully run. Run on its own it still exits 2 if no checker can be
+    obtained; inside `freeze` that case is a skipped step, not a failure
+    (see _freeze_validate_step).
+
+    `vnu_cmd` lets a caller that has already resolved the checker pass it
+    through rather than have it resolved a second time.
     """
     target = site_dir or (config.output_dir / "site")
     if not target.exists():
         print(f"No built site found at {target}; run `wpfreeze build` first.")
         return 2
 
+    # Resolved before the spinner starts, not inside it: resolution can
+    # mean a 32-66 MB download on first use, and a multi-minute transfer
+    # under a spinner that says "Validating" is a lie about what the
+    # machine is doing. Both downloaders log a line before they start.
+    if vnu_cmd is None:
+        try:
+            vnu_cmd = resolve_vnu(config.vnu_jar)
+        except VnuUnavailable as exc:
+            print(f"VNU validation could not run: {exc}")
+            return 2
+
     summary = RunSummary(project=config.name, base_url=config.base_url, output_dir=config.output_dir)
     host = urlsplit(config.base_url).hostname or config.base_url
     with Progress(f"Validating {host} (vnu, no progress available)") as progress:
-        exit_code = time_step(summary, "validate", lambda: _run_validate_body(config, target, write_todo, progress))
+        exit_code = time_step(
+            summary, "validate", lambda: _run_validate_body(config, target, write_todo, progress, vnu_cmd)
+        )
     if print_wrapup:
         print(format_wrapup(summary))
     return exit_code
 
 
 def _run_validate_body(
-    config: SiteConfig, target: Path, write_todo: bool, progress: "Progress | None" = None
+    config: SiteConfig,
+    target: Path,
+    write_todo: bool,
+    progress: "Progress | None" = None,
+    vnu_cmd: list[str] | None = None,
 ) -> int:
     try:
-        vnu_jar = config.vnu_jar or ensure_vnu_jar()
-        report = validate_site(vnu_jar, target)
+        report = validate_site(vnu_cmd or resolve_vnu(config.vnu_jar), target)
     except VnuUnavailable as exc:
         if progress is not None:
             progress.finish()
@@ -1272,7 +1296,8 @@ def run_freeze(config: SiteConfig, project: str) -> int:
             config, resume=resume, dry_run=False, offer_followups=False, print_wrapup=False
         ),
         "build": lambda: run_build(config, None, verify=True, print_wrapup=False),
-        "validate": lambda: run_validate(config, None, print_wrapup=False),
+        # "validate" is handled separately in the loop below (_freeze_validate_step):
+        # a checker that can't be obtained is a skipped step, not a failure.
         "diagnose": lambda: run_diagnose(config),
         "report": lambda: run_report(config, html_only=False, json_only=False),
         "checklinks": lambda: run_checklinks(config, None, recheck=False, print_wrapup=False),
@@ -1291,7 +1316,10 @@ def run_freeze(config: SiteConfig, project: str) -> int:
     had_error = False
     had_gap = False
     for step in config.freeze.steps:
-        exit_code = time_step(summary, step, step_runners[step])
+        if step == "validate":
+            exit_code = _freeze_validate_step(config, summary)
+        else:
+            exit_code = time_step(summary, step, step_runners[step])
         if exit_code == 2:
             had_error = True
             print(f"`{step}` failed (exit 2) -- stopping the freeze sequence.")
@@ -1307,6 +1335,41 @@ def run_freeze(config: SiteConfig, project: str) -> int:
     if had_error:
         return 2
     return 1 if had_gap else 0
+
+
+def _freeze_validate_step(config: SiteConfig, summary: RunSummary) -> int:
+    """Run the `validate` step of a freeze, but treat "no HTML checker
+    available" as a skip rather than a failure.
+
+    `validate` is informational -- it reports pre-existing defects in the
+    original theme's markup, nothing `wpfreeze` caused or can fix. By the
+    time it runs, `acquire` and `build` have already produced a complete
+    archive. So a machine with no JVM *and* no network route to fetch the
+    self-contained checker should not turn a good archive into an exit-2
+    freeze; it should note the skip and move on. Run on its own,
+    `wpfreeze validate` still exits 2 in that situation (a script that
+    asked for validation specifically should hear that it didn't happen).
+    """
+    started = time.monotonic()
+    try:
+        vnu_cmd = resolve_vnu(config.vnu_jar)
+    except VnuUnavailable as exc:
+        print(f"Skipping validate: {exc}.")
+        print("  validate only checks the original theme's markup; the archive itself is complete.")
+        # Not 0.0: getting here can have cost a connect timeout or a
+        # half-finished 66 MB download, and a wrap-up whose step times do
+        # not add up to the wall clock is how a slow step hides.
+        summary.steps.append(
+            StepTiming("validate", time.monotonic() - started, 0, note="skipped (no HTML checker available)")
+        )
+        return 0
+    # Timed here rather than with time_step, because the step began at the
+    # resolve above: on a first run that is where a 32-66 MB download
+    # happens, and charging it to nothing would leave the wrap-up's own
+    # numbers short of the wall clock.
+    exit_code = run_validate(config, None, print_wrapup=False, vnu_cmd=vnu_cmd)
+    summary.steps.append(StepTiming("validate", time.monotonic() - started, exit_code))
+    return exit_code
 
 
 def _confirm_resume(manifest_path: Path, project: str) -> bool:
@@ -1525,9 +1588,9 @@ _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
 def _configure_logging(output_dir: Path) -> None:
-    """Per the acquisition design notes, output_dir gets a logs/ directory alongside
-    raw/ and the reports. Console stays at INFO (meaningful progress); the
-    file captures DEBUG (one line per fetch and below).
+    """output_dir gets a logs/ directory alongside raw/ and the reports.
+    Console stays at INFO (meaningful progress); the file captures DEBUG
+    (one line per fetch and below).
 
     Handlers are attached directly to the "wpfreeze" package logger with
     propagate=False, rather than relying on logging.basicConfig() on the
@@ -1579,7 +1642,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 130
     except Exception:
-        logging.getLogger("wpfreeze").critical("acquire crashed with an unhandled exception", exc_info=True)
+        tokens = list(argv) if argv is not None else sys.argv[1:]
+        command = next((t for t in tokens if not t.startswith("-")), "wpfreeze")
+        logging.getLogger("wpfreeze").critical(
+            "`%s` crashed with an unhandled exception", command, exc_info=True
+        )
         raise
 
 
