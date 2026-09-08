@@ -1,6 +1,4 @@
 """Stage 6 -- output path mapping and redirects.htaccess generation.
-
-See the acquisition design notes, "Stage 6 -- Output path mapping".
 """
 from __future__ import annotations
 
@@ -60,7 +58,7 @@ def internal_output_path(url_path: str) -> str:
 def external_asset_bucket(filename: str) -> str | None:
     """Well-known local folder for a renderable external asset, by
     extension; None means "no known bucket, use the host-namespaced
-    catch-all" (see the acquisition design notes)."""
+    catch-all"."""
     ext = PurePosixPath(filename).suffix.lower()
     if ext in _FONT_EXTS:
         return "/assets/fonts/"

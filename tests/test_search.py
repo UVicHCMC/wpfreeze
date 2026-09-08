@@ -554,8 +554,9 @@ def test_scan_thin_page_not_in_acknowledged_thin_pages_is_not_marked(tmp_path: P
 def test_scan_acknowledged_thin_pages_still_counts_toward_pages_scanned(tmp_path: Path):
     # Acknowledging a page changes whether the checklist nags about it
     # (cleanup.py's business), not whether scan_content_issues considers
-    # it indexed/scanned -- the sec 4c calibration denominator must stay
-    # meaningful regardless of acknowledgement.
+    # it indexed/scanned -- the calibration denominator (see
+    # ContentIssues.pages_scanned) must stay meaningful regardless of
+    # acknowledgement.
     site_dir = tmp_path / "site"
     _write_page(site_dir, "/thin.html", "<p>only four words here</p>")
 
@@ -615,7 +616,7 @@ def test_scan_password_protected_page_skipped_even_if_it_somehow_has_text(tmp_pa
 def test_scan_respects_sitewide_tagging_not_per_page(tmp_path: Path):
     # One page tagged anywhere makes Pagefind's rule sitewide: an untagged
     # page is NOT indexed at all (thin or otherwise), not whole-body
-    # fallback -- the content-checks design notes sec 2's correctness trap.
+    # fallback -- the sitewide-tagging correctness trap.
     site_dir = tmp_path / "site"
     _write_page(
         site_dir, "/tagged.html",
@@ -761,8 +762,7 @@ def test_scan_sample_is_a_contiguous_normalized_run(tmp_path: Path):
     punctuation-free fixture (e.g. _words()) cannot distinguish "returns
     normalized text" from "returns the original text", which is exactly
     how the original version of this test shipped without catching that
-    the code was never verbatim (the content-checks review notes
-    sec 2).
+    the code was never verbatim.
     """
     site_dir = tmp_path / "site"
     tag = "data-pagefind-body"
@@ -807,12 +807,12 @@ def test_scan_extract_respects_ignore_selectors(tmp_path: Path):
 
 
 def test_scan_exclude_pages_composes_with_apply_search_end_to_end(tmp_path: Path):
-    """the content-checks design notes sec 8a claims scan_content_issues
-    needs no awareness of exclude_pages -- it composes for free through
-    the sitewide-tagging mechanism apply_search already uses. Proves that
-    claim by running the actual pipeline both functions sit in (apply_search
-    writes the markup scan_content_issues then reads), not by testing each
-    function against its own hand-built fixture in isolation."""
+    """scan_content_issues needs no awareness of exclude_pages -- it
+    composes for free through the sitewide-tagging mechanism apply_search
+    already uses. Proves that by running the actual pipeline both functions
+    sit in (apply_search writes the markup scan_content_issues then reads),
+    not by testing each function against its own hand-built fixture in
+    isolation."""
     site_dir = tmp_path / "site"
     settings = SearchSettings(body_selectors=(".entry-content",), exclude_pages=("/blog.html",))
     pages = {
@@ -853,9 +853,8 @@ def test_content_issues_summary_reports_counts():
     assert "echoed content" in summary
     assert str(MIN_WORDS) in summary
     # Both counts reported against pages_scanned, not bare counts -- the
-    # design doc's sec 4c ">15% of pages flagged means the threshold is
-    # wrong" guidance is unusable without the denominator. See
-    # the content-checks review notes sec 3.
+    # ">15% of pages flagged means the threshold is wrong" rule of thumb
+    # is unusable without the denominator.
     assert "1 of 5 page(s) scanned" in summary
     assert "acknowledged" not in summary
 

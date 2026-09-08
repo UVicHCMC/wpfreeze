@@ -3,7 +3,7 @@
 `wpfreeze wizard` writes a minimal config to get a site archived. Everything
 below is optional -- add any of it to the YAML file the wizard wrote, by
 hand, whenever you need it. For the complete, exhaustively annotated
-reference of every key, see [`example-site.yaml`](example-site.yaml); this
+reference of every key, see [`example-site.yaml`](wpfreeze/example-site.yaml); this
 is just the highlights, picked for what people tend to want right after
 their first run.
 
@@ -96,4 +96,10 @@ between each thread's requests, not how many threads there are.
 vnu_jar: /home/you/.cache/wpfreeze/vnu-20250101.jar
 ```
 
-Leave it unset to auto-download and cache the latest `vnu.jar` instead.
+The `vnu_jar` key takes either a `.jar` (run with a system `java`) or a
+path to a `vnu` executable — the launcher from the validator project's
+self-contained `vnu.linux.zip`, or one your distro packages. Leave it
+unset and `wpfreeze validate` fetches and caches a checker itself: the
+~32 MB `vnu.jar` when `java` is on `PATH` and can run it, otherwise the
+~66 MB self-contained build (Linux only). Set it to skip that download, or to work on a
+machine with no route to GitHub.

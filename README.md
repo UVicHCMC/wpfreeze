@@ -1,4 +1,3 @@
-![wpfreeze logo](local/media/wpfreeze.png)
 # wpfreeze
 
 Acquires a complete, verified local copy of a WordPress site's pages and
@@ -59,6 +58,18 @@ web scraper and makes no attempt to be polite to sites it doesn't own.
 - No database of any kind. No PHP, no WordPress install, no MySQL. Just the
   target site's URL (reachable over HTTP/HTTPS) and, optionally, a WordPress
   XML export file.
+- **`wpfreeze validate` needs an HTML checker; the rest of wpfreeze does
+  not.** The step runs the [Nu Html Checker](https://validator.github.io/validator/)
+  (VNU). If `java` is on your `PATH` and can run the jar, wpfreeze fetches
+  the ~32 MB `vnu.jar` on first use; with no JVM — or one too old for the
+  current release, which it checks rather than assumes — it fetches a
+  self-contained ~66 MB build (Linux) that bundles its own runtime. Either
+  is cached under
+  `~/.cache/wpfreeze/` and shared across projects — pin your own with
+  `vnu_jar:` (a `.jar`, or a path to a `vnu` executable) to skip the
+  download. `validate` is informational only: `wpfreeze freeze` notes it as
+  skipped and carries on if no checker can be obtained (offline with
+  nothing cached, say), rather than failing an otherwise-complete archive.
 
 ## Installation
 
@@ -109,7 +120,7 @@ git clone https://github.com/UVicHCMC/wpfreeze.git
 cd wpfreeze
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e '.[dev]'
 pytest
 ```
 
@@ -177,7 +188,7 @@ Everything the wizard doesn't ask about (`exclusions`,
 `extra_hosts`, `user_agent`) is left at sensible defaults — edit the YAML
 directly if a site needs something different there. The wizard points at
 [`EXTRA-CONFIG-OPTIONS.md`](EXTRA-CONFIG-OPTIONS.md) for a short list of the
-options people tend to want next; see [`example-site.yaml`](example-site.yaml)
+options people tend to want next; see [`example-site.yaml`](wpfreeze/example-site.yaml)
 for every option, annotated.
 
 ### A WordPress XML export makes this more complete
@@ -254,9 +265,9 @@ Found 2 site configs in this directory:
 
   examplesite  (https://example.com, examplesite.yaml)
     Acquired: 519 fetched, 0 pending, 519 total. Built: yes.
-    wpfreeze status    landscapes
-    wpfreeze build     landscapes   (safe to re-run any time)
-    wpfreeze validate  landscapes
+    wpfreeze status    examplesite
+    wpfreeze build     examplesite   (safe to re-run any time)
+    wpfreeze validate  examplesite
 
   new-site  (https://example.org, new-site.yaml)
     Not yet acquired.
@@ -304,7 +315,11 @@ also what clears the terminal row cleanly before the step's own summary
 prints below it, so the two never run into each other. A step that returns
 exit `2` (refused/failed) stops the sequence there and marks itself in the
 wrap-up; a step returning `1` (completed with gaps) doesn't stop it but
-does make `freeze`'s own final exit code `1`. `checklinks` stays out of
+does make `freeze`'s own final exit code `1`. The `validate` step is the
+one exception to the exit-`2`-stops-the-run rule: if no HTML checker can
+be obtained (no JVM and nothing cached to fall back on), it is noted in
+the wrap-up as `skipped` and the sequence continues — a good archive is
+not held hostage to an informational check. `checklinks` stays out of
 the default sequence (it's slow and hits hosts wpfreeze doesn't control)
 but is offered once the declared steps finish — default answer is No, and
 a broken link found this way doesn't change `freeze`'s exit code, the same
@@ -318,7 +333,7 @@ easy to miss when the run then finishes suspiciously fast. So it says what
 it found and lets you back out first:
 
 ```
-An acquisition already exists in output/landscapes (5412 record(s), last updated 2026-08-26 14:07).
+An acquisition already exists in output/examplesite (5412 record(s), last updated 2026-08-26 14:07).
 `freeze` will resume it rather than crawling the site from scratch.
 Resume it? [Y/n]
 ```
@@ -344,7 +359,7 @@ if `upload.remote` is set.
 
 ## CLI reference
 
-Every subcommand below takes the project either way: a name (`landscapes`)
+Every subcommand below takes the project either way: a name (`examplesite`)
 or `--config site.yaml`, never both. See "Projects" below for what a name
 resolves against.
 
@@ -396,8 +411,12 @@ wpfreeze --version                       # the installed version
   Checker](https://validator.github.io/validator/) and writes
   `vnu-report.json`. Informational only — these are defects in the
   original site's own theme/content, not something `build` caused or can
-  fix, so it never fails the build over someone else's markup. Also
-  regenerates the cleanup checklist unless `--no-todo` is passed.
+  fix, so it never fails the build over someone else's markup. Needs a
+  checker (a system `java` plus a downloaded `vnu.jar`, or a self-contained
+  build that needs no Java — see "Requirements"); run on its own it exits
+  `2` if it can't get one, but inside `freeze` that's a skipped step, not
+  a failure. Also regenerates the cleanup checklist unless `--no-todo` is
+  passed.
 - **`diagnose`** writes `diagnostics.json` — a compact capture-integrity
   summary (duplicate local paths, disk/manifest hash mismatches,
   content-type/URL-shape collisions) from the existing manifest, no
@@ -449,8 +468,8 @@ than starting over.
 
 A "project" is just a site config, addressed by a short name instead of
 its file path. `name:` in the YAML sets it explicitly; omit the key
-entirely and it falls back to the config filename's stem (`landscapes.yaml`
-→ `landscapes`) — no migration needed for a config that predates this.
+entirely and it falls back to the config filename's stem (`examplesite.yaml`
+→ `examplesite`) — no migration needed for a config that predates this.
 
 Resolution, when you pass `wpfreeze <command> <project>`: first, does the
 token look like a config path at all (ends in `.yaml`/`.yml`, contains a
@@ -592,7 +611,7 @@ touching the capture, so re-running is always safe. In that tree:
   `<form>` elements (dead or leaky on a static site), dead RSS/Atom feed
   links, and WordPress login/admin links. All on by default and configurable
   per site — see the `policy:` block in
-  [`example-site.yaml`](example-site.yaml). Counts of what was removed appear
+  [`example-site.yaml`](wpfreeze/example-site.yaml). Counts of what was removed appear
   in the build summary.
 - **Login and admin links are unwrapped** (`wp-login.php`, `/wp-admin/`, and
   WordPress.com's hosted `/log-in`). Nobody can log in to a static copy, and
@@ -611,7 +630,7 @@ touching the capture, so re-running is always safe. In that tree:
   at that removed id (WordPress's own "N comments" post-meta link) is
   fixed too; the "N comments" text itself is removed by default, or kept
   for a nonzero count when `strip_comment_counts: false` — see
-  `example-site.yaml`.
+  `wpfreeze/example-site.yaml`.
 - **WordPress's password-protected-post prompt is detected and removed
   like any other form** — via core's own fixed `class="post-password-form"`
   (baked into `get_the_password_form()`, theme-independent), and reported
@@ -628,8 +647,8 @@ touching the capture, so re-running is always safe. In that tree:
   completely untouched instead, for a site owner planning to wire up a
   replacement (a static index, a hosted search service) rather than just
   lose search entirely — this doesn't make the form functional as-is,
-  just raw material to repurpose; see `example-site.yaml` for the exact
-  caveat. Pages with one left this way are listed in the cleanup
+  just raw material to repurpose; see `wpfreeze/example-site.yaml` for the
+  exact caveat. Pages with one left this way are listed in the cleanup
   checklist's own "Search forms left in place" section.
 - **Divi's newsletter/subscribe module goes with its caption, not just
   the form.** Detected by the module's own hardcoded `et_pb_newsletter`
@@ -709,7 +728,7 @@ before confirming. Neither remote is required to write the script itself
 — an unconfigured mode just errors clearly, naming which config key to
 add, when you actually try to run it.
 
-See [`example-site.yaml`](example-site.yaml) for both `upload.remote` and
+See [`example-site.yaml`](wpfreeze/example-site.yaml) for both `upload.remote` and
 `upload.prod_remote`.
 
 ## Offline search

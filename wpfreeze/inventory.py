@@ -1,8 +1,6 @@
-"""Inventory stage: assemble the authoritative URL set before crawling.
-
-See the acquisition design notes, "Stage 1 -- Inventory". Parsing logic here is pure
-and network-free by design (the doc's test strategy requires the WXR
-parsing and the sitemap/REST parsing to be unit-testable against
+"""Stage 1 -- inventory: assemble the authoritative URL set before
+crawling. Parsing logic here is pure and network-free by design (the WXR
+parsing and the sitemap/REST parsing have to be unit-testable against
 fixtures); the network-orchestrating functions call out to wpfreeze.fetch
 for the actual HTTP requests.
 """

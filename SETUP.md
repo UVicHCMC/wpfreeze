@@ -44,7 +44,7 @@ Run the real acquisition now? [y/N]:
 ```
 
 It writes a normal site config YAML (the same shape documented in
-`example-site.yaml`) and offers to dry-run and then run the real
+`wpfreeze/example-site.yaml`) and offers to dry-run and then run the real
 acquisition immediately. The written file is ordinary afterward — the
 normal way to run it from here on is `wpfreeze freeze www-example-com`
 (runs the config's declared `freeze.steps`, default acquire/build/validate,
@@ -57,13 +57,15 @@ has a short list of what people tend to add first.
 
 If you answer yes to the WXR-export question, you'll be asked for the
 path to the file; it's written into the config as an optional
-`xml_backup:` key that augments the sitemap/REST API inventory the same
-way a live database connection did in an earlier design, but as a plain
-file requiring no local database setup at all.
+`xml_backup:` key. That file becomes a third inventory source alongside
+the sitemap and REST API — content some plugins hide from both still gets
+caught — with no database access required.
 
 ## Fully manual path
 
-Copy `example-site.yaml`, fill in the values, and run:
+Copy `wpfreeze/example-site.yaml` (in a checkout; an installed copy prints
+its path at the end of `wpfreeze wizard`, or fetch it from GitHub), fill
+in the values, and run:
 
 ```
 wpfreeze freeze your-site

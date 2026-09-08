@@ -826,7 +826,7 @@ def build_site(
                 # src=...> is already a correct relative local path, and
                 # the rewriter would otherwise try (and fail) to resolve
                 # it against the manifest lookup, inflating the
-                # unresolved-reference count. See the offline-search design notes sec. 5.
+                # unresolved-reference count.
                 script_src = relative_link(record.output_path, SEARCH_ASSET_PATH)
                 apply_search(soup, search, stats.search, script_src, record.output_path)
             destination.write_text(str(soup), encoding="utf-8")
@@ -1040,8 +1040,7 @@ def write_build_report(
     pattern as `verify`: it is not a BuildStats field (scan_content_issues
     reads the finished site_dir after build_site returns, not during its
     per-page loop, and run_search_index needs the identical result shape
-    without ever calling build_site at all -- see
-    the content-checks design notes sec 2). None means search was
+    without ever calling build_site at all). None means search was
     disabled, distinct from running and finding nothing.
     """
     path = output_dir / "build-report.json"

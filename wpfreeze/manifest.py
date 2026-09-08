@@ -37,9 +37,9 @@ class Source(str, Enum):
     NONE = "none"
 
 
-# Flags recorded during Stage 5 analysis (see the acquisition design notes). This is
-# not an enforced enum -- flags are free-form strings -- just named
-# constants so callers don't retype the literal.
+# Flags recorded during Stage 5 analysis. This is not an enforced enum --
+# flags are free-form strings -- just named constants so callers don't
+# retype the literal.
 FLAG_ORPHAN = "orphan"
 FLAG_UNLISTED = "unlisted"
 FLAG_CONTAINS_FORM = "contains_form"

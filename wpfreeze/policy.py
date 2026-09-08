@@ -556,10 +556,10 @@ def _strip_login_links(soup: BeautifulSoup, stats: PolicyStats) -> None:
     Unwrapped rather than decomposed for the same reason dead fragment
     links are: removing body text is a more invasive edit than removing a
     dead destination, and a themed "Log in" sitting in a meta widget is
-    harmless as plain text. Found in the 2026-08-28 sign-off run, where
-    247 WordPress.com /log-in URLs -- one per page, each with its own
-    ?redirect_to= query -- made up 71% of the "broken external links"
-    report, all of them 403s from bot protection rather than real breakage.
+    harmless as plain text. On one real 248-page site, 247 WordPress.com
+    /log-in URLs -- one per page, each with its own ?redirect_to= query --
+    made up 71% of the "broken external links" report, all of them 403s
+    from bot protection rather than real breakage.
     """
     for anchor in soup.find_all("a", href=True):
         if _is_login_link(anchor["href"]):

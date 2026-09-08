@@ -1,7 +1,5 @@
-"""Fixpoint crawl: fetch the manifest's pending queue, extract links,
-discover more pending URLs, and repeat until none remain.
-
-See the acquisition design notes, "Stage 2 -- Crawl to fixpoint".
+"""Stage 2 -- fixpoint crawl: fetch the manifest's pending queue, extract
+links, discover more pending URLs, and repeat until none remain.
 """
 from __future__ import annotations
 
@@ -240,11 +238,11 @@ def admit_link(link, profile: SiteProfile) -> str | None:
     how this page looks, so it is still fetched and localized under
     "render even if external".
 
-    Per the acquisition design notes, "Link extraction": <script> scanning is scoped
-    to internal hosts/uploads paths -- unlike genuine src/CSS/preload/
-    og:image contexts, a script-derived match is only a URL-shaped-string
-    heuristic (JS comments, license/source-map mentions, tracking config)
-    and gets no "render even if external" allowance.
+    <script> scanning is scoped to internal hosts/uploads paths -- unlike
+    genuine src/CSS/preload/og:image contexts, a script-derived match is
+    only a URL-shaped-string heuristic (JS comments, license/source-map
+    mentions, tracking config) and gets no "render even if external"
+    allowance.
 
     iframe[src] gets a narrower version of the same treatment: admitted
     when `owned` (a same-site or same-network-sibling embed -- genuinely

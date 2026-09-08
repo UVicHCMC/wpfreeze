@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
 import requests
 
+from wpfreeze import validate as validate_mod
 from wpfreeze.validate import (
     VnuUnavailable,
     ensure_vnu_jar,
+    ensure_vnu_native,
     format_validation_summary,
+    resolve_vnu,
     validate_site,
     write_validation_report,
 )
@@ -437,3 +442,266 @@ def test_an_unreadable_stylesheet_is_caught_too(tmp_path: Path, monkeypatch):
         assert "locked.css" in str(excinfo.value)
     finally:
         locked.chmod(0o644)
+
+
+# ---------------------------------------------------------------------------
+# resolve_vnu: hybrid checker resolution (system java + jar, or bundled image)
+# ---------------------------------------------------------------------------
+
+
+def _checker_probe(monkeypatch, *failing: str):
+    """Stub the `--version` probe resolve_vnu runs over each candidate:
+    every command whose first argument is listed in `failing` reports a
+    reason it cannot run, everything else reports None (works). Returns
+    the list of probed commands, in order."""
+    probed: list[list[str]] = []
+
+    def _probe(cmd, timeout=60.0):
+        probed.append(list(cmd))
+        return "UnsupportedClassVersionError" if cmd[0] in failing else None
+
+    monkeypatch.setattr(validate_mod, "_checker_failure", _probe)
+    return probed
+
+
+def test_resolve_vnu_pinned_jar_with_java(tmp_path: Path, monkeypatch):
+    jar = tmp_path / "vnu.jar"
+    jar.write_bytes(b"jar")
+    monkeypatch.setattr(validate_mod.shutil, "which", lambda name: "/usr/bin/java")
+    _checker_probe(monkeypatch)
+
+    assert resolve_vnu(jar) == ["java", "-jar", str(jar)]
+
+
+def test_resolve_vnu_pinned_jar_without_java_is_actionable(tmp_path: Path, monkeypatch):
+    jar = tmp_path / "vnu.jar"
+    jar.write_bytes(b"jar")
+    monkeypatch.setattr(validate_mod.shutil, "which", lambda name: None)
+
+    with pytest.raises(VnuUnavailable) as excinfo:
+        resolve_vnu(jar)
+    assert "no `java` is on PATH" in str(excinfo.value)
+
+
+def test_resolve_vnu_pinned_executable_is_run_directly(tmp_path: Path, monkeypatch):
+    vnu = tmp_path / "vnu"
+    vnu.write_text("#!/bin/sh\n")
+    vnu.chmod(0o755)
+    monkeypatch.setattr(validate_mod.shutil, "which", lambda name: None)  # no java needed
+    _checker_probe(monkeypatch)
+
+    assert resolve_vnu(vnu) == [str(vnu)]
+
+
+def test_resolve_vnu_pinned_path_that_does_not_exist(tmp_path: Path):
+    with pytest.raises(VnuUnavailable) as excinfo:
+        resolve_vnu(tmp_path / "nope")
+    assert "does not exist" in str(excinfo.value)
+
+
+def test_resolve_vnu_no_pin_prefers_system_java_and_jar(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(validate_mod.shutil, "which", lambda name: "/usr/bin/java")
+    monkeypatch.setattr(validate_mod, "ensure_vnu_jar", lambda **kw: Path("/cache/vnu.jar"))
+    called_native = []
+    monkeypatch.setattr(validate_mod, "ensure_vnu_native", lambda **kw: called_native.append(1))
+    _checker_probe(monkeypatch)
+
+    assert resolve_vnu(None) == ["java", "-jar", "/cache/vnu.jar"]
+    assert called_native == []
+
+
+def test_resolve_vnu_no_pin_no_java_falls_back_to_bundled_image(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(validate_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(validate_mod, "ensure_vnu_native", lambda **kw: Path("/cache/vnu-runtime-image/bin/vnu"))
+    called_jar = []
+    monkeypatch.setattr(validate_mod, "ensure_vnu_jar", lambda **kw: called_jar.append(1))
+    _checker_probe(monkeypatch)
+
+    assert resolve_vnu(None) == ["/cache/vnu-runtime-image/bin/vnu"]
+    assert called_jar == []
+
+
+
+def test_resolve_vnu_falls_back_to_the_bundled_image_when_the_system_java_cannot_run_the_jar(
+    tmp_path: Path, monkeypatch
+):
+    """`java` on PATH is not the same claim as `java` able to run the
+    current vnu.jar -- a JVM older than the release's target fails with an
+    UnsupportedClassVersionError. Before the probe this surfaced as a
+    mid-validation failure (exit 2, and inside `freeze` an aborted run)
+    with the self-contained image that would have worked never tried."""
+    monkeypatch.setattr(validate_mod.shutil, "which", lambda name: "/usr/bin/java")
+    monkeypatch.setattr(validate_mod, "ensure_vnu_jar", lambda **kw: Path("/cache/vnu.jar"))
+    monkeypatch.setattr(validate_mod, "ensure_vnu_native", lambda **kw: Path("/cache/vnu-runtime-image/bin/vnu"))
+    probed = _checker_probe(monkeypatch, "java")
+
+    assert resolve_vnu(None) == ["/cache/vnu-runtime-image/bin/vnu"]
+    assert probed == [
+        ["java", "-jar", "/cache/vnu.jar"],
+        ["/cache/vnu-runtime-image/bin/vnu"],
+    ]
+
+
+def test_resolve_vnu_raises_when_no_java_works_and_the_bundled_image_does_not_run_either(
+    tmp_path: Path, monkeypatch
+):
+    """Nothing left to fall back to -- and this is the exception
+    `_freeze_validate_step` turns into a skipped step rather than a failed
+    freeze, so it has to be raised, not returned as a dead command."""
+    monkeypatch.setattr(validate_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(validate_mod, "ensure_vnu_native", lambda **kw: Path("/cache/vnu-runtime-image/bin/vnu"))
+    _checker_probe(monkeypatch, "/cache/vnu-runtime-image/bin/vnu")
+
+    with pytest.raises(VnuUnavailable) as excinfo:
+        resolve_vnu(None)
+    assert "could not be run" in str(excinfo.value)
+
+
+def test_resolve_vnu_never_silently_replaces_a_pinned_checker(tmp_path: Path, monkeypatch):
+    """A pin is a choice. If it cannot run, say so -- downloading 66 MB
+    behind the operator's back is not a fix for a config they wrote."""
+    jar = tmp_path / "vnu.jar"
+    jar.write_bytes(b"jar")
+    monkeypatch.setattr(validate_mod.shutil, "which", lambda name: "/usr/bin/java")
+    called_native = []
+    monkeypatch.setattr(validate_mod, "ensure_vnu_native", lambda **kw: called_native.append(1))
+    _checker_probe(monkeypatch, "java")
+
+    with pytest.raises(VnuUnavailable) as excinfo:
+        resolve_vnu(jar)
+    assert str(jar) in str(excinfo.value)
+    assert "UnsupportedClassVersionError" in str(excinfo.value)
+    assert called_native == []
+
+
+def test_checker_failure_reports_a_reason_for_a_command_that_cannot_run(tmp_path: Path):
+    """The probe itself, unstubbed: a path that is not executable."""
+    assert validate_mod._checker_failure([str(tmp_path / "not-a-real-binary")]) is not None
+
+
+def test_ensure_vnu_native_refuses_off_linux_rather_than_fetching_linux_binaries(tmp_path: Path, monkeypatch):
+    """vnu.linux.zip is one platform's build. Downloading 66 MB of it to
+    fail with "Exec format error" is a worse way to learn that than being
+    told to install a JRE."""
+    monkeypatch.setattr(validate_mod.sys, "platform", "darwin")
+    session = _FakeSession(response=_FakeResponse(200, content=_fake_linux_zip()))
+
+    with pytest.raises(VnuUnavailable) as excinfo:
+        ensure_vnu_native(session=session, cache_dir=tmp_path / "cache")
+    assert "Linux-only" in str(excinfo.value)
+    assert session.requests == []
+
+
+# ---------------------------------------------------------------------------
+# ensure_vnu_native: download + unpack the self-contained runtime image
+# ---------------------------------------------------------------------------
+
+
+def _fake_linux_zip(launcher_body: bytes = b"#!/bin/sh\nexec java -m vnu ...\n") -> bytes:
+    """A minimal stand-in for vnu.linux.zip: one top-level
+    `vnu-runtime-image/` with an executable `bin/vnu` inside it."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        info = zipfile.ZipInfo("vnu-runtime-image/bin/vnu")
+        info.external_attr = 0o755 << 16
+        zf.writestr(info, launcher_body)
+        zf.writestr("vnu-runtime-image/lib/vnu.jar", b"payload")
+    return buf.getvalue()
+
+
+def test_ensure_vnu_native_downloads_and_unpacks_a_runnable_launcher(tmp_path: Path):
+    cache_dir = tmp_path / "cache"
+    session = _FakeSession(
+        response=_FakeResponse(200, content=_fake_linux_zip(), headers={"ETag": '"z1"', "Last-Modified": "Tue"})
+    )
+
+    launcher = ensure_vnu_native(session=session, cache_dir=cache_dir)
+
+    assert launcher == cache_dir / "vnu-runtime-image" / "bin" / "vnu"
+    assert launcher.is_file()
+    assert launcher.stat().st_mode & 0o111  # executable bit restored
+    assert not (cache_dir / "vnu.linux.zip.part").exists()  # temp cleaned up
+    meta = json.loads((cache_dir / "vnu.linux.zip.meta.json").read_text())
+    assert meta == {"etag": '"z1"', "last_modified": "Tue"}
+
+
+def test_ensure_vnu_native_uses_cache_on_304_and_sends_etag(tmp_path: Path):
+    cache_dir = tmp_path / "cache"
+    image = cache_dir / "vnu-runtime-image" / "bin"
+    image.mkdir(parents=True)
+    (image / "vnu").write_text("cached")
+    (cache_dir / "vnu.linux.zip.meta.json").write_text(json.dumps({"etag": '"z1"', "last_modified": "Tue"}))
+    session = _FakeSession(response=_FakeResponse(304))
+
+    launcher = ensure_vnu_native(session=session, cache_dir=cache_dir)
+
+    assert launcher.read_text() == "cached"
+    assert session.requests[0]["headers"] == {"If-None-Match": '"z1"'}
+
+
+def test_ensure_vnu_native_falls_back_to_cache_when_offline(tmp_path: Path):
+    cache_dir = tmp_path / "cache"
+    image = cache_dir / "vnu-runtime-image" / "bin"
+    image.mkdir(parents=True)
+    (image / "vnu").write_text("stale-but-usable")
+    session = _FakeSession(exc=requests.ConnectionError("offline"))
+
+    launcher = ensure_vnu_native(session=session, cache_dir=cache_dir)
+
+    assert launcher.read_text() == "stale-but-usable"
+
+
+def test_ensure_vnu_native_raises_when_no_cache_and_download_fails(tmp_path: Path):
+    session = _FakeSession(exc=requests.ConnectionError("offline"))
+
+    with pytest.raises(VnuUnavailable):
+        ensure_vnu_native(session=session, cache_dir=tmp_path / "cache")
+
+
+def test_ensure_vnu_native_raises_on_a_corrupt_zip_with_no_cache(tmp_path: Path):
+    session = _FakeSession(response=_FakeResponse(200, content=b"not a zip at all"))
+
+    with pytest.raises(VnuUnavailable) as excinfo:
+        ensure_vnu_native(session=session, cache_dir=tmp_path / "cache")
+    assert "unpack" in str(excinfo.value)
+
+
+def test_ensure_vnu_native_replaces_a_previous_image_atomically(tmp_path: Path):
+    cache_dir = tmp_path / "cache"
+    old = cache_dir / "vnu-runtime-image"
+    (old / "bin").mkdir(parents=True)
+    (old / "bin" / "vnu").write_text("old")
+    (old / "stale-file").write_text("should be gone after refresh")
+    session = _FakeSession(response=_FakeResponse(200, content=_fake_linux_zip(), headers={"ETag": '"z2"'}))
+
+    launcher = ensure_vnu_native(session=session, cache_dir=cache_dir)
+
+    assert launcher.read_bytes().startswith(b"#!/bin/sh")
+    assert not (cache_dir / "vnu-runtime-image" / "stale-file").exists()
+    assert not (cache_dir / "vnu-runtime-image.new").exists()
+
+
+# ---------------------------------------------------------------------------
+# _run_vnu / validate_site accept a resolved command list (native form)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_site_accepts_a_native_command_list(monkeypatch, tmp_path: Path):
+    site_dir = _site_with_pages(tmp_path, ["a.html"])
+    calls = _fake_run(monkeypatch, stdout=json.dumps({"messages": []}))
+
+    report = validate_site(["/cache/vnu-runtime-image/bin/vnu"], site_dir)
+
+    assert report.ok
+    assert calls[0][0] == "/cache/vnu-runtime-image/bin/vnu"
+    assert "java" not in calls[0]
+    assert "--skip-non-html" in calls[0]
+
+
+def test_validate_site_infers_java_for_a_bare_jar_path(monkeypatch, tmp_path: Path):
+    site_dir = _site_with_pages(tmp_path, ["a.html"])
+    calls = _fake_run(monkeypatch, stdout=json.dumps({"messages": []}))
+
+    validate_site(Path("/cache/vnu.jar"), site_dir)
+
+    assert calls[0][:3] == ["java", "-jar", "/cache/vnu.jar"]

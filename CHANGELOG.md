@@ -3,6 +3,35 @@
 Notable changes to wpfreeze. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `wpfreeze validate` no longer requires a system Java. When `java` is on
+  `PATH` *and can run the jar* it still fetches the ~32 MB `vnu.jar`;
+  otherwise it fetches the validator project's self-contained
+  `vnu.linux.zip` (~66 MB, bundles its own runtime). The chosen checker is
+  verified with a `--version` run before use, so a JVM too old for the
+  current release falls back to the self-contained build instead of
+  failing mid-validation. Both cache under `~/.cache/wpfreeze/`, and each
+  logs a line before a download starts. The `vnu_jar:` config key now
+  accepts either a `.jar` or a path to a `vnu` executable; a pinned
+  checker that cannot run is reported, never silently replaced.
+- The annotated `example-site.yaml` now ships inside the package
+  (`wpfreeze/example-site.yaml`), so an installed copy has it on disk
+  rather than only a checkout. `wpfreeze wizard` prints its path; in a
+  checkout it also moved under `wpfreeze/`. The `SETUP.md` /
+  `EXTRA-CONFIG-OPTIONS.md` pointers now resolve to a GitHub URL when
+  those (deliberately unpackaged) files aren't beside the install.
+
+### Fixed
+
+- `wpfreeze freeze` no longer aborts with exit `2` when no HTML checker can
+  be obtained (no JVM and nothing cached). The `validate` step is marked
+  `skipped` in the wrap-up and the sequence continues — `validate` is
+  informational and `acquire`/`build` have already produced the archive.
+  Run on its own, `wpfreeze validate` still exits `2` in that situation.
+
 ## [1.0.0] — 2026-08-28
 
 First stable release. Development ran from 2026-07-06 over 101 commits; the
@@ -104,7 +133,11 @@ for site owners retiring a site who need the result to *replace* the original.
 
 ### Known limitations
 
-- WXR exports alone cannot rebuild a working site; see `the WXR limitations notes`.
+- A WXR export alone cannot rebuild a working site: it carries post/page
+  content and metadata, not media files, the theme, or rendered markup.
+  wpfreeze uses it only as a third inventory source to cross-check the
+  live crawl against.
 - VNU validation requires a JVM. It is offered only when `java` is on `PATH`.
+  (Lifted after 1.0.0 -- see Unreleased.)
 - Sites behind aggressive CDN rate limiting may need a slower `rate_limit`.
 - No CI. For a single-maintainer tool this is a deliberate omission.

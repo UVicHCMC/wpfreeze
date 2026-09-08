@@ -26,6 +26,15 @@ class _ScriptedHandlerBase(http.server.BaseHTTPRequestHandler):
     call_counts: dict[str, int]
 
     def do_GET(self):  # noqa: N802 (stdlib method name)
+        # The timeout/backoff tests deliberately let the client give up on a
+        # slow response; the server then writes to a socket the client has
+        # already closed. That is the scenario under test, not a failure --
+        # swallow the resulting BrokenPipeError/ConnectionResetError so a
+        # green run does not print a socketserver traceback mid-suite.
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            self._respond()
+
+    def _respond(self):
         path = self.path
         if path in self.sleep_paths:
             time.sleep(self.sleep_paths[path])

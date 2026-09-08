@@ -125,7 +125,7 @@ def test_log_issues_counts_warning_error_critical_lines(tmp_path: Path):
         "2026-07-10 12:00:00,000 DEBUG wpfreeze.fetch: attempt 1 for https://example.com/ -> 200\n"
         "2026-07-10 12:00:01,000 WARNING wpfreeze.inventory: stripped 3 XML-invalid character(s)\n"
         "2026-07-10 12:00:02,000 WARNING wpfreeze.inventory: stripped 3 XML-invalid character(s)\n"
-        "2026-07-10 12:00:03,000 CRITICAL wpfreeze.cli: acquire crashed with an unhandled exception\n",
+        "2026-07-10 12:00:03,000 CRITICAL wpfreeze.cli: `acquire` crashed with an unhandled exception\n",
         encoding="utf-8",
     )
     manifest = Manifest()

@@ -16,7 +16,7 @@ _UNRESERVED = set(string.ascii_letters + string.digits + "-._~")
 
 # Query-string keys that encode a WordPress permalink fallback and are
 # worth keeping until a pretty permalink is known for the content they
-# point at (see the acquisition design notes, URL normalization / XML backup inventory).
+# point at.
 # author/cat/tag/taxonomy/term are WordPress's own core fallback query
 # vars for archive pages (the same ones the WXR inventory's
 # wxr_author_urls/wxr_term_urls build, e.g. "?author=6", "?cat=5",
@@ -208,7 +208,7 @@ def normalize_url(
 ) -> str:
     """Return the canonical form of `url` given a probed SiteProfile.
 
-    Steps (see the acquisition design notes, "URL normalization"):
+    Steps:
     - lowercase scheme/host; upgrade http -> https for the site's own
       host(s), only if the site is known to serve https
     - strip the fragment always

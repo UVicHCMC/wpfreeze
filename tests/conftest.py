@@ -7,6 +7,18 @@ import warnings
 
 import pytest
 
+# Imported here, at collection time, rather than left to whichever test
+# first reaches one of wpfreeze's deferred imports: requests (pulled in by
+# wpfreeze.cli) installs warning filters when it is imported, and the guard
+# below snapshots warnings.filters. A first import inside a test body
+# therefore reads as "this test mutated process state and did not restore
+# it" -- which is how tests/test_projects.py and tests/test_wizard.py
+# failed the guard when either file was run on its own, while passing in a
+# full-suite run where something earlier had already imported cli. Doing it
+# up front puts the side effect before any snapshot is taken.
+import wpfreeze.cli  # noqa: F401
+import wpfreeze.wizard  # noqa: F401
+
 
 @pytest.fixture(autouse=True)
 def _restore_wpfreeze_logger_state():

@@ -29,6 +29,25 @@ from wpfreeze.manifest import Manifest, Status
 from fixture_site import FixtureSite
 
 
+@pytest.fixture(autouse=True)
+def _no_vnu_downloads(monkeypatch):
+    """`run_freeze` -> _freeze_validate_step -> resolve_vnu() will fetch a
+    real ~32 MB vnu.jar (or the ~66 MB runtime image) if it is allowed to,
+    and then run it. Most tests here stub `run_validate` but not the
+    resolution in front of it, so neutralise the two downloaders and the
+    `--version` probe module-wide: resolve_vnu still runs its java/no-java
+    branching, just against fake artefact paths that "work". A test that
+    wants the failure path patches `wpfreeze.cli.resolve_vnu` itself,
+    which takes precedence over this.
+    """
+    monkeypatch.setattr("wpfreeze.validate.ensure_vnu_jar", lambda **kw: Path("/stub/vnu.jar"))
+    monkeypatch.setattr(
+        "wpfreeze.validate.ensure_vnu_native",
+        lambda **kw: Path("/stub/vnu-runtime-image/bin/vnu"),
+    )
+    monkeypatch.setattr("wpfreeze.validate._checker_failure", lambda cmd, timeout=60.0: None)
+
+
 def _write_yaml(path: Path, data: dict) -> Path:
     path.write_text(yaml.safe_dump(data))
     return path
@@ -174,10 +193,10 @@ def test_load_config_search_settings_plumb_through(tmp_path: Path):
 def test_load_config_picks_up_explicit_name(tmp_path: Path):
     path = _write_yaml(
         tmp_path / "site.yaml",
-        {"name": "landscapes", "base_url": "https://example.com/", "output_dir": "out"},
+        {"name": "examplesite", "base_url": "https://example.com/", "output_dir": "out"},
     )
     config = load_config(path)
-    assert config.name == "landscapes"
+    assert config.name == "examplesite"
 
 
 def test_load_config_name_falls_back_to_file_stem(tmp_path: Path):
@@ -333,8 +352,9 @@ def test_search_disabled_never_raises_regardless_of_policy(tmp_path: Path):
 
 
 def test_example_site_yaml_parses():
-    repo_root = Path(__file__).resolve().parent.parent
-    config = load_config(repo_root / "example-site.yaml")
+    from wpfreeze.wizard import example_config_path
+
+    config = load_config(example_config_path())
     assert config.xml_backup is None
 
 
@@ -428,9 +448,8 @@ def test_run_acquire_dry_run_fetches_nothing_beyond_inventory(tmp_path: Path):
 def test_run_acquire_dry_run_writes_a_readiness_verdict(tmp_path: Path, capsys):
     """End-to-end: assess_dry_run is computed from the real discover_
     inventory sources/manifest _run_acquire_locked has at hand, and reaches
-    the console, report.json, and report.html -- see
-    the dry-run readiness design notes for the individual rules' own unit tests
-    (test_report.py), this just proves the wiring."""
+    the console, report.json, and report.html. The individual rules have
+    their own unit tests in test_report.py; this just proves the wiring."""
     with FixtureSite() as site:
         config = _config_for(site, tmp_path / "out")
         exit_code = run_acquire(config, resume=False, dry_run=True)
@@ -669,11 +688,11 @@ def test_main_creates_logs_directory_with_content(tmp_path: Path):
 
 def test_main_status_by_project_name_behaves_like_by_config(tmp_path: Path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    _write_yaml(tmp_path / "landscapes.yaml", {"name": "landscapes", "base_url": "https://example.com/", "output_dir": "out"})
+    _write_yaml(tmp_path / "examplesite.yaml", {"name": "examplesite", "base_url": "https://example.com/", "output_dir": "out"})
 
-    exit_code_by_name = main(["status", "landscapes"])
+    exit_code_by_name = main(["status", "examplesite"])
     by_name = capsys.readouterr().out
-    exit_code_by_config = main(["status", "--config", "landscapes.yaml"])
+    exit_code_by_config = main(["status", "--config", "examplesite.yaml"])
     by_config = capsys.readouterr().out
 
     assert exit_code_by_name == exit_code_by_config == 0
@@ -682,9 +701,9 @@ def test_main_status_by_project_name_behaves_like_by_config(tmp_path: Path, caps
 
 def test_main_project_and_config_together_is_an_error(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    _write_yaml(tmp_path / "landscapes.yaml", {"name": "landscapes", "base_url": "https://example.com/", "output_dir": "out"})
+    _write_yaml(tmp_path / "examplesite.yaml", {"name": "examplesite", "base_url": "https://example.com/", "output_dir": "out"})
 
-    assert main(["status", "landscapes", "--config", "landscapes.yaml"]) == 2
+    assert main(["status", "examplesite", "--config", "examplesite.yaml"]) == 2
 
 
 def test_main_neither_project_nor_config_is_an_error(tmp_path: Path, monkeypatch):
@@ -717,14 +736,14 @@ def test_main_help_matches_bare_dash_h(capsys):
 
 def test_main_unknown_project_name_exits_2_with_known_names_listed(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    _write_yaml(tmp_path / "landscapes.yaml", {"name": "landscapes", "base_url": "https://example.com/", "output_dir": "out"})
+    _write_yaml(tmp_path / "examplesite.yaml", {"name": "examplesite", "base_url": "https://example.com/", "output_dir": "out"})
 
     exit_code = main(["status", "nope"])
     out = capsys.readouterr().out
 
     assert exit_code == 2
     assert "no project called nope" in out
-    assert "landscapes" in out
+    assert "examplesite" in out
 
 
 def test_run_status_reports_counts(tmp_path: Path, capsys):
@@ -1103,7 +1122,7 @@ def test_run_build_returns_2_when_pagefind_unavailable(tmp_path: Path, monkeypat
 
 
 # ---------------------------------------------------------------------------
-# search-enabled-but-no-search-form pushback (Part 4 of the freeze UX design notes)
+# search-enabled-but-no-search-form pushback
 # ---------------------------------------------------------------------------
 
 
@@ -1377,10 +1396,10 @@ def test_run_validate_writes_cleanup_todo(tmp_path: Path, monkeypatch):
     (output_dir / "site").mkdir(parents=True)
     config = SiteConfig(base_url="https://example.com/", output_dir=output_dir)
 
-    monkeypatch.setattr("wpfreeze.cli.ensure_vnu_jar", lambda: Path("/fake/vnu.jar"))
+    monkeypatch.setattr("wpfreeze.cli.resolve_vnu", lambda pinned: ["java", "-jar", "/fake/vnu.jar"])
     monkeypatch.setattr(
         "wpfreeze.cli.validate_site",
-        lambda jar, target: ValidationReport(documents_checked=1, total_messages=0, issues=[]),
+        lambda cmd, target: ValidationReport(documents_checked=1, total_messages=0, issues=[]),
     )
 
     run_validate(config, None)
@@ -1397,10 +1416,10 @@ def test_run_validate_no_todo_flag_skips_cleanup_todo(tmp_path: Path, monkeypatc
     (output_dir / "site").mkdir(parents=True)
     config = SiteConfig(base_url="https://example.com/", output_dir=output_dir)
 
-    monkeypatch.setattr("wpfreeze.cli.ensure_vnu_jar", lambda: Path("/fake/vnu.jar"))
+    monkeypatch.setattr("wpfreeze.cli.resolve_vnu", lambda pinned: ["java", "-jar", "/fake/vnu.jar"])
     monkeypatch.setattr(
         "wpfreeze.cli.validate_site",
-        lambda jar, target: ValidationReport(documents_checked=1, total_messages=0, issues=[]),
+        lambda cmd, target: ValidationReport(documents_checked=1, total_messages=0, issues=[]),
     )
 
     run_validate(config, None, write_todo=False)
@@ -1430,10 +1449,10 @@ def test_run_validate_body_calls_progress_finish_on_success(tmp_path, monkeypatc
     (output_dir / "site").mkdir(parents=True)
     config = SiteConfig(base_url="https://example.com/", output_dir=output_dir)
 
-    monkeypatch.setattr("wpfreeze.cli.ensure_vnu_jar", lambda: Path("/fake/vnu.jar"))
+    monkeypatch.setattr("wpfreeze.cli.resolve_vnu", lambda pinned: ["java", "-jar", "/fake/vnu.jar"])
     monkeypatch.setattr(
         "wpfreeze.cli.validate_site",
-        lambda jar, target: ValidationReport(documents_checked=1, total_messages=0, issues=[]),
+        lambda cmd, target: ValidationReport(documents_checked=1, total_messages=0, issues=[]),
     )
 
     progress = _FakeProgress()
@@ -1442,19 +1461,22 @@ def test_run_validate_body_calls_progress_finish_on_success(tmp_path, monkeypatc
 
 
 def test_run_validate_body_calls_progress_finish_when_vnu_is_unavailable(tmp_path, monkeypatch):
+    """A checker that resolved but then died under the spinner -- vnu
+    killed mid-walk, truncated JSON. (An unobtainable checker no longer
+    reaches here: run_validate resolves before opening the spinner.)"""
     from wpfreeze.cli import VnuUnavailable, _run_validate_body
 
     output_dir = tmp_path / "out"
     (output_dir / "site").mkdir(parents=True)
     config = SiteConfig(base_url="https://example.com/", output_dir=output_dir)
 
-    def _raise():
-        raise VnuUnavailable("no java on PATH")
+    def _raise(cmd, target):
+        raise VnuUnavailable("vnu produced no output (exit code 1, no output)")
 
-    monkeypatch.setattr("wpfreeze.cli.ensure_vnu_jar", _raise)
+    monkeypatch.setattr("wpfreeze.cli.validate_site", _raise)
 
     progress = _FakeProgress()
-    exit_code = _run_validate_body(config, output_dir / "site", False, progress)
+    exit_code = _run_validate_body(config, output_dir / "site", False, progress, ["java", "-jar", "/fake/vnu.jar"])
     assert exit_code == 2
     # The checkmark still resolves the "Validating" phase even on failure --
     # it marks the tracked phase as over, not that validation succeeded.
@@ -1473,8 +1495,8 @@ def _tty_config(tmp_path: Path, monkeypatch) -> SiteConfig:
 
 
 def test_acquire_step_timing_excludes_time_spent_in_followup_prompts(tmp_path: Path, monkeypatch):
-    """Regression, found in the 2026-08-27 sign-off run: a 12-minute crawl was
-    reported as "acquire 4h19m". The interactive follow-up offers ran inside
+    """Regression: a 12-minute crawl was once reported as "acquire 4h19m".
+    The interactive follow-up offers ran inside
     the closure time_step was timing, so the acquire step absorbed both the
     human's wait at the prompt and the whole nested build+validate."""
     import time as _time
@@ -1517,7 +1539,6 @@ def test_offered_build_and_validate_are_timed_as_separate_steps(tmp_path: Path, 
     config = _tty_config(tmp_path, monkeypatch)
     prompts = iter(["y", "y"])
     monkeypatch.setattr("builtins.input", lambda *a: next(prompts))
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/java")
 
     kwargs_seen: list[dict] = []
     monkeypatch.setattr(cli, "run_build", lambda *a, **k: kwargs_seen.append(k) or 0)
@@ -1616,13 +1637,12 @@ def test_build_validate_offer_declines_build_skips_validate(tmp_path: Path, monk
     assert validate_called == []
 
 
-def test_build_validate_offer_runs_both_when_accepted_and_java_present(tmp_path: Path, monkeypatch):
+def test_build_validate_offer_runs_both_when_accepted(tmp_path: Path, monkeypatch):
     import wpfreeze.cli as cli
 
     config = _tty_config(tmp_path, monkeypatch)
     answers = iter(["y", "y"])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/java")
     build_called = []
     validate_called = []
     monkeypatch.setattr(cli, "run_build", lambda *a, **k: build_called.append(1) or 0)
@@ -1634,32 +1654,23 @@ def test_build_validate_offer_runs_both_when_accepted_and_java_present(tmp_path:
     assert validate_called == [1]
 
 
-def test_build_validate_offer_skips_validate_offer_without_java(tmp_path: Path, monkeypatch, capsys):
+def test_build_validate_offer_still_offers_validate_without_java(tmp_path: Path, monkeypatch):
+    """A machine with no JVM can still validate via the self-contained
+    runtime image, so the offer is no longer pre-gated on `java` -- both
+    prompts are shown, and resolve_vnu inside run_validate handles a
+    genuinely unobtainable checker with a message rather than a crash."""
     import wpfreeze.cli as cli
 
     config = _tty_config(tmp_path, monkeypatch)
-
-    def _fail_on_second_prompt(prompt):
-        raise AssertionError("must not prompt to validate when java is missing")
-
-    prompts = iter(["y"])
-
-    def _input(prompt):
-        try:
-            return next(prompts)
-        except StopIteration:
-            return _fail_on_second_prompt(prompt)
-
-    monkeypatch.setattr("builtins.input", _input)
-    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    answers = iter(["y", "y"])
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
     monkeypatch.setattr(cli, "run_build", lambda *a, **k: 0)
     validate_called = []
     monkeypatch.setattr(cli, "run_validate", lambda *a, **k: validate_called.append(1) or 0)
 
     cli._maybe_offer_build_and_validate(config, _summary(config))
 
-    assert validate_called == []
-    assert "java" in capsys.readouterr().out.lower()
+    assert validate_called == [1]
 
 
 def test_build_validate_offer_skips_validate_when_build_hard_fails(tmp_path: Path, monkeypatch):
@@ -1775,7 +1786,7 @@ def test_main_reports_keyboard_interrupt_instead_of_a_traceback(monkeypatch, cap
 
 def _freeze_config(tmp_path: Path, steps=("acquire", "build", "validate")) -> SiteConfig:
     return SiteConfig(
-        name="landscapes",
+        name="examplesite",
         base_url="https://example.com/",
         output_dir=tmp_path / "out",
         freeze=FreezeSettings(steps=tuple(steps)),
@@ -1861,6 +1872,153 @@ def test_run_freeze_custom_step_order_is_honoured(tmp_path: Path, monkeypatch):
     assert calls == ["build", "acquire", "diagnose"]
 
 
+def test_run_freeze_skips_validate_when_no_checker_can_be_obtained(tmp_path: Path, monkeypatch, capsys):
+    """No JVM and no route to download the bundled checker must not turn a
+    good archive into an exit-2 freeze -- validate is informational and
+    acquire/build already succeeded. The step is noted as skipped and the
+    sequence carries on."""
+    import wpfreeze.cli as cli
+    from wpfreeze.validate import VnuUnavailable
+
+    calls: list[str] = []
+    _patch_step_module(monkeypatch, cli, calls, "acquire", 0)
+    _patch_step_module(monkeypatch, cli, calls, "build", 0)
+
+    def _no_checker(pinned):
+        raise VnuUnavailable("no `java` on PATH and vnu.linux.zip could not be fetched")
+
+    monkeypatch.setattr(cli, "resolve_vnu", _no_checker)
+    run_validate_calls: list[int] = []
+    monkeypatch.setattr(cli, "run_validate", lambda *a, **k: run_validate_calls.append(1) or 0)
+
+    exit_code = run_freeze(config := _freeze_config(tmp_path), config.name)
+
+    assert exit_code == 0
+    assert calls == ["acquire", "build"]  # validate resolved to a skip, never invoked
+    assert run_validate_calls == []
+    out = capsys.readouterr().out
+    assert "Skipping validate" in out
+    assert "skipped (no HTML checker available)" in out  # shows in the wrap-up table
+
+
+def _scripted_clock(*ticks: float):
+    """A stand-in for time.monotonic that returns `ticks` in order and
+    then repeats the last one -- patching the real clock must not make an
+    unrelated call blow up with StopIteration."""
+    remaining = list(ticks)
+
+    def _clock() -> float:
+        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+    return _clock
+
+
+def test_every_permitted_freeze_step_is_actually_runnable(tmp_path: Path, monkeypatch):
+    """`freeze.steps` is validated at load time against
+    FREEZE_PERMITTED_STEPS, but run by a separate dispatch -- the
+    step_runners dict, plus _freeze_validate_step for "validate". A name
+    permitted in one place and absent from the other fails with a KeyError
+    part way through a freeze, after acquire has already run. Every
+    permitted step is asserted runnable here rather than trusting the two
+    lists to be kept in step by hand."""
+    import wpfreeze.cli as cli
+
+    calls: list[str] = []
+    for step in cli.FREEZE_PERMITTED_STEPS:
+        _patch_step_module(monkeypatch, cli, calls, step, 0)
+
+    config = _freeze_config(tmp_path, steps=cli.FREEZE_PERMITTED_STEPS)
+    assert run_freeze(config, config.name) == 0
+    assert calls == list(cli.FREEZE_PERMITTED_STEPS)
+
+
+def test_run_freeze_charges_the_checker_fetch_to_the_validate_step(tmp_path: Path, monkeypatch):
+    """Fetching the checker can cost a connect timeout or most of a 66 MB
+    download. Recording the step at 0.0s (or timing only the validation
+    that followed) makes the wrap-up's own numbers stop adding up to the
+    wall clock, which is how a slow step hides."""
+    import wpfreeze.cli as cli
+
+    calls: list[str] = []
+    _patch_step_module(monkeypatch, cli, calls, "acquire", 0)
+    _patch_step_module(monkeypatch, cli, calls, "build", 0)
+
+    monkeypatch.setattr(cli.time, "monotonic", _scripted_clock(0.0, 5.0))  # 4s fetching, 1s validating
+    monkeypatch.setattr(cli, "resolve_vnu", lambda pinned: ["java", "-jar", "/fake/vnu.jar"])
+    monkeypatch.setattr(cli, "run_validate", lambda *a, **k: 0)
+
+    summary = cli.RunSummary(project="p", base_url="https://example.com/", output_dir=tmp_path)
+    assert cli._freeze_validate_step(_freeze_config(tmp_path), summary) == 0
+    assert summary.steps[-1].step == "validate"
+    assert summary.steps[-1].seconds == pytest.approx(5.0)
+
+
+def test_run_freeze_records_the_time_spent_failing_to_get_a_checker(tmp_path: Path, monkeypatch):
+    """Same reasoning on the skip path -- reaching it can mean a timed-out
+    download, not an instant answer."""
+    import wpfreeze.cli as cli
+    from wpfreeze.validate import VnuUnavailable
+
+    monkeypatch.setattr(cli.time, "monotonic", _scripted_clock(0.0, 30.0))
+    monkeypatch.setattr(cli, "resolve_vnu", lambda pinned: (_ for _ in ()).throw(VnuUnavailable("offline")))
+
+    summary = cli.RunSummary(project="p", base_url="https://example.com/", output_dir=tmp_path)
+    assert cli._freeze_validate_step(_freeze_config(tmp_path), summary) == 0
+    assert summary.steps[-1].seconds == pytest.approx(30.0)
+    assert summary.steps[-1].note == "skipped (no HTML checker available)"
+
+
+def test_run_validate_resolves_the_checker_before_starting_the_spinner(tmp_path: Path, monkeypatch):
+    """Resolution can mean a 32-66 MB download. Running it inside the
+    "Validating ..." spinner labels a multi-minute transfer as validation;
+    it happens before the spinner opens instead."""
+    import wpfreeze.cli as cli
+
+    output_dir = tmp_path / "out"
+    (output_dir / "site").mkdir(parents=True)
+    config = SiteConfig(base_url="https://example.com/", output_dir=output_dir)
+
+    events: list[str] = []
+
+    class _TracingProgress:
+        def __init__(self, *args, **kwargs):
+            events.append("spinner")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def finish(self):
+            pass
+
+    monkeypatch.setattr(cli, "Progress", _TracingProgress)
+    monkeypatch.setattr(cli, "resolve_vnu", lambda pinned: events.append("resolve") or ["/fake/vnu"])
+    monkeypatch.setattr(cli, "validate_site", lambda cmd, target: (_ for _ in ()).throw(AssertionError("unused")))
+    monkeypatch.setattr(cli, "_run_validate_body", lambda *a, **k: 0)
+
+    cli.run_validate(config, output_dir / "site", write_todo=False, print_wrapup=False)
+    assert events == ["resolve", "spinner"]
+
+
+def test_run_freeze_still_aborts_on_a_real_step_failure_after_a_validate_skip(tmp_path: Path, monkeypatch):
+    """A validate skip is exit 0 and must not mask a genuine exit-2 from a
+    later declared step."""
+    import wpfreeze.cli as cli
+    from wpfreeze.validate import VnuUnavailable
+
+    calls: list[str] = []
+    _patch_step_module(monkeypatch, cli, calls, "acquire", 0)
+    _patch_step_module(monkeypatch, cli, calls, "build", 0)
+    _patch_step_module(monkeypatch, cli, calls, "diagnose", 2)
+    monkeypatch.setattr(cli, "resolve_vnu", lambda pinned: (_ for _ in ()).throw(VnuUnavailable("nope")))
+
+    config = _freeze_config(tmp_path, steps=("acquire", "build", "validate", "diagnose"))
+    assert run_freeze(config, config.name) == 2
+    assert calls == ["acquire", "build", "diagnose"]
+
+
 def test_run_freeze_calls_acquire_with_resume_true_when_manifest_exists(tmp_path: Path, monkeypatch):
     import wpfreeze.cli as cli
 
@@ -1879,7 +2037,7 @@ def test_run_freeze_calls_acquire_with_resume_true_when_manifest_exists(tmp_path
     monkeypatch.setattr(cli, "run_build", lambda *a, **k: 0)
     monkeypatch.setattr(cli, "run_validate", lambda *a, **k: 0)
 
-    config = SiteConfig(name="landscapes", base_url="https://example.com/", output_dir=output_dir)
+    config = SiteConfig(name="examplesite", base_url="https://example.com/", output_dir=output_dir)
     run_freeze(config, config.name)
 
     assert captured_kwargs["resume"] is True
@@ -1937,7 +2095,7 @@ def test_run_freeze_suppresses_acquires_followup_offers(tmp_path: Path, monkeypa
     with FixtureSite() as site:
         config = dataclasses.replace(
             _config_for(site, tmp_path / "out"),
-            name="landscapes",
+            name="examplesite",
             freeze=FreezeSettings(steps=("acquire", "build", "validate")),
         )
         run_freeze(config, config.name)
