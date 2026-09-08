@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/wpfreeze.png" alt="wpfreeze" width="192"></p>
+
 # wpfreeze
 
 Acquires a complete, verified local copy of a WordPress site's pages and
