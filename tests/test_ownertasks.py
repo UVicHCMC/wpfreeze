@@ -134,6 +134,86 @@ def test_load_tasks_splits_dead_from_authgated(tmp_path: Path):
     assert {t.detected["status"] for t in tasks.by_group("dead")} == {404, 410, None}
 
 
+def _unresolved(target: str, context: str, page: str = "/p.html") -> dict:
+    return {"target": target, "context": context, "page_output": page, "page": "", "value": target}
+
+
+def test_internal_links_group_by_target_like_section_one(tmp_path: Path):
+    """The decision unit is the target, not the reference: one answer
+    covers every page using it. Section 1 already worked this way; section
+    2 listed one row per occurrence, so a sitewide reference appeared once
+    per page (248 rows for one target on a real capture)."""
+    _write(tmp_path, "broken-external-links.json", _broken_links())
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved_samples": [
+                _unresolved(f"{_BASE}/gone/", "Read more", "/a.html"),
+                _unresolved(f"{_BASE}/gone/", "Read more", "/b.html"),
+                _unresolved(f"{_BASE}/gone/", "Read more", "/c.html"),
+            ]
+        },
+    )
+
+    [task] = load_tasks(tmp_path, _config(tmp_path)).by_type("internal_link")
+
+    assert task.target == f"{_BASE}/gone/"
+    assert task.pages == ["a.html", "b.html", "c.html"]
+
+
+def test_internal_links_drop_references_no_reader_can_see(tmp_path: Path):
+    """build.py sets `context` to real anchor/alt text only for a/area/img;
+    everything else is "" or a synthesised marker. A reference from inside
+    a plugin script or an image's data- attribute is not something a site
+    owner can act on, and asking about it is how the worklist loses their
+    trust -- 318 samples on one real capture were 47 targets of which 2
+    were real."""
+    _write(tmp_path, "broken-external-links.json", _broken_links())
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved_samples": [
+                _unresolved(f"{_BASE}/osd.xml", ""),  # <link href>, no text
+                _unresolved(f"{_BASE}/wp-includes/x.php", "script:regex"),
+                _unresolved(f"{_BASE}/logo/", "img[data-permalink]"),
+                _unresolved(f"{_BASE}/thing/", "script:json"),
+                _unresolved(f"{_BASE}/real/", "Touched by Dispossession"),
+                _unresolved(f"{_BASE}/pic.jpg", "A photo of the team"),  # img alt
+            ]
+        },
+    )
+
+    tasks = load_tasks(tmp_path, _config(tmp_path))
+    internal = tasks.by_type("internal_link")
+
+    assert sorted(t.context for t in internal) == ["A photo of the team", "Touched by Dispossession"]
+    assert tasks.handled_internal_count == 4
+
+
+def test_internal_link_keeps_human_text_that_looks_marker_ish(tmp_path: Path):
+    """The marker test must not eat real anchor text. Only an exact
+    `script:...` or `tag[attr]` token is a marker."""
+    _write(tmp_path, "broken-external-links.json", _broken_links())
+    _write(
+        tmp_path,
+        "build-report.json",
+        {
+            "unresolved_samples": [
+                _unresolved(f"{_BASE}/a/", "Note: read this first"),
+                _unresolved(f"{_BASE}/b/", "Chapter 3: Beginnings"),
+                _unresolved(f"{_BASE}/c/", "See [the appendix]"),
+            ]
+        },
+    )
+
+    internal = load_tasks(tmp_path, _config(tmp_path)).by_type("internal_link")
+
+    assert len(internal) == 3
+    assert load_tasks(tmp_path, _config(tmp_path)).handled_internal_count == 0
+
+
 # --- missing-file filter --------------------------------------------------
 
 
@@ -328,7 +408,15 @@ def test_load_tasks_against_real_landscapes_capture():
     assert len(external) == len(broken)
     assert len(tasks.by_group("authgated")) == expected_authgated
     assert len(tasks.by_group("dead")) == len(broken) - expected_authgated
-    assert len(internal) == len(build_report["unresolved_samples"])
+
+    # section 2 is grouped by target and filtered to references a reader
+    # can see, so it is a strict subset of the raw samples -- and every
+    # surviving item carries real anchor or alt text
+    samples = build_report["unresolved_samples"]
+    assert 0 < len(internal) < len(samples)
+    assert len(internal) == len({t.target for t in internal})
+    assert all(t.context and not t.context.startswith(("script:", "img[")) for t in internal)
+    assert len(internal) + tasks.handled_internal_count == len({s["target"] for s in samples})
 
     # the manifest does not change without a re-acquire, so these are fixed:
     # 69 missing records -> 7 owner-relevant media -> 5 asks, variants folded

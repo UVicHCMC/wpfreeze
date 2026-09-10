@@ -56,6 +56,21 @@ _RESIZE_VARIANT_RE = re.compile(r"^(.+)-\d+x\d+(\.[A-Za-z0-9]+)$")
 
 _ID_PREFIX = {"external_link": "ext", "internal_link": "int", "missing_file": "mis"}
 
+# build.py's `context` is an anchor's visible text or an image's alt text
+# (see _element_context) -- but only for <a>/<area>/<img>. Everything else
+# is "" (script, link, iframe...) or a synthesised marker from the
+# attribute/inline-script rewriters: "script:regex", "img[data-permalink]".
+# Those are references a *reader* never sees and an owner cannot act on, so
+# they belong in the handled-for-you footnote, not the worklist.
+_MACHINE_CONTEXT_RE = re.compile(r"^(?:script:\S*|[a-z]+\[[a-z0-9_-]+\])$")
+
+
+def _is_owner_actionable(context: str | None) -> bool:
+    """True only for a reference a person could actually find on the page:
+    real anchor text or real alt text."""
+    text = (context or "").strip()
+    return bool(text) and not _MACHINE_CONTEXT_RE.match(text)
+
 
 class OwnerTasksInputMissing(Exception):
     """`broken-external-links.json` is absent. The caller should tell the
@@ -88,8 +103,10 @@ class OwnerTasks:
     # Section keys whose source report was absent -- rendered as "this
     # check has not been run", not as "nothing to do".
     unrun_checks: list[str] = field(default_factory=list)
-    # Count of "missing" records that do not need the owner (the footnote).
+    # Counts of findings that do not need the owner (the footnote): media
+    # the owner could not supply, and internal references no reader sees.
     handled_missing_count: int = 0
+    handled_internal_count: int = 0
     # Total external links checked (broken + live), for the section-1 prose.
     external_checked_count: int = 0
     # sha256 of each source report, so a returned response file can be
@@ -237,20 +254,35 @@ def load_tasks(output_dir: Path, config: "SiteConfig") -> OwnerTasks:
             )
         )
 
-    # Section 2 -- broken internal links.
+    # Section 2 -- broken internal links, grouped by target like section 1
+    # (the decision unit is the target: one answer covers every page using
+    # it) and filtered to references a reader can actually see.
     build_report = _load_json(output_dir / "build-report.json")
+    handled_internal = 0
     if build_report is None:
         unrun.append("internal_links")
     else:
+        by_target: dict[str, dict] = {}
         for sample in build_report.get("unresolved_samples", []):
+            entry = by_target.setdefault(sample["target"], {"pages": set(), "context": None})
             page = (sample.get("page_output") or "").lstrip("/")
+            if page:
+                entry["pages"].add(page)
+            context = sample.get("context")
+            if entry["context"] is None and _is_owner_actionable(context):
+                entry["context"] = context.strip()
+
+        for target, entry in by_target.items():
+            if entry["context"] is None:
+                handled_internal += 1  # machine reference: not the owner's problem
+                continue
             tasks.append(
                 OwnerTask(
-                    id=_task_id("internal_link", sample["target"]),
+                    id=_task_id("internal_link", target),
                     type="internal_link",
-                    target=sample["target"],
-                    pages=[page] if page else [],
-                    context=sample.get("context") or None,
+                    target=target,
+                    pages=sorted(entry["pages"]),
+                    context=entry["context"],
                 )
             )
 
@@ -295,6 +327,7 @@ def load_tasks(output_dir: Path, config: "SiteConfig") -> OwnerTasks:
         tasks=tasks,
         unrun_checks=unrun,
         handled_missing_count=handled_missing,
+        handled_internal_count=handled_internal,
         external_checked_count=len(ext_data.get("results", [])),
         source_hashes={
             "broken_external_links": _sha256(output_dir / "broken-external-links.json"),
@@ -674,14 +707,25 @@ def _section_missing_html(tasks: OwnerTasks) -> str:
 
 
 def _footnote_html(tasks: OwnerTasks) -> str:
-    if not tasks.handled_missing_count:
+    parts = []
+    if tasks.handled_missing_count:
+        parts.append(
+            f"<p>We also found {tasks.handled_missing_count} other missing items that do not "
+            "need you -- WordPress thumbnail stubs, stylesheets and fonts -- which we either "
+            "regenerated or safely left out.</p>"
+        )
+    if tasks.handled_internal_count:
+        parts.append(
+            f"<p>And {tasks.handled_internal_count} internal references that do not resolve but "
+            "that nobody can see or click -- addresses buried in plugin scripts, image metadata "
+            "and page machinery. They are ours to deal with, not yours.</p>"
+        )
+    if not parts:
         return ""
     return f"""
 <details id="handled-footnote">
   <summary>Things we already handled (no action needed)</summary>
-  <p>For completeness: we also found {tasks.handled_missing_count} other missing items
-    that do not need you -- WordPress thumbnail stubs, stylesheets and a font -- which we
-    either regenerated or safely left out.</p>
+  {"".join(parts)}
 </details>
 """
 
