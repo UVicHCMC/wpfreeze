@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -376,18 +377,21 @@ def _render(tmp_path: Path, *, build_report: bool = True, manifest: bool = True)
     return render_owner_tasks_html(load_tasks(tmp_path, _config(tmp_path)))
 
 
-def test_render_emits_no_css_and_only_the_json_island_script(tmp_path: Path):
+def test_render_is_self_contained(tmp_path: Path):
+    """One file, opened from a desktop that may have no network: the only
+    two script elements are the data island and the inline behaviour, and
+    nothing is fetched from anywhere."""
     html = _render(tmp_path)
 
     assert html.startswith("<!doctype html>")
-    assert "<style></style>" in html
-    assert html.count("<script") == 1
+    assert html.count("<script") == 2
     assert '<script type="application/json" id="owner-tasks-data">' in html
+    assert "<style>" in html and "<style></style>" not in html
+    for remote in ("http://", "https://cdn", "<link", "@import", "src=\"http"):
+        assert remote not in html.split('id="owner-tasks-data"')[0], remote
 
 
 def test_render_escapes_quotes_and_angle_brackets_in_targets(tmp_path: Path):
-    import re
-
     html = _render(tmp_path)
 
     assert "https://x.example/&lt;b&gt;" in html
@@ -416,8 +420,13 @@ def test_render_has_full_task_anatomy_per_the_markup_contract(tmp_path: Path):
     assert 'data-group="dead"' in html and 'data-group="authgated"' in html
     assert 'class="task-action" data-default="keep"' in html  # auth-gated default
     assert '<option value="keep" selected>' in html  # correct with JS disabled
-    assert 'class="task-url" type="url"' in html and "hidden>" in html
-    assert 'class="task-note" type="text"' in html
+    # Both reveal fields exist, start hidden, and carry an id + accessible
+    # name (a placeholder alone is neither).
+    for cls in ("task-url", "task-note"):
+        field = re.search(rf'<input class="{cls}"[^>]*>', html).group(0)
+        assert " hidden>" in field, field
+        assert ' id="' in field and ' name="' in field, field
+        assert ' aria-label="' in field, field
 
 
 def test_render_folds_variants_and_shows_the_note(tmp_path: Path):
@@ -446,8 +455,6 @@ def test_render_marks_an_unrun_section_rather_than_emitting_it_empty(tmp_path: P
 
 
 def test_json_island_round_trips_and_prefills_authgated(tmp_path: Path):
-    import re
-
     html = _render(tmp_path)
     body = re.search(
         r'<script type="application/json" id="owner-tasks-data">\n(.*?)\n</script>', html, re.S
@@ -472,6 +479,57 @@ def test_write_owner_tasks_writes_the_file(tmp_path: Path):
     assert dest.read_text(encoding="utf-8").startswith("<!doctype html>")
 
 
+def test_render_includes_the_interaction_layer(tmp_path: Path):
+    html = _render(tmp_path)
+
+    assert html.count('class="save-button"') == 2  # sticky bar and save area
+    assert 'class="progress-track"' in html
+    assert 'id="review"' in html and 'class="review-body"' in html
+    assert 'id="resume"' in html and 'id="resume-file"' in html
+    assert 'id="respondent"' in html
+    assert "Picking up where you left off? Drop your saved file here." in html
+    assert "Review your answers" in html
+
+
+def test_stylesheet_does_not_defeat_the_hidden_attribute(tmp_path: Path):
+    """`.task-url { display: block }` outranks the UA stylesheet's
+    `[hidden] { display: none }`, so without an explicit override every
+    reveal field renders on every unanswered card. Found by opening the
+    page, not by reading the markup -- the `hidden` attribute was present
+    and correct the whole time."""
+    from wpfreeze.ownertasks import _CSS
+
+    assert "[hidden]" in _CSS
+    assert re.search(r"\[hidden\]\s*\{[^}]*display:\s*none\s*!important", _CSS)
+
+
+def test_the_two_action_vocabularies_collide_on_shared_enums():
+    """Sections 1/2 and section 3 reuse `replace`, `remove` and `defer`
+    with deliberately different owner-facing wording. A label map keyed by
+    action value alone silently relabels every link answer with the file
+    wording -- which is what the review panel did until it was keyed by
+    task type as well. If these ever stop differing, the map may be
+    flattened; until then it may not."""
+    from wpfreeze.ownertasks import _LINK_ACTIONS, _MISSING_ACTIONS
+
+    link = dict(_LINK_ACTIONS)
+    missing = dict(_MISSING_ACTIONS)
+    shared = [v for v in link if v and v in missing]
+
+    assert sorted(shared) == ["defer", "remove", "replace"]
+    for value in shared:
+        assert link[value] != missing[value], value
+
+
+def test_js_keys_action_labels_by_task_type(tmp_path: Path):
+    """Pins the fix for the collision above in the shipped script, the way
+    FREEZE_PERMITTED_STEPS is pinned by a test rather than a comment."""
+    from wpfreeze.ownertasks import _JS
+
+    assert "ACTION_LABELS[type] = labels" in _JS
+    assert "ACTION_LABELS[item.type]" in _JS
+
+
 @pytest.mark.skipif(
     not (_LANDSCAPES / "broken-external-links.json").exists(),
     reason="no real landscapes capture present locally",
@@ -486,4 +544,4 @@ def test_render_against_real_landscapes_capture():
     # 98 dead + 28 auth-gated; the wrapper div/details also carry the attr, hence -1
     assert html.count('data-group="dead"') - 1 == 98
     assert html.count('data-group="authgated"') - 1 == 28
-    assert html.count("<script") == 1
+    assert html.count("<script") == 2  # data island + behaviour

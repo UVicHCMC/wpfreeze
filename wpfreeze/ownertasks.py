@@ -304,16 +304,154 @@ def load_tasks(output_dir: Path, config: "SiteConfig") -> OwnerTasks:
 
 
 # ---------------------------------------------------------------------------
-# Rendering -- phase 3: semantic markup only.
+# Rendering.
 #
-# _CSS is empty and there is no <script> beyond the JSON data island. The
-# stylesheet and the interaction layer (action-driven field reveal,
-# progress, save-to-JSON, rehydrate-from-JSON, clipboard) are a later
-# phase. The markup here is the contract that phase attaches to: `data-`
-# attributes and stable class names, not element order.
+# The page is one self-contained file opened from a desktop, often over
+# file://, possibly with no network at all: no frameworks, no web fonts,
+# no external requests of any kind. The palette and font stack follow
+# linkcheck.py's own _CSS so this looks related to the reports that
+# accompany it.
+#
+# The markup is the contract the script attaches to -- `data-` attributes
+# and stable class names, never element order. The whole progress
+# affordance is that an answered card visibly recedes; the bar at the top
+# is secondary to that.
 # ---------------------------------------------------------------------------
 
-_CSS = ""
+_CSS = """
+:root {
+  --bg: #fff; --fg: #1a1a1a; --muted: #5a5a5a; --line: #ddd;
+  --card: #fff; --card-line: #d9d9d9;
+  --todo: #7a5200; --todo-bg: #fff9ec;
+  --done: #14591c; --done-bg: #f0f7f1;
+  --link: #1a56c4; --visited: #7a3fa0;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  color: var(--fg); background: var(--bg);
+  max-width: 60rem; margin: 0 auto; padding: 0 1.25rem 4rem;
+  line-height: 1.55;
+}
+a { color: var(--link); }
+a:visited { color: var(--visited); }
+h1 { font-size: 1.8rem; margin: 1.5rem 0 0.5rem; }
+h2 { font-size: 1.3rem; margin: 0 0 0.4rem; }
+h3 { font-size: 1.05rem; margin: 1.5rem 0 0.3rem; }
+code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.9em; }
+
+.open-in-browser {
+  margin: 1.25rem 0 0; padding: 0.6rem 0.9rem;
+  background: var(--todo-bg); border: 1px solid var(--todo);
+  border-radius: 4px; color: var(--todo); font-size: 0.92rem;
+}
+.intro { margin: 0.5rem 0 1.25rem; }
+
+.owner-progress {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap;
+  padding: 0.7rem 0; margin-bottom: 1.5rem;
+  background: var(--bg); border-bottom: 1px solid var(--line);
+}
+.progress-track {
+  flex: 1 1 10rem; min-width: 7rem; height: 8px;
+  background: var(--line); border-radius: 4px; overflow: hidden;
+}
+.progress-track > span { display: block; height: 100%; width: 0; background: var(--done); }
+.progress-count { font-variant-numeric: tabular-nums; font-size: 0.92rem; color: var(--muted); }
+
+button {
+  font: inherit; font-size: 0.92rem; padding: 0.4rem 0.9rem;
+  border: 1px solid var(--card-line); border-radius: 4px;
+  background: var(--card); color: var(--fg); cursor: pointer;
+}
+button:hover { border-color: var(--muted); }
+.save-button { font-weight: 600; }
+
+section { margin: 2.5rem 0; }
+.section-desc { color: var(--muted); margin: 0 0 1rem; max-width: 46rem; }
+.delivery-instruction { margin: 0 0 1rem; max-width: 46rem; }
+
+.task {
+  border: 1px solid var(--card-line); border-left: 4px solid var(--todo);
+  border-radius: 5px; padding: 0.8rem 1rem; margin: 0.7rem 0;
+  background: var(--card);
+}
+.task[data-answered="true"] {
+  border-left-color: var(--done); background: var(--done-bg); opacity: 0.66;
+}
+.task[data-answered="true"]:hover, .task:focus-within { opacity: 1; }
+.task-target, .task-filename {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere; margin: 0 0 0.25rem;
+}
+.task-target { font-size: 0.95rem; }
+.task-filename { font-size: 1.15rem; font-weight: 600; }
+.task-meta { color: var(--muted); font-size: 0.88rem; margin: 0 0 0.5rem; }
+.task-variant-note { color: var(--todo); font-size: 0.88rem; margin: 0 0 0.5rem; }
+.task-pages { margin: 0 0 0.5rem; font-size: 0.88rem; }
+.task-pages summary { cursor: pointer; color: var(--muted); }
+.task-pages ul { margin: 0.4rem 0 0; padding-left: 1.2rem; max-height: 12rem; overflow-y: auto; }
+.task-pages li { overflow-wrap: anywhere; }
+
+.task-action-label { display: block; font-size: 0.92rem; margin-top: 0.5rem; }
+.task-action, .task-url, .task-note, #respondent {
+  font: inherit; font-size: 0.92rem; padding: 0.35rem 0.45rem;
+  border: 1px solid var(--card-line); border-radius: 4px;
+  background: var(--card); color: var(--fg);
+}
+.task-action { margin-left: 0.4rem; max-width: 100%; }
+.task-url, .task-note { display: block; width: 100%; margin-top: 0.45rem; }
+/* An author `display` rule outranks the UA stylesheet's [hidden]{display:none},
+   so without this the reveal fields are visible on every unanswered card. */
+[hidden] { display: none !important; }
+
+.task-group { margin-bottom: 2rem; }
+details.task-group > summary {
+  cursor: pointer; font-weight: 600; color: var(--muted);
+  padding: 0.5rem 0; border-top: 1px solid var(--line);
+}
+
+.review { border-top: 1px solid var(--line); padding-top: 1rem; }
+.review-body dl { margin: 0; }
+.review-body dt { font-weight: 600; margin-top: 0.9rem; font-size: 0.95rem; }
+.review-body dd { margin: 0.2rem 0 0 1.1rem; font-size: 0.88rem; color: var(--muted); }
+.review-body ul { margin: 0.2rem 0 0; padding-left: 1.3rem; font-size: 0.88rem; }
+.review-body li { overflow-wrap: anywhere; margin: 0.1rem 0; }
+.review-empty { color: var(--muted); }
+
+.save-area { margin: 2rem 0; padding: 1rem; border: 1px solid var(--card-line); border-radius: 5px; }
+.respondent-label { display: block; font-size: 0.92rem; margin-bottom: 0.7rem; }
+#respondent { display: block; margin-top: 0.3rem; width: 100%; max-width: 22rem; }
+.save-status { margin: 0.7rem 0 0; font-size: 0.92rem; color: var(--done); }
+
+.resume { margin: 1.5rem 0; padding: 0.9rem 1rem; border: 1px dashed var(--card-line); border-radius: 5px; }
+.resume.dragover { border-color: var(--link); background: var(--todo-bg); }
+.resume p { margin: 0 0 0.5rem; font-size: 0.92rem; color: var(--muted); }
+.resume-status { font-size: 0.88rem; }
+
+#handled-footnote { margin-top: 2.5rem; font-size: 0.92rem; color: var(--muted); }
+#handled-footnote summary { cursor: pointer; }
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e; --fg: #ddd; --muted: #a4a4a4; --line: #444;
+    --card: #262626; --card-line: #454545;
+    --todo: #ffcc70; --todo-bg: #33280f;
+    --done: #8fd89a; --done-bg: #1c2a1e;
+    --link: #7db3ff; --visited: #d3a6f0;
+  }
+}
+
+@media print {
+  body { max-width: none; padding: 0; }
+  .owner-progress { position: static; border-bottom: none; }
+  .save-button, .copy-filenames, .resume, .save-status { display: none; }
+  .task { break-inside: avoid; opacity: 1 !important; page-break-inside: avoid; }
+  .task-pages ul { max-height: none; overflow: visible; }
+  a { color: inherit; }
+}
+"""
 
 # Owner-facing labels are fixed copy -- do not paraphrase. `value` is the
 # stable enum written into the response file.
@@ -337,6 +475,7 @@ _MISSING_ACTIONS: tuple[tuple[str, str], ...] = (
 )
 
 _URL_PLACEHOLDER = "https://…"
+_URL_LABEL = "Replacement address"
 _NOTE_PLACEHOLDER = "Anything we should know (optional)"
 _WAYBACK_PREFIX = "https://web.archive.org/web/2020/"
 
@@ -379,10 +518,15 @@ def _select_html(options: tuple[tuple[str, str], ...], default: str) -> str:
     return "".join(parts)
 
 
-def _action_inputs_html() -> str:
+def _action_inputs_html(task_id: str) -> str:
+    """Both fields carry an id and an aria-label: `placeholder` alone is not
+    an accessible name, and a form field with neither id nor name is also
+    what browsers warn about."""
     return (
-        f'<input class="task-url" type="url" placeholder="{_esc(_URL_PLACEHOLDER)}" hidden>'
-        f'<input class="task-note" type="text" placeholder="{_esc(_NOTE_PLACEHOLDER)}" hidden>'
+        f'<input class="task-url" id="url-{_esc(task_id)}" name="url-{_esc(task_id)}" type="url" '
+        f'aria-label="{_esc(_URL_LABEL)}" placeholder="{_esc(_URL_PLACEHOLDER)}" hidden>'
+        f'<input class="task-note" id="note-{_esc(task_id)}" name="note-{_esc(task_id)}" type="text" '
+        f'aria-label="{_esc(_NOTE_PLACEHOLDER)}" placeholder="{_esc(_NOTE_PLACEHOLDER)}" hidden>'
     )
 
 
@@ -409,7 +553,7 @@ def _link_task_html(task: OwnerTask) -> str:
         parts.append(f'<p class="task-meta">{_esc(meta)}</p>')
     parts.append(_pages_details_html(task.pages, "Used on"))
     parts.append(f'<label class="task-action-label">What to do {_select_html(_LINK_ACTIONS, default)}</label>')
-    parts.append(_action_inputs_html())
+    parts.append(_action_inputs_html(task.id))
     parts.append("</article>")
     return "".join(parts)
 
@@ -435,7 +579,7 @@ def _missing_task_html(task: OwnerTask) -> str:
             "We will regenerate the smaller sizes ourselves.</p>"
         )
     parts.append(f'<label class="task-action-label">What to do {_select_html(_MISSING_ACTIONS, "")}</label>')
-    parts.append(_action_inputs_html())
+    parts.append(_action_inputs_html(task.id))
     parts.append("</article>")
     return "".join(parts)
 
@@ -593,6 +737,355 @@ def _data_island_html(tasks: OwnerTasks) -> str:
     return f'<script type="application/json" id="owner-tasks-data">\n{body}\n</script>'
 
 
+# The interaction layer. The JSON island is the single source of truth:
+# every control writes into it and Save serialises it back out, so the
+# saved file and the page can never disagree.
+#
+# Action *labels* are read back out of the rendered <option>s rather than
+# repeated here -- the owner-facing copy has exactly one home, the Python
+# constants above.
+#
+# Everything degrades: no island or a parse failure leaves the static page
+# working, localStorage is wrapped (Chrome gives a file:// page an opaque
+# origin and throws), and the clipboard falls back to execCommand because
+# navigator.clipboard needs a secure context that file:// is not.
+_JS = """
+(function () {
+  "use strict";
+
+  var island = document.getElementById("owner-tasks-data");
+  if (!island) return;
+  var data;
+  try { data = JSON.parse(island.textContent); } catch (e) { return; }
+  if (!data || !Array.isArray(data.items)) return;
+
+  var byId = Object.create(null);
+  data.items.forEach(function (item) { byId[item.id] = item; });
+
+  // Which extra fields each action asks for. Mirrors the reveal map in the
+  // plan's markup contract; anything absent shows neither field.
+  var NEEDS_URL = { replace: 1 };
+  var NEEDS_NOTE = { replace: 1, unlink_note: 1, keep: 1, defer: 1, will_send: 1, placeholder: 1 };
+
+  var all = function (sel, root) {
+    return Array.prototype.slice.call((root || document).querySelectorAll(sel));
+  };
+
+  // Labels are per task type, not per action value: sections 1/2 and
+  // section 3 both use `replace`, `remove` and `defer` with deliberately
+  // different owner-facing wording ("Delete the link and its text" vs
+  // "Remove it from the page"). A single flat map silently relabels every
+  // link answer with the file wording.
+  var ACTION_LABELS = {};
+  all(".task").forEach(function (art) {
+    var type = art.getAttribute("data-task-type");
+    if (!type || ACTION_LABELS[type]) return;
+    var select = art.querySelector(".task-action");
+    if (!select) return;
+    var labels = {};
+    Array.prototype.forEach.call(select.options, function (opt) {
+      if (opt.value) labels[opt.value] = opt.textContent;
+    });
+    ACTION_LABELS[type] = labels;
+  });
+
+  function labelFor(item) {
+    var byType = ACTION_LABELS[item.type] || {};
+    return byType[item.action] || item.action;
+  }
+
+  var articles = all(".task");
+  var dirty = false;
+
+  // --- per-card wiring ------------------------------------------------
+  articles.forEach(function (art) {
+    var item = byId[art.getAttribute("data-item-id")];
+    if (!item) return;
+    var select = art.querySelector(".task-action");
+    var urlInput = art.querySelector(".task-url");
+    var noteInput = art.querySelector(".task-note");
+    if (!select) return;
+
+    function reveal() {
+      var action = select.value;
+      if (urlInput) { urlInput.hidden = !NEEDS_URL[action]; urlInput.required = !!NEEDS_URL[action]; }
+      if (noteInput) { noteInput.hidden = !NEEDS_NOTE[action]; }
+      art.setAttribute("data-answered", action ? "true" : "false");
+    }
+
+    art.syncFromState = function () {
+      select.value = item.action || "";
+      if (urlInput) urlInput.value = item.replacement_url || "";
+      if (noteInput) noteInput.value = item.note || "";
+      reveal();
+    };
+
+    select.addEventListener("change", function () {
+      item.action = select.value || null;
+      if (select.value === "wayback") {
+        // The prefill: no field to fill in, the archived address is derived.
+        item.replacement_url = art.getAttribute("data-wayback-url") || "";
+      } else if (!NEEDS_URL[select.value]) {
+        item.replacement_url = "";
+      }
+      reveal();
+      touched();
+    });
+    if (urlInput) urlInput.addEventListener("input", function () {
+      item.replacement_url = urlInput.value; touched();
+    });
+    if (noteInput) noteInput.addEventListener("input", function () {
+      item.note = noteInput.value; touched();
+    });
+
+    art.syncFromState();
+  });
+
+  // --- progress + review ----------------------------------------------
+  function answered() {
+    var n = 0;
+    data.items.forEach(function (i) { if (i.action) n++; });
+    return n;
+  }
+
+  function updateProgress() {
+    var done = answered(), total = data.items.length;
+    all(".progress-count").forEach(function (el) {
+      el.textContent = done + " of " + total + " handled";
+    });
+    all(".progress-track > span").forEach(function (el) {
+      el.style.width = total ? (done * 100 / total) + "%" : "0";
+    });
+  }
+
+  function renderReview() {
+    var box = document.querySelector(".review-body");
+    if (!box) return;
+    // Keyed by type *and* action so each group can carry its own wording;
+    // unanswered items collapse into one group across all three sections.
+    var groups = {}, titles = {}, order = [];
+    data.items.forEach(function (i) {
+      var key = i.action ? i.type + "|" + i.action : "";
+      if (!groups[key]) {
+        groups[key] = [];
+        titles[key] = i.action ? labelFor(i) : "Not yet answered";
+        order.push(key);
+      }
+      groups[key].push(i);
+    });
+    order.sort(function (a, b) {
+      if (!a) return 1;
+      if (!b) return -1;
+      return titles[a] < titles[b] ? -1 : 1;
+    });
+    if (!order.length) { box.textContent = ""; return; }
+    var dl = document.createElement("dl");
+    order.forEach(function (key) {
+      var items = groups[key];
+      var dt = document.createElement("dt");
+      dt.textContent = titles[key] + " (" + items.length + ")";
+      dl.appendChild(dt);
+      var dd = document.createElement("dd");
+      var ul = document.createElement("ul");
+      items.forEach(function (i) {
+        var li = document.createElement("li");
+        li.textContent = i.filename || i.target;
+        if (i.replacement_url) li.textContent += "  \\u2192  " + i.replacement_url;
+        if (i.note) li.textContent += "  (" + i.note + ")";
+        ul.appendChild(li);
+      });
+      dd.appendChild(ul);
+      dl.appendChild(dd);
+    });
+    box.textContent = "";
+    box.appendChild(dl);
+  }
+
+  function refresh() { updateProgress(); renderReview(); }
+  function touched() { dirty = true; refresh(); persist(); }
+
+  // --- save -------------------------------------------------------------
+  function saveFilename() {
+    return (data.project || "site") + "-owner-response-" +
+      new Date().toISOString().slice(0, 10) + ".json";
+  }
+
+  function buildResponse() {
+    var out = JSON.parse(JSON.stringify(data));
+    var name = document.getElementById("respondent");
+    out.responded_at = new Date().toISOString();
+    out.respondent = name && name.value.trim() ? name.value.trim() : null;
+    var done = 0, deferred = 0;
+    out.items.forEach(function (i) {
+      if (i.action) done++;
+      if (i.action === "defer") deferred++;
+    });
+    out.counts = { total: out.items.length, answered: done, deferred: deferred };
+    return out;
+  }
+
+  function save() {
+    var name = saveFilename();
+    var blob = new Blob([JSON.stringify(buildResponse(), null, 2)], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+    dirty = false;
+
+    var left = data.items.length - answered();
+    var status = document.querySelector(".save-status");
+    if (!status) return;
+    status.textContent = left === 0
+      ? "Saved. Email " + name + " back to us, along with any files you are sending."
+      : "Saved -- " + left + (left === 1 ? " item is" : " items are") +
+        " still unanswered. You can finish later: reopen this page and drop the saved file onto it.";
+  }
+
+  all(".save-button").forEach(function (b) { b.addEventListener("click", save); });
+
+  // --- resume -----------------------------------------------------------
+  function resumeStatus(text) {
+    var el = document.querySelector(".resume-status");
+    if (el) el.textContent = text;
+  }
+
+  function applyResponse(loaded, describe) {
+    if (!loaded || !Array.isArray(loaded.items)) return false;
+    var matched = 0;
+    loaded.items.forEach(function (saved) {
+      var item = saved && byId[saved.id];
+      if (!item) return;
+      item.action = saved.action || null;
+      item.replacement_url = saved.replacement_url || "";
+      item.note = saved.note || "";
+      matched++;
+    });
+    var name = document.getElementById("respondent");
+    if (name && loaded.respondent) name.value = loaded.respondent;
+    articles.forEach(function (art) { if (art.syncFromState) art.syncFromState(); });
+    refresh();
+
+    if (describe) {
+      var here = (data.source_reports || {}).broken_external_links_sha256;
+      var there = (loaded.source_reports || {}).broken_external_links_sha256;
+      var note = (here && there && here !== there)
+        ? " Note: that file was saved against a different check of this site, so some items may not line up."
+        : "";
+      resumeStatus("Restored " + matched + " of " + loaded.items.length + " answers." + note);
+    }
+    return matched;
+  }
+
+  function readFile(file) {
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed;
+      try { parsed = JSON.parse(reader.result); }
+      catch (e) { resumeStatus("That does not look like a saved answers file."); return; }
+      if (applyResponse(parsed, true) === false) {
+        resumeStatus("That does not look like a saved answers file.");
+      }
+    };
+    reader.onerror = function () { resumeStatus("That file could not be read."); };
+    reader.readAsText(file);
+  }
+
+  var zone = document.getElementById("resume");
+  var picker = document.getElementById("resume-file");
+  if (picker) picker.addEventListener("change", function () { readFile(picker.files[0]); });
+  if (zone) {
+    ["dragenter", "dragover"].forEach(function (evt) {
+      zone.addEventListener(evt, function (e) {
+        e.preventDefault(); zone.classList.add("dragover");
+      });
+    });
+    ["dragleave", "drop"].forEach(function (evt) {
+      zone.addEventListener(evt, function () { zone.classList.remove("dragover"); });
+    });
+    zone.addEventListener("drop", function (e) {
+      e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.files) readFile(e.dataTransfer.files[0]);
+    });
+  }
+  // Dropping anywhere else must not make the browser navigate away from a
+  // half-finished page.
+  ["dragover", "drop"].forEach(function (evt) {
+    document.addEventListener(evt, function (e) { e.preventDefault(); });
+  });
+
+  // --- clipboard --------------------------------------------------------
+  function copyFallback(text, done) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "0";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    done(ok);
+  }
+
+  all(".copy-filenames").forEach(function (button) {
+    var original = button.textContent;
+    button.addEventListener("click", function () {
+      var names = all("#section-missing .task-filename").map(function (el) {
+        return el.textContent.trim();
+      });
+      if (!names.length) return;
+      var text = names.join("\\n");
+      var done = function (ok) {
+        button.textContent = ok === false ? "Press Ctrl+C to copy" : "Copied";
+        setTimeout(function () { button.textContent = original; }, 2500);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done(true); },
+                                                 function () { copyFallback(text, done); });
+      } else {
+        copyFallback(text, done);
+      }
+    });
+  });
+
+  // --- best-effort local autosave --------------------------------------
+  var LS_KEY = "wpfreeze-owner-tasks:" + (data.project || "") + ":" + (data.report_generated || "");
+  function persist() {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(buildResponse())); } catch (e) { /* opaque origin */ }
+  }
+  (function restore() {
+    var raw = null;
+    try { raw = localStorage.getItem(LS_KEY); } catch (e) { return; }
+    if (!raw) return;
+    var parsed;
+    try { parsed = JSON.parse(raw); } catch (e) { return; }
+    applyResponse(parsed, false);
+    resumeStatus("Picked up where this browser left off. Save when you are done.");
+  })();
+
+  // --- housekeeping -----------------------------------------------------
+  window.addEventListener("beforeunload", function (e) {
+    if (!dirty) return;
+    e.preventDefault();
+    e.returnValue = "";
+  });
+  window.addEventListener("beforeprint", function () {
+    all("details").forEach(function (d) { d.open = true; });
+  });
+
+  refresh();
+})();
+"""
+
+
 def render_owner_tasks_html(tasks: OwnerTasks) -> str:
     site = _host_label(tasks.base_url)
     return f"""<!doctype html>
@@ -613,16 +1106,38 @@ def render_owner_tasks_html(tasks: OwnerTasks) -> str:
   us the file it produces.</p>
 
 <div class="owner-progress">
+  <span class="progress-track"><span></span></span>
   <span class="progress-count">0 of {len(tasks.tasks)} handled</span>
   <button type="button" class="save-button">Save my answers</button>
+</div>
+
+<div class="resume" id="resume">
+  <p>Picking up where you left off? Drop your saved file here.</p>
+  <input type="file" id="resume-file" accept="application/json,.json">
+  <p class="resume-status" role="status"></p>
 </div>
 
 {_section_external_html(tasks)}
 {_section_internal_html(tasks)}
 {_section_missing_html(tasks)}
+
+<section id="review" class="review">
+  <h2>Review your answers</h2>
+  <div class="review-body"></div>
+</section>
+
+<div class="save-area">
+  <label class="respondent-label">Your name (optional)
+    <input id="respondent" type="text" autocomplete="name">
+  </label>
+  <button type="button" class="save-button">Save my answers</button>
+  <p class="save-status" role="status"></p>
+</div>
+
 {_footnote_html(tasks)}
 
 {_data_island_html(tasks)}
+<script>{_JS}</script>
 </body>
 </html>
 """
