@@ -51,6 +51,13 @@ web scraper and makes no attempt to be polite to sites it doesn't own.
   to something live. `wpfreeze checklinks` finds every external link in
   the built site and reports which internal pages point at ones that are
   now broken — see "Checking external links" below.
+- **Optionally does**: turn what's left into a worklist for the *site
+  owner* rather than for you. `wpfreeze owner-tasks` writes a single
+  self-contained `owner-tasks.html` you can email them: dead outbound
+  links to decide on, broken internal links, and missing images or media
+  to go find. They work through it in a browser, press Save, and send back
+  one small JSON file recording every decision. See "Asking the site
+  owner" below.
 
 ## Requirements
 
@@ -453,6 +460,14 @@ wpfreeze --version                       # the installed version
   that persisted list's liveness without re-scanning the built site (or
   even needing `site/` to still exist), so link rot can be checked again
   later without a rebuild. See "Checking external links" below.
+- **`owner-tasks`** writes `owner-tasks.html`, an interactive worklist for
+  the site owner, synthesised from `broken-external-links.json` (dead
+  outbound links), `build-report.json` (broken internal links) and the
+  manifest (missing images and media). Needs `checklinks` to have run
+  first; a missing `build-report.json` or manifest just marks that section
+  as not-yet-checked rather than reporting it clean. `--output` writes it
+  somewhere other than `<output_dir>/owner-tasks.html`. See "Asking the
+  site owner" below.
 
 **Exit codes**: `0` = complete, `1` = complete with gaps (see `report.html`'s
 "Action required" section — expected content that couldn't be recovered
@@ -528,6 +543,8 @@ preview/           only after `upload.sh --local` -- site + reports, assembled f
 external-links.json       only after `wpfreeze checklinks` -- the page -> external-URL list it found
 broken-external-links.md  only after `wpfreeze checklinks` -- broken links, grouped by internal page
 broken-external-links.html  the same, styled like report.html
+broken-external-links.json  the same check as machine-readable results (ok/status/reason per URL)
+owner-tasks.html          only after `wpfreeze owner-tasks` -- the interactive worklist to email the site owner
 ```
 
 `report.html` and `cleanup-todo.html` have no external dependencies — no
@@ -972,6 +989,68 @@ a dead page, so it's worth a human glance rather than an automatic verdict.
 
 Exit code `1` means at least one broken link was found; `0` means none
 were (including "no external links at all").
+
+Alongside the two rendered reports, `checklinks` writes
+`broken-external-links.json` — the same check as machine-readable results,
+one entry per URL with `ok`/`status`/`reason`. That is what `owner-tasks`
+reads, and it makes a `--recheck` diffable against a previous day's run.
+
+## Asking the site owner
+
+Every other report in this list answers *what did we find*, and its reader
+is you. `wpfreeze owner-tasks` answers *what do you need to do*, and its
+reader is the person whose site it is:
+
+```bash
+wpfreeze checklinks site     # must run first -- owner-tasks reads its results
+wpfreeze owner-tasks site    # writes owner-tasks.html
+```
+
+`owner-tasks.html` is one self-contained file — no CDN, no fonts, no
+network of any kind — so you can simply email it. The owner saves it,
+opens it in a browser, works through a bounded list of decisions, presses
+**Save my answers**, and emails you back a single small JSON file. Nothing
+they do touches the live site.
+
+It asks about three things, and only three:
+
+1. **Links to other websites that no longer work.** Grouped by target URL,
+   not by page, so a link used on nine pages is one decision. These are
+   split in two: the confirmed dead, and — collapsed, and pre-answered
+   "leave as is" — the ones that merely refused an automated check
+   (`401`/`403`: journal articles, library databases, members-only pages).
+   That second group is usually large and usually fine, and presenting it
+   as broken is the fastest way to lose the owner's trust in the rest.
+2. **Links to pages on their own site that don't exist.** Usually typos or
+   pages deleted at some point. The owner generally recognises the
+   intended page immediately, which makes these the most fixable items on
+   the list.
+3. **Files we couldn't download.** Images and media the pages reference
+   but the server no longer has. Filtered to things an owner could
+   plausibly still have a copy of — WordPress thumbnail stubs, stylesheets
+   and fonts are counted in a footnote rather than listed — and WordPress
+   resize variants are folded into their original, since the smaller sizes
+   are regenerable. On one real site that turned 69 missing records into
+   five actual requests.
+
+For each item they choose an action: replace it with a new address, point
+it at a Wayback snapshot, keep the words but drop the link (with or
+without a "no longer available" note), delete it outright, leave it alone,
+or defer. Missing files add "I'll send you this file" — **the page never
+uploads anything.** Files come back however suits the owner: email, a USB
+stick, a shared drive. The report asks them to keep the filenames
+unchanged, and records the expected filename for every file they promise,
+so you can reconcile a folder against the JSON.
+
+The file they return, `<project>-owner-response-<date>.json`, records each
+item's `id`, the action, any replacement URL and any note, plus the sha256
+of the reports it was generated from — so you can confirm a response
+matches the capture it answers. Dropping that same file back onto the page
+restores every answer, so the owner can stop and resume, and you can see
+exactly what they saw.
+
+Nothing consumes the response file automatically yet; at these volumes it
+is meant to be read and acted on directly.
 
 ## Behaviour worth knowing about
 

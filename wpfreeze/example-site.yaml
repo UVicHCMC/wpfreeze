@@ -83,10 +83,12 @@ wayback:
 # step from another config key (e.g. it does NOT run `upload-script` just
 # because `upload.remote` is set below) -- only what's listed here runs.
 # Permitted values: acquire, build, validate, diagnose, report, checklinks,
-# search-index, upload-script. `checklinks` is deliberately not in the
-# default list (it hits third-party hosts and is slow) -- `freeze` offers
-# to run it at the end of the sequence instead; list it here explicitly if
-# you always want it as a declared step.
+# search-index, upload-script, owner-tasks. `checklinks` is deliberately
+# not in the default list (it hits third-party hosts and is slow) --
+# `freeze` offers to run it at the end of the sequence instead; list it
+# here explicitly if you always want it as a declared step. `owner-tasks`
+# is likewise opt-in, and only useful after `checklinks` has run: list
+# both, in that order, if you want the owner's worklist built every time.
 freeze:
   steps: [acquire, build, validate]
   # true makes freeze behave in a real terminal exactly as it does when
