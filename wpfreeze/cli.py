@@ -42,7 +42,14 @@ from wpfreeze.crawl import compile_exclusions, crawl_fixpoint
 from wpfreeze.diagnostics import build_diagnostics, format_diagnostics_summary, write_diagnostics
 from wpfreeze.fetch import DEFAULT_USER_AGENT, FetchConfig, RateLimiter
 from wpfreeze.inventory import discover_inventory
-from wpfreeze.linkcheck import check_links, extract_external_links, load_links, write_links, write_report
+from wpfreeze.linkcheck import (
+    check_links,
+    extract_external_links,
+    load_links,
+    write_links,
+    write_report,
+    write_results_json,
+)
 from wpfreeze.manifest import Manifest, Status, utc_now
 from wpfreeze.outputs import compute_output_paths, generate_redirects_htaccess
 from wpfreeze.policy import Policy
@@ -1260,8 +1267,10 @@ def _run_checklinks_body(config: SiteConfig, links: list, progress: "Progress | 
     broken = [r for r in results if not r.ok]
     checked_at = datetime.now(timezone.utc).isoformat()
     md_path, html_path = write_report(results, config.output_dir, checked_at)
+    json_path = write_results_json(results, config.output_dir, config.base_url, checked_at)
     print(f"Checked {len(results)} external link(s): {len(broken)} broken.")
     print(f"Report: {md_path} / {html_path}")
+    print(f"Machine-readable results: {json_path}")
     return 1 if broken else 0
 
 

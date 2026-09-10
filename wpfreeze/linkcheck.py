@@ -262,3 +262,25 @@ def write_report(results: list[LinkCheckResult], output_dir: Path, checked_at: s
     md_path.write_text(render_report_markdown(results, checked_at), encoding="utf-8")
     html_path.write_text(render_report_html(results, checked_at), encoding="utf-8")
     return md_path, html_path
+
+
+def write_results_json(results: list[LinkCheckResult], output_dir: Path, base_url: str, checked_at: str) -> Path:
+    """Persist the full check outcome to `broken-external-links.json`,
+    alongside write_report's `.md`/`.html`. Those two only *render* the
+    broken links; the machine-readable `ok`/`status`/`reason` per URL were
+    computed and then discarded. A later consumer (the owner-tasks report)
+    needs them, and parsing the markdown back out is not an option -- so
+    this mirrors write_links's header shape (base_url + one ISO timestamp)
+    and writes every result, `ok` included. It also makes a `--recheck`
+    diffable against a prior day's run."""
+    path = output_dir / f"{REPORT_BASENAME}.json"
+    data = {
+        "base_url": base_url,
+        "checked_at": checked_at,
+        "results": [
+            {"url": r.url, "pages": r.pages, "ok": r.ok, "status": r.status, "reason": r.reason}
+            for r in results
+        ],
+    }
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return path

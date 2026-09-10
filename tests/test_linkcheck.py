@@ -16,6 +16,7 @@ from wpfreeze.linkcheck import (
     render_report_markdown,
     write_links,
     write_report,
+    write_results_json,
 )
 from wpfreeze.manifest import FLAG_AUTH_GATED, FLAG_RETRY_EXHAUSTED
 from wpfreeze.urlnorm import scope_profile_from_config
@@ -160,3 +161,43 @@ def test_write_report_writes_both_files(tmp_path: Path):
 
     assert md_path.exists() and html_path.exists()
     assert "a.html" in md_path.read_text(encoding="utf-8")
+
+
+def test_write_results_json_round_trips_every_field(tmp_path: Path):
+    results = [
+        LinkCheckResult(url="https://ok.example/", pages=["a.html"], ok=True, status=200, reason=None),
+        LinkCheckResult(
+            url="https://gone.example/", pages=["a.html", "b.html"], ok=False, status=404, reason="HTTP 404"
+        ),
+    ]
+
+    path = write_results_json(results, tmp_path, "https://example.com", "2026-08-24T00:00:00+00:00")
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+
+    assert path.name == "broken-external-links.json"
+    assert loaded["base_url"] == "https://example.com"
+    assert loaded["checked_at"] == "2026-08-24T00:00:00+00:00"
+    assert loaded["results"] == [
+        {"url": "https://ok.example/", "pages": ["a.html"], "ok": True, "status": 200, "reason": None},
+        {
+            "url": "https://gone.example/",
+            "pages": ["a.html", "b.html"],
+            "ok": False,
+            "status": 404,
+            "reason": "HTTP 404",
+        },
+    ]
+
+
+def test_write_results_json_keeps_null_status_and_reason(tmp_path: Path):
+    results = [
+        LinkCheckResult(
+            url="https://timeout.example/", pages=["c.html"], ok=False, status=None, reason="unreachable (timeout)"
+        )
+    ]
+
+    path = write_results_json(results, tmp_path, "https://example.com", "2026-08-24T00:00:00+00:00")
+    [entry] = json.loads(path.read_text(encoding="utf-8"))["results"]
+
+    assert entry["status"] is None
+    assert entry["reason"] == "unreachable (timeout)"
