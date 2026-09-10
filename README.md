@@ -459,15 +459,20 @@ wpfreeze --version                       # the installed version
   the page → external-URL list it just found — `--recheck` re-verifies
   that persisted list's liveness without re-scanning the built site (or
   even needing `site/` to still exist), so link rot can be checked again
-  later without a rebuild. See "Checking external links" below.
+  later without a rebuild. Also refreshes `owner-tasks.html` from the
+  check it just ran (`--no-owner-tasks` skips that), so a re-check never
+  leaves a stale worksheet behind. See "Checking external links" below.
 - **`owner-tasks`** writes `owner-tasks.html`, an interactive worklist for
   the site owner, synthesised from `broken-external-links.json` (dead
   outbound links), `build-report.json` (broken internal links) and the
-  manifest (missing images and media). Needs `checklinks` to have run
-  first; a missing `build-report.json` or manifest just marks that section
-  as not-yet-checked rather than reporting it clean. `--output` writes it
-  somewhere other than `<output_dir>/owner-tasks.html`. See "Asking the
-  site owner" below.
+  manifest (missing images and media). **`checklinks` already refreshes
+  this automatically** — the same way `build` refreshes the cleanup
+  checklist — so you rarely need to run it by hand; it exists to
+  regenerate the worksheet without re-checking links. Needs `checklinks`
+  to have run at some point; a missing `build-report.json` or manifest
+  just marks that section as not-yet-checked rather than reporting it
+  clean. `--output` writes it somewhere other than
+  `<output_dir>/owner-tasks.html`. See "Asking the site owner" below.
 
 **Exit codes**: `0` = complete, `1` = complete with gaps (see `report.html`'s
 "Action required" section — expected content that couldn't be recovered
@@ -992,8 +997,16 @@ were (including "no external links at all").
 
 Alongside the two rendered reports, `checklinks` writes
 `broken-external-links.json` — the same check as machine-readable results,
-one entry per URL with `ok`/`status`/`reason`. That is what `owner-tasks`
-reads, and it makes a `--recheck` diffable against a previous day's run.
+one entry per URL with `ok`/`status`/`reason`. It makes a `--recheck`
+diffable against a previous day's run, and it is what the owner worksheet
+below is built from.
+
+`checklinks` also **refreshes `owner-tasks.html`** from the check it just
+ran, the same way `build` refreshes `cleanup-todo.md`/`.html`. That is
+deliberate rather than a convenience: the worksheet is the one artefact
+here that gets emailed to someone, so a re-check that left the old one on
+disk would hand a site owner a list of links that were dead last month.
+`--no-owner-tasks` skips it.
 
 ## Asking the site owner
 
@@ -1002,9 +1015,16 @@ is you. `wpfreeze owner-tasks` answers *what do you need to do*, and its
 reader is the person whose site it is:
 
 ```bash
-wpfreeze checklinks site     # must run first -- owner-tasks reads its results
-wpfreeze owner-tasks site    # writes owner-tasks.html
+wpfreeze checklinks site     # checks the links AND writes owner-tasks.html
 ```
+
+`checklinks` produces it, because it is the step that produces the data it
+is built from — and re-running `checklinks` rewrites it, so the worksheet
+you email is never older than the check behind it. `wpfreeze owner-tasks
+site` regenerates it on its own if you want it without re-checking links.
+There is no separate step to remember; a `freeze` that runs `checklinks`,
+or one where you accept the end-of-run offer to check links, produces the
+worksheet too, and the wrap-up names its path along with everything else.
 
 `owner-tasks.html` is one self-contained file — no CDN, no fonts, no
 network of any kind — so you can simply email it. The owner saves it,

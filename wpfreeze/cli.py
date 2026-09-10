@@ -1213,7 +1213,12 @@ def _run_search_index_body(config: SiteConfig, target: Path, progress: "Progress
 
 
 def run_checklinks(
-    config: SiteConfig, site_dir: Path | None, recheck: bool, *, print_wrapup: bool = True
+    config: SiteConfig,
+    site_dir: Path | None,
+    recheck: bool,
+    *,
+    print_wrapup: bool = True,
+    write_owner_tasks: bool = True,
 ) -> int:
     """Find every external `<a href>` the built site contains and check
     whether it still resolves, writing `broken-external-links.md`/`.html`
@@ -1252,13 +1257,19 @@ def run_checklinks(
     summary = RunSummary(project=config.name, base_url=config.base_url, output_dir=config.output_dir)
     host = urlsplit(config.base_url).hostname or config.base_url
     with Progress(f"Checking links from {host}") as progress:
-        exit_code = time_step(summary, "checklinks", lambda: _run_checklinks_body(config, links, progress))
+        exit_code = time_step(
+            summary,
+            "checklinks",
+            lambda: _run_checklinks_body(config, links, progress, write_owner_tasks),
+        )
     if print_wrapup:
         print(format_wrapup(summary))
     return exit_code
 
 
-def _run_checklinks_body(config: SiteConfig, links: list, progress: "Progress | None") -> int:
+def _run_checklinks_body(
+    config: SiteConfig, links: list, progress: "Progress | None", write_owner: bool = True
+) -> int:
     results = check_links(
         links, user_agent=config.user_agent, rate_limit=config.rate_limit, workers=config.concurrency,
         progress=progress,
@@ -1272,7 +1283,37 @@ def _run_checklinks_body(config: SiteConfig, links: list, progress: "Progress | 
     print(f"Checked {len(results)} external link(s): {len(broken)} broken.")
     print(f"Report: {md_path} / {html_path}")
     print(f"Machine-readable results: {json_path}")
+    if write_owner:
+        _announce_owner_tasks(config)
     return 1 if broken else 0
+
+
+def _announce_owner_tasks(config: SiteConfig) -> None:
+    """Regenerate owner-tasks.html from the check that just ran, and say
+    where it landed -- the same contract as _announce_cleanup_todo, for
+    the same reason.
+
+    This is the only place it can sensibly happen automatically:
+    `owner-tasks` reads broken-external-links.json, which only checklinks
+    produces, and checklinks scans the *built* site, so it necessarily
+    runs after `build`. Regenerating here also closes the staleness hole
+    -- re-checking links without rebuilding the worksheet would otherwise
+    leave a stale worksheet that looks current, and the whole point of it
+    is that it gets emailed to someone.
+
+    Never raises: a missing build-report or manifest is already handled as
+    an un-run section, and anything else is a report we simply don't write
+    rather than a failed link check."""
+    from wpfreeze.ownertasks import OwnerTasksInputMissing, load_tasks, write_owner_tasks
+
+    try:
+        tasks = load_tasks(config.output_dir, config)
+        dest = write_owner_tasks(tasks, config.output_dir)
+    except (OwnerTasksInputMissing, OSError) as exc:
+        logger.debug("owner-tasks not regenerated: %s", exc)
+        return
+    open_items = sum(1 for t in tasks.tasks if t.group != "authgated")
+    print(f"Owner worksheet: {dest} ({open_items} item(s) needing the site owner's decision)")
 
 
 def run_owner_tasks(config: SiteConfig, output_path: Path | None = None, *, print_wrapup: bool = True) -> int:
@@ -1350,6 +1391,12 @@ def run_freeze(config: SiteConfig, project: str) -> int:
             "Note: `search-index` is redundant here -- `build` already indexes "
             "automatically when search.enabled is set. Running it anyway, since "
             "you listed it explicitly."
+        )
+
+    if "owner-tasks" in config.freeze.steps and "checklinks" in config.freeze.steps:
+        print(
+            "Note: `owner-tasks` is redundant here -- `checklinks` already refreshes "
+            "owner-tasks.html. Running it anyway, since you listed it explicitly."
         )
 
     summary = RunSummary(project=project, base_url=config.base_url, output_dir=config.output_dir)
@@ -1611,6 +1658,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="re-check the external links already saved in external-links.json instead of re-scanning "
         "the built site -- works without the built site present",
     )
+    checklinks_p.add_argument(
+        "--no-owner-tasks",
+        action="store_true",
+        help="skip regenerating owner-tasks.html from this check (it is refreshed by default, so a "
+        "re-check never leaves a stale worksheet behind)",
+    )
 
     owner_tasks_p = subparsers.add_parser(
         "owner-tasks",
@@ -1817,7 +1870,9 @@ def _dispatch(argv: list[str] | None) -> int:
     if args.command == "search-index":
         return run_search_index(config, args.site_dir)
     if args.command == "checklinks":
-        return run_checklinks(config, args.site_dir, recheck=args.recheck)
+        return run_checklinks(
+            config, args.site_dir, recheck=args.recheck, write_owner_tasks=not args.no_owner_tasks
+        )
     if args.command == "owner-tasks":
         return run_owner_tasks(config, args.output)
 

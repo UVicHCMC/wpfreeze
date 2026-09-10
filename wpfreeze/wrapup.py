@@ -20,6 +20,7 @@ _ARTEFACTS: tuple[tuple[str, str], ...] = (
     ("Report", "report.html"),
     ("Checklist", "cleanup-todo.html"),
     ("Broken links", "broken-external-links.html"),
+    ("Owner worksheet", "owner-tasks.html"),
     ("VNU report", "vnu-report.json"),
     ("Build report", "build-report.json"),
     ("Diagnostics", "diagnostics.json"),

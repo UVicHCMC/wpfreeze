@@ -307,21 +307,31 @@ _LANDSCAPES = Path(__file__).parent.parent / "output" / "landscapes"
     reason="no real landscapes capture present locally",
 )
 def test_load_tasks_against_real_landscapes_capture():
-    tasks = load_tasks(_LANDSCAPES, _config(_LANDSCAPES))
+    """Asserts invariants against whatever is on disk rather than a
+    memorised snapshot. `checklinks` rewrites broken-external-links.json
+    from a live network run, so the broken-link counts legitimately drift
+    between runs -- 126 broken on 2026-08-24, 123 two weeks later as three
+    hosts came back. Pinning those numbers would make this fail on every
+    fresh check, which teaches the reader nothing about load_tasks."""
+    source = json.loads((_LANDSCAPES / "broken-external-links.json").read_text(encoding="utf-8"))
+    broken = [r for r in source["results"] if not r["ok"]]
+    expected_authgated = sum(1 for r in broken if "auth-gated" in (r["reason"] or ""))
+    build_report = json.loads((_LANDSCAPES / "build-report.json").read_text(encoding="utf-8"))
 
+    tasks = load_tasks(_LANDSCAPES, _config(_LANDSCAPES))
     external = tasks.by_type("external_link")
     internal = tasks.by_type("internal_link")
     missing = tasks.by_type("missing_file")
 
-    assert len(external) == 126
-    assert len(internal) == 47
-    assert len(missing) == 5
+    # every broken link becomes exactly one task, and the 1a/1b split is
+    # exhaustive -- the decision unit is the distinct URL, not the page
+    assert len(external) == len(broken)
+    assert len(tasks.by_group("authgated")) == expected_authgated
+    assert len(tasks.by_group("dead")) == len(broken) - expected_authgated
+    assert len(internal) == len(build_report["unresolved_samples"])
 
-    # the 1a/1b split -- distinct URLs, not page instances
-    assert len(tasks.by_group("authgated")) == 28
-    assert len(tasks.by_group("dead")) == 98
-
-    # the five originals, variants folded
+    # the manifest does not change without a re-acquire, so these are fixed:
+    # 69 missing records -> 7 owner-relevant media -> 5 asks, variants folded
     assert sorted(m.filename for m in missing) == [
         "IMG_1090.jpg",
         "Josie-image.jpg",
@@ -329,12 +339,10 @@ def test_load_tasks_against_real_landscapes_capture():
         "harps_of_enoshima.mp3",
         "josie-gray.jpeg",
     ]
-    folded = {m.filename: m.variants for m in missing if m.variants}
-    assert folded == {
+    assert {m.filename: m.variants for m in missing if m.variants} == {
         "Josie-image.jpg": ["Josie-image-244x300.jpg"],
         "Terry-portrait-2010_opt.jpg": ["Terry-portrait-2010_opt-150x150.jpg"],
     }
-
     assert tasks.handled_missing_count == 62
     assert tasks.unrun_checks == []
 
@@ -535,13 +543,16 @@ def test_js_keys_action_labels_by_task_type(tmp_path: Path):
     reason="no real landscapes capture present locally",
 )
 def test_render_against_real_landscapes_capture():
-    html = render_owner_tasks_html(load_tasks(_LANDSCAPES, _config(_LANDSCAPES)))
+    tasks = load_tasks(_LANDSCAPES, _config(_LANDSCAPES))
+    html = render_owner_tasks_html(tasks)
 
-    assert html.count('<article class="task"') == 178
-    assert html.count('data-task-type="external_link"') == 126
-    assert html.count('data-task-type="internal_link"') == 47
-    assert html.count('data-task-type="missing_file"') == 5
-    # 98 dead + 28 auth-gated; the wrapper div/details also carry the attr, hence -1
-    assert html.count('data-group="dead"') - 1 == 98
-    assert html.count('data-group="authgated"') - 1 == 28
+    # one card per task, and the type/group counts agree with the data --
+    # derived, not pinned, for the reason the loader test above explains
+    assert html.count('<article class="task"') == len(tasks.tasks)
+    for task_type in ("external_link", "internal_link", "missing_file"):
+        assert html.count(f'data-task-type="{task_type}"') == len(tasks.by_type(task_type))
+    # the wrapper div/details also carry the attribute, hence -1
+    assert html.count('data-group="dead"') - 1 == len(tasks.by_group("dead"))
+    assert html.count('data-group="authgated"') - 1 == len(tasks.by_group("authgated"))
     assert html.count("<script") == 2  # data island + behaviour
+    assert html.count('data-task-type="missing_file"') == 5
