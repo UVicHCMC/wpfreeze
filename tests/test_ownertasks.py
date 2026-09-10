@@ -12,6 +12,8 @@ from wpfreeze.ownertasks import (
     _group_resize_variants,
     _task_id,
     load_tasks,
+    render_owner_tasks_html,
+    write_owner_tasks,
 )
 
 _BASE = "https://www.example.com"
@@ -334,3 +336,154 @@ def test_load_tasks_against_real_landscapes_capture():
 
     assert tasks.handled_missing_count == 62
     assert tasks.unrun_checks == []
+
+
+# --- rendering (phase 3: semantic markup, no CSS, no behaviour) -------------
+
+
+def _render(tmp_path: Path, *, build_report: bool = True, manifest: bool = True) -> str:
+    _write(
+        tmp_path,
+        "broken-external-links.json",
+        _broken_links(
+            _dead('https://gone.example/a?x=1&y=2', ["about.html"]),
+            _authgated("https://journal.example/", ["research.html"]),
+        ),
+    )
+    if build_report:
+        _write(
+            tmp_path,
+            "build-report.json",
+            {
+                "unresolved_samples": [
+                    {"target": "https://x.example/<b>", "context": 'a "quoted" link',
+                     "page_output": "/p.html", "page": "", "value": ""}
+                ]
+            },
+        )
+    if manifest:
+        _write(
+            tmp_path,
+            "manifest.json",
+            {
+                "records": [
+                    _missing(f"{_BASE}/uploads/pic.jpg", [f"crawl:{_BASE}/story/"]),
+                    _missing(f"{_BASE}/uploads/pic-150x150.jpg", [f"crawl:{_BASE}/story/"]),
+                    _missing(f"{_BASE}/?attachment_id=9"),
+                ]
+            },
+        )
+    return render_owner_tasks_html(load_tasks(tmp_path, _config(tmp_path)))
+
+
+def test_render_emits_no_css_and_only_the_json_island_script(tmp_path: Path):
+    html = _render(tmp_path)
+
+    assert html.startswith("<!doctype html>")
+    assert "<style></style>" in html
+    assert html.count("<script") == 1
+    assert '<script type="application/json" id="owner-tasks-data">' in html
+
+
+def test_render_escapes_quotes_and_angle_brackets_in_targets(tmp_path: Path):
+    import re
+
+    html = _render(tmp_path)
+
+    assert "https://x.example/&lt;b&gt;" in html
+    assert "https://gone.example/a?x=1&amp;y=2" in html
+    assert "a &quot;quoted&quot; link" in html
+    # nothing outside the JSON island carries raw markup or an unescaped &
+    outside_island = re.sub(
+        r'<script type="application/json".*?</script>', "", html, flags=re.S
+    )
+    assert "<b>" not in outside_island
+    assert "x=1&y=2" not in outside_island
+    # the island itself escapes every < and > so the <script> stays inert
+    island = re.search(
+        r'<script type="application/json" id="owner-tasks-data">\n(.*?)\n</script>', html, re.S
+    ).group(1)
+    assert "<" not in island and ">" not in island
+    assert "\\u003cb\\u003e" in island  # the raw target, neutralised
+
+
+def test_render_has_full_task_anatomy_per_the_markup_contract(tmp_path: Path):
+    html = _render(tmp_path)
+
+    assert 'data-task-type="external_link"' in html
+    assert 'data-task-type="internal_link"' in html
+    assert 'data-task-type="missing_file"' in html
+    assert 'data-group="dead"' in html and 'data-group="authgated"' in html
+    assert 'class="task-action" data-default="keep"' in html  # auth-gated default
+    assert '<option value="keep" selected>' in html  # correct with JS disabled
+    assert 'class="task-url" type="url"' in html and "hidden>" in html
+    assert 'class="task-note" type="text"' in html
+
+
+def test_render_folds_variants_and_shows_the_note(tmp_path: Path):
+    html = _render(tmp_path)
+
+    assert '<h3 class="task-filename">pic.jpg</h3>' in html
+    assert '<h3 class="task-filename">pic-150x150.jpg</h3>' not in html  # folded, not its own row
+    assert "task-variant-note" in html
+    assert html.count('data-task-type="missing_file"') == 1
+
+
+def test_render_counts_match_the_task_set(tmp_path: Path):
+    html = _render(tmp_path)
+
+    assert html.count('<article class="task"') == 4  # 2 external + 1 internal + 1 missing
+    assert "0 of 4 handled" in html
+
+
+def test_render_marks_an_unrun_section_rather_than_emitting_it_empty(tmp_path: Path):
+    html = _render(tmp_path, build_report=False)
+
+    assert 'id="section-internal"' in html and 'data-unrun="true"' in html
+    assert "has not been run yet" in html
+    # section 1 still rendered its tasks
+    assert 'data-task-type="external_link"' in html
+
+
+def test_json_island_round_trips_and_prefills_authgated(tmp_path: Path):
+    import re
+
+    html = _render(tmp_path)
+    body = re.search(
+        r'<script type="application/json" id="owner-tasks-data">\n(.*?)\n</script>', html, re.S
+    ).group(1)
+    data = json.loads(body.replace("<\\/", "</"))
+
+    assert data["schema"] == "wpfreeze/owner-response@1"
+    assert data["counts"]["total"] == 4
+    assert len(data["items"]) == 4
+    authgated = [i for i in data["items"] if i.get("group") == "authgated"]
+    assert authgated and all(i["action"] == "keep" for i in authgated)
+    assert all(i["action"] is None for i in data["items"] if i["type"] == "missing_file")
+
+
+def test_write_owner_tasks_writes_the_file(tmp_path: Path):
+    _write(tmp_path, "broken-external-links.json", _broken_links(_dead("https://gone.example/", ["a.html"])))
+    tasks = load_tasks(tmp_path, _config(tmp_path))
+
+    dest = write_owner_tasks(tasks, tmp_path)
+
+    assert dest.name == "owner-tasks.html"
+    assert dest.read_text(encoding="utf-8").startswith("<!doctype html>")
+
+
+@pytest.mark.skipif(
+    not (_LANDSCAPES / "broken-external-links.json").exists(),
+    reason="no real landscapes capture present locally",
+)
+def test_render_against_real_landscapes_capture():
+    html = render_owner_tasks_html(load_tasks(_LANDSCAPES, _config(_LANDSCAPES)))
+
+    assert html.count('<article class="task"') == 178
+    assert html.count('data-task-type="external_link"') == 126
+    assert html.count('data-task-type="internal_link"') == 47
+    assert html.count('data-task-type="missing_file"') == 5
+    # 98 dead + 28 auth-gated; the wrapper div/details also carry the attr, hence -1
+    assert html.count('data-group="dead"') - 1 == 98
+    assert html.count('data-group="authgated"') - 1 == 28
+    assert html.count("<script") == 1

@@ -1825,6 +1825,7 @@ def _patch_step_module(monkeypatch, cli_module, calls, name, result=0):
         "checklinks": "run_checklinks",
         "search-index": "run_search_index",
         "upload-script": "run_upload_script",
+        "owner-tasks": "run_owner_tasks",
     }[name]
     monkeypatch.setattr(cli_module, attr, lambda *a, **k: calls.append(name) or result)
 

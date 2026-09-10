@@ -128,7 +128,8 @@ DEFAULT_FREEZE_STEPS: tuple[str, ...] = ("acquire", "build", "validate")
 # and nowhere else fails with a KeyError mid-freeze instead of a
 # ConfigError at load time.
 FREEZE_PERMITTED_STEPS: tuple[str, ...] = (
-    "acquire", "build", "validate", "diagnose", "report", "checklinks", "search-index", "upload-script",
+    "acquire", "build", "validate", "diagnose", "report", "checklinks", "search-index",
+    "upload-script", "owner-tasks",
 )
 
 
@@ -1274,6 +1275,35 @@ def _run_checklinks_body(config: SiteConfig, links: list, progress: "Progress | 
     return 1 if broken else 0
 
 
+def run_owner_tasks(config: SiteConfig, output_path: Path | None = None, *, print_wrapup: bool = True) -> int:
+    """Write owner-tasks.html: a worklist for the site owner, synthesised
+    from broken-external-links.json, build-report.json and the manifest.
+    Needs `checklinks` to have run (section 1 is the spine); a missing
+    build-report or manifest just omits that section."""
+    from wpfreeze.ownertasks import OwnerTasksInputMissing, load_tasks, write_owner_tasks
+
+    try:
+        tasks = load_tasks(config.output_dir, config)
+    except OwnerTasksInputMissing as exc:
+        print(str(exc))
+        return 2
+
+    dest = write_owner_tasks(tasks, config.output_dir, output_path)
+    counts = (
+        len(tasks.by_type("external_link")),
+        len(tasks.by_type("internal_link")),
+        len(tasks.by_type("missing_file")),
+    )
+    print(f"Wrote {dest}")
+    print(
+        f"  {counts[0]} external link(s), {counts[1]} internal link(s), "
+        f"{counts[2]} missing file(s) for the owner to resolve"
+    )
+    for unrun in tasks.unrun_checks:
+        print(f"  note: the {unrun} check has not run -- that section is omitted")
+    return 0
+
+
 def run_freeze(config: SiteConfig, project: str) -> int:
     """Runs every step `config.freeze.steps` declares, in order, with one
     progress display per step (each run_* function below shows its own)
@@ -1312,6 +1342,7 @@ def run_freeze(config: SiteConfig, project: str) -> int:
         "checklinks": lambda: run_checklinks(config, None, recheck=False, print_wrapup=False),
         "search-index": lambda: run_search_index(config, None, print_wrapup=False),
         "upload-script": lambda: run_upload_script(config, None),
+        "owner-tasks": lambda: run_owner_tasks(config, None, print_wrapup=False),
     }
 
     if "search-index" in config.freeze.steps and "build" in config.freeze.steps:
@@ -1581,6 +1612,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "the built site -- works without the built site present",
     )
 
+    owner_tasks_p = subparsers.add_parser(
+        "owner-tasks",
+        help="write owner-tasks.html: an interactive worklist for the site owner (dead links "
+        "to decide on, missing files to track down), synthesised from broken-external-links.json, "
+        "build-report.json and the manifest -- run `checklinks` first",
+    )
+    _add_project_arg(owner_tasks_p)
+    owner_tasks_p.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="where to write the report (default: <output_dir>/owner-tasks.html)",
+    )
+
     freeze_p = subparsers.add_parser(
         "freeze",
         help="run a project's whole declared sequence (default: acquire, build, validate) with one "
@@ -1773,6 +1818,8 @@ def _dispatch(argv: list[str] | None) -> int:
         return run_search_index(config, args.site_dir)
     if args.command == "checklinks":
         return run_checklinks(config, args.site_dir, recheck=args.recheck)
+    if args.command == "owner-tasks":
+        return run_owner_tasks(config, args.output)
 
     return 2
 
