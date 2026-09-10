@@ -387,7 +387,10 @@ section { margin: 2.5rem 0; }
 }
 .task-target { font-size: 0.95rem; }
 .task-filename { font-size: 1.15rem; font-weight: 600; }
-.task-meta { color: var(--muted); font-size: 0.88rem; margin: 0 0 0.5rem; }
+/* The reason string can be a whole urllib traceback line with no spaces
+   in it (host='...', port=80) -- without this it pushes the page wider
+   than a phone screen. */
+.task-meta { color: var(--muted); font-size: 0.88rem; margin: 0 0 0.5rem; overflow-wrap: anywhere; }
 .task-variant-note { color: var(--todo); font-size: 0.88rem; margin: 0 0 0.5rem; }
 .task-pages { margin: 0 0 0.5rem; font-size: 0.88rem; }
 .task-pages summary { cursor: pointer; color: var(--muted); }
