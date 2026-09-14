@@ -21,6 +21,32 @@ _CSS_EXTS = {".css"}
 _JS_EXTS = {".js", ".mjs"}
 _IMG_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp", ".ico"}
 
+# Extension to fall back to when a fetched external asset's URL path has no
+# extension of its own (e.g. https://fonts.googleapis.com/css?family=...) --
+# without one, a static webserver serves it with its default MIME type
+# (typically text/plain), and browsers refuse to load it as CSS/JS/a font.
+_EXTENSION_BY_CONTENT_TYPE = {
+    "text/css": ".css",
+    "application/javascript": ".js",
+    "text/javascript": ".js",
+    "font/woff2": ".woff2",
+    "font/woff": ".woff",
+    "font/ttf": ".ttf",
+    "font/otf": ".otf",
+    "application/font-woff": ".woff",
+    "application/font-woff2": ".woff2",
+    "application/x-font-ttf": ".ttf",
+    "application/x-font-truetype": ".ttf",
+    "application/vnd.ms-fontobject": ".eot",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/svg+xml": ".svg",
+    "image/x-icon": ".ico",
+    "image/vnd.microsoft.icon": ".ico",
+}
+
 
 class OutputPathCollisionError(Exception):
     """Two internal resources mapped to the same output_path. Should be
@@ -71,13 +97,33 @@ def external_asset_bucket(filename: str) -> str | None:
     return None
 
 
-def external_output_path(url: str, content_hash: str, disambiguate: bool = False) -> str:
+def external_output_path(
+    url: str,
+    content_hash: str,
+    disambiguate: bool = False,
+    content_type: str | None = None,
+) -> str:
     """Bucket an external renderable asset by type. On a same-bucket
     filename collision between two different hosts, `disambiguate=True`
-    appends a short content_hash prefix rather than colliding silently."""
+    appends a short content_hash prefix rather than colliding silently.
+
+    Some external asset URLs carry no file extension at all (Google
+    Fonts' /css?family=... endpoint is the common case). Bucketing then
+    falls through to the host-namespaced catch-all, and the file is
+    served with the webserver's default MIME type -- wrong for CSS/JS/
+    fonts. When `content_type` is given and the filename has no
+    extension, append one derived from it so the file both buckets and
+    serves correctly.
+    """
     parsed = urlsplit(url)
     host = parsed.hostname or "unknown-host"
     filename = PurePosixPath(parsed.path).name or "index"
+
+    if not PurePosixPath(filename).suffix and content_type:
+        bare_type = content_type.split(";")[0].strip().lower()
+        ext = _EXTENSION_BY_CONTENT_TYPE.get(bare_type)
+        if ext:
+            filename += ext
 
     if disambiguate:
         stem = PurePosixPath(filename).stem
@@ -111,9 +157,11 @@ def _assign_output_path(
         record.output_path = output_path
         return
 
-    candidate = external_output_path(record.url, record.content_hash or "")
+    candidate = external_output_path(record.url, record.content_hash or "", content_type=record.content_type)
     if candidate in external_seen and external_seen[candidate] != record.url:
-        candidate = external_output_path(record.url, record.content_hash or "", disambiguate=True)
+        candidate = external_output_path(
+            record.url, record.content_hash or "", disambiguate=True, content_type=record.content_type
+        )
     external_seen[candidate] = record.url
     record.output_path = candidate
 
@@ -146,6 +194,25 @@ def compute_output_paths(
             _assign_output_path(record, profile, internal_seen, external_seen)
 
 
+_HTACCESS_UNSAFE_RE = re.compile(r"[\x00-\x20\x7f]")
+
+
+def _htaccess_safe(text: str) -> str:
+    """Percent-encode raw whitespace/control characters.
+
+    Apache's `Redirect` directive splits its arguments on whitespace, so a
+    URL that reached the manifest with a literal space in it (a hand-typed
+    link on the original site, seen in the wild: `/audrey kobayashi/`
+    alongside the properly-escaped `/audrey%20kobayashi/`) turns one
+    `Redirect` line into one with too many arguments -- an Apache config
+    syntax error, which 500s the *entire* directory, not just that one
+    redirect. normalize_url does not itself guarantee URL-safety of
+    whatever raw text a page happened to contain, so this is the last
+    point before the text leaves Python for an Apache config file.
+    """
+    return _HTACCESS_UNSAFE_RE.sub(lambda m: f"%{ord(m.group()):02X}", text)
+
+
 def generate_redirects_htaccess(manifest: Manifest) -> str:
     """Mechanical directory->file RewriteRules first, then explicit
     Redirect 301 lines for aliases/redirect origins/?p=-style permalinks."""
@@ -171,6 +238,8 @@ def generate_redirects_htaccess(manifest: Manifest) -> str:
             request_path = origin_path if not origin_query else f"{origin_path}?{origin_query}"
             if origin_path == canonical_path and not origin_query:
                 continue
-            lines.append(f"Redirect 301 {request_path} {record.output_path}")
+            lines.append(
+                f"Redirect 301 {_htaccess_safe(request_path)} {_htaccess_safe(record.output_path)}"
+            )
 
     return "\n".join(lines) + "\n"

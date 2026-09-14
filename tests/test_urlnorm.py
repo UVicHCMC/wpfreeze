@@ -126,6 +126,20 @@ def test_normalize_url_lowercases_external_host_only():
     assert result == "http://cdn.example.net/Foo.JPG"
 
 
+def test_normalize_url_keeps_full_query_on_external_host():
+    """The permalink-query allowlist is a WordPress-on-the-site's-own-host
+    convention. On a foreign host the query string is the resource's
+    identity (Google Fonts' family=, a CDN's ver=) -- stripping it changes
+    which resource the URL names, not just how it's spelled. Regression
+    for the fonts.googleapis.com/css?family=... -> bare /css bug, where
+    the mangled URL 400'd live and a stale empty Wayback capture of the
+    same bare URL was silently accepted in its place."""
+    result = normalize_url(
+        "https://fonts.googleapis.com/css?family=Open+Sans:400,700&subset=latin", SLASH_PROFILE
+    )
+    assert result == "https://fonts.googleapis.com/css?family=Open+Sans%3A400%2C700&subset=latin"
+
+
 @pytest.mark.parametrize(
     "base, link, expected",
     [

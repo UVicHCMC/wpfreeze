@@ -212,8 +212,11 @@ def normalize_url(
     - lowercase scheme/host; upgrade http -> https for the site's own
       host(s), only if the site is known to serve https
     - strip the fragment always
-    - strip query strings except p=/page_id=/attachment_id=, and only
-      keep those until a pretty permalink is known
+    - on the site's own host: strip query strings except
+      p=/page_id=/attachment_id=/etc., and only keep those until a pretty
+      permalink is known. On any other host, the query string is the
+      resource's identity (a Google Fonts family=, a CDN's cache-busting
+      ver=, an image resize width=) and is left untouched.
     - resolve ./.. segments, collapse duplicate slashes, decode unreserved
       percent-encodings
     - fold www/non-www hosts to the site's canonical host
@@ -259,8 +262,11 @@ def normalize_url(
             path = path.rstrip("/")
 
     query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
-    if pretty_permalink_known:
-        kept_pairs: list[tuple[str, str]] = []
+    kept_pairs: list[tuple[str, str]]
+    if not owned:
+        kept_pairs = query_pairs
+    elif pretty_permalink_known:
+        kept_pairs = []
     else:
         kept_pairs = [(k, v) for k, v in query_pairs if k in PERMALINK_QUERY_KEYS]
     query = urlencode(kept_pairs)

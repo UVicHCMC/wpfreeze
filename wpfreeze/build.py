@@ -187,7 +187,7 @@ class BuildStats:
         return self.rewritten + self.left_absolute + self.unresolved
 
 
-def lookup_variants(url: str) -> list[str]:
+def lookup_variants(url: str, *, owned: bool = True) -> list[str]:
     """Every spelling of `url` worth trying against the lookup, most
     specific first.
 
@@ -195,6 +195,17 @@ def lookup_variants(url: str) -> list[str]:
     spelling that never occurs simply misses. Under-generating is the
     expensive direction -- each missed spelling is a reference left pointing
     at a site that may not exist much longer.
+
+    `owned=False` (a reference to a host this capture doesn't own) suppresses
+    the "permalink keys only" / "no query" fallback tiers described in this
+    module's docstring. Those tiers exist so `style.css?ver=6.4` resolves to
+    this site's own `style.css` -- on a foreign host the query string is the
+    resource's identity, not a cache-buster (Google Fonts' `family=`, a CDN's
+    resize `w=`), and offering the bare URL as a candidate risks silently
+    matching some unrelated record that happens to already occupy that bare
+    path. Regression case: `fonts.googleapis.com/css?family=Open+Sans...`
+    resolving to a stale, empty `fonts.googleapis.com/css` capture instead of
+    being left unresolved or matching its own real record.
     """
     parts = urlsplit(url)
     if not parts.netloc:
@@ -217,8 +228,17 @@ def lookup_variants(url: str) -> list[str]:
     schemes = [parts.scheme] if parts.scheme in ("http", "https") else []
     schemes += [s for s in ("https", "http") if s not in schemes]
 
+    # The literal query as written in the markup, then its canonically
+    # percent-encoded form -- a hand-written href and the manifest key
+    # produced by urlnorm.normalize_url's urlencode() round-trip can escape
+    # the same query differently (`:`/`,` literal vs. %3A/%2C), and this
+    # candidate lets an otherwise-exact match still succeed.
     queries = [parts.query]
-    if parts.query:
+    canonical_query = urlencode(parse_qsl(parts.query, keep_blank_values=True))
+    if canonical_query != parts.query:
+        queries.append(canonical_query)
+
+    if owned and parts.query:
         kept = urlencode(
             [
                 (k, v)
@@ -254,17 +274,28 @@ def build_record_lookup(manifest: Manifest) -> dict[str, ManifestRecord]:
     silently point at a file that isn't there.
     """
     lookup: dict[str, ManifestRecord] = {}
+    profile = manifest.site_profile
 
-    def add(url: str, record: ManifestRecord) -> None:
-        for variant in lookup_variants(url):
+    def add(url: str, record: ManifestRecord, owned: bool) -> None:
+        for variant in lookup_variants(url, owned=owned):
             lookup.setdefault(variant, record)
 
     for record in manifest.all():
         if record.status not in _FETCHED_STATUSES or not record.output_path:
             continue
-        add(record.url, record)
+        if profile is not None:
+            owned = profile.owns_host((urlsplit(record.url).hostname or "").lower())
+        else:
+            # Pre-schema-2 manifest, no persisted profile to ask -- fall
+            # back to the same signal outputs.compute_output_paths itself
+            # used to decide this record's bucket: an external record's
+            # output_path always lands under /assets/ (external_output_path),
+            # an internal one never does (page-shaped, or an already-file-
+            # like asset path preserved as-is).
+            owned = not record.output_path.startswith("/assets/")
+        add(record.url, record, owned)
         for alias in record.aliases:
-            add(alias, record)
+            add(alias, record, owned)
     return lookup
 
 
@@ -498,7 +529,12 @@ class LinkRewriter:
                 self.stats.rewritten += 1
                 return relative_link(page_output, bundle_target) + fragment
 
-        for candidate in lookup_variants(absolute):
+        if self._profile is not None:
+            owned = self._profile.owns_host(urlsplit(absolute).hostname or "")
+        else:
+            owned = not _different_host(absolute, page_url)
+
+        for candidate in lookup_variants(absolute, owned=owned):
             target = self.lookup.get(candidate)
             if target is not None:
                 self.stats.rewritten += 1
@@ -1097,6 +1133,11 @@ def format_build_summary(stats: BuildStats) -> str:
         )
     if p.login_links_removed:
         lines.append(f"  {p.login_links_removed} login/admin link(s) unwrapped (dead on an archive)")
+    if p.wpcom_actionbars_removed:
+        lines.append(
+            f"  {p.wpcom_actionbars_removed} WordPress.com action bar(s) removed, taking "
+            f"{p.wpcom_actionbar_links_removed} link(s) with them"
+        )
     if p.dead_fragment_links_removed or p.comment_count_blurbs_removed:
         lines.append(
             f"  (also: {p.dead_fragment_links_removed} dead in-page link(s) unwrapped, "

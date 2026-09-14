@@ -91,6 +91,30 @@ def test_identity_query_alias_does_not_hijack_the_bare_path():
     assert lookup[f"{BASE}/"] == "/index.html"
 
 
+def test_external_query_identity_is_not_collapsed_to_a_stale_bare_record():
+    """Regression: fonts.googleapis.com/css?family=... used to normalize
+    down to the bare /css path (urlnorm's own bug, now fixed), producing an
+    empty capture at that bare URL. Even after acquiring the real,
+    correctly-normalized record, this module had a second, independent copy
+    of the same over-eager query-collapsing logic in lookup_variants --
+    unlike a WordPress cache-buster, an external host's query string is the
+    resource's identity, and must never fall back to whatever unrelated
+    record already occupies the bare path. Also covers the percent-encoding
+    mismatch between a literal href in markup and normalize_url's
+    urlencode()-produced manifest key."""
+    manifest = Manifest()
+    _fetched(manifest, "https://fonts.googleapis.com/css", "/assets/css/external/css.css")
+    real_url = "https://fonts.googleapis.com/css?family=Open+Sans%3A400%2C700&subset=latin"
+    _fetched(manifest, real_url, "/assets/css/external/css-abcd1234.css")
+    lookup = build_lookup(manifest)
+
+    stats = BuildStats()
+    rewriter = LinkRewriter(lookup, stats)
+    literal_href = "https://fonts.googleapis.com/css?family=Open+Sans:400,700&subset=latin"
+    result = rewriter.resolve(literal_href, "https://example.com/", "/index.html")
+    assert result == "assets/css/external/css-abcd1234.css"
+
+
 def test_scheme_www_and_trailing_slash_spellings_all_resolve():
     manifest = Manifest()
     _fetched(manifest, f"{BASE}/about/", "/about.html")

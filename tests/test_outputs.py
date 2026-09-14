@@ -81,6 +81,24 @@ def test_external_output_path_disambiguates_with_hash_prefix():
     assert path == "/assets/img/external/logo-deadbeef.png"
 
 
+def test_external_output_path_extensionless_url_uses_content_type():
+    """https://fonts.googleapis.com/css?family=... has no extension in its
+    path -- without a fallback it lands in the host catch-all as a bare
+    "css" file, which a webserver serves as text/plain and browsers then
+    refuse to load as a stylesheet."""
+    path = external_output_path(
+        "https://fonts.googleapis.com/css?family=Open+Sans",
+        "abc123",
+        content_type="text/css; charset=utf-8",
+    )
+    assert path == "/assets/css/external/css.css"
+
+
+def test_external_output_path_extensionless_url_without_content_type_falls_back_to_catchall():
+    path = external_output_path("https://fonts.googleapis.com/css?family=Open+Sans", "abc123")
+    assert path == "/assets/external/fonts.googleapis.com/css"
+
+
 def test_compute_output_paths_internal_pages():
     manifest = Manifest()
     manifest.upsert(_fetched("https://example.com/"))
@@ -152,3 +170,25 @@ def test_generate_redirects_htaccess_skips_canonical_self_reference():
     manifest.upsert(record)
     htaccess = generate_redirects_htaccess(manifest)
     assert "Redirect 301 /about/ /about.html" not in htaccess
+
+
+def test_generate_redirects_htaccess_escapes_raw_whitespace_in_a_malformed_alias():
+    """Regression, seen in the wild on landscapesofinjustice.com: a
+    hand-typed link on the original site (`/audrey kobayashi/`, alongside
+    a properly-escaped `/audrey%20kobayashi/` alias for the same page) put
+    a literal space into an alias URL. Written verbatim, that turns one
+    `Redirect 301 <src> <dst>` line into five whitespace-separated tokens
+    -- Apache's mod_alias rejects the extra argument as a config syntax
+    error, which 500s the *entire* directory the .htaccess lives in, not
+    just that one redirect."""
+    manifest = Manifest()
+    record = _fetched("https://example.com/audrey-kobayashi/")
+    record.output_path = "/audrey-kobayashi.html"
+    record.add_alias("https://example.com/audrey kobayashi/")
+    manifest.upsert(record)
+
+    htaccess = generate_redirects_htaccess(manifest)
+    for line in htaccess.splitlines():
+        if line.startswith("Redirect"):
+            assert len(line.split(" ")) == 4, line
+    assert "Redirect 301 /audrey%20kobayashi/ /audrey-kobayashi.html" in htaccess
