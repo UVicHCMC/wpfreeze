@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit
+from urllib.parse import quote_plus, urlsplit
 
 from wpfreeze.manifest import Status
 
@@ -84,8 +84,9 @@ class OwnerTask:
     type: str  # "external_link" | "internal_link" | "missing_file"
     target: str
     pages: list[str] = field(default_factory=list)
-    detected: dict = field(default_factory=dict)  # {"status": .., "reason": ..}
+    detected: dict = field(default_factory=dict)  # {"status": .., "reason": .., "kind": ..}
     context: str | None = None  # the link text, for internal links
+    texts: list[str] = field(default_factory=list)  # link wordings, both link types
     group: str | None = None  # "dead" | "authgated", external links only
     filename: str | None = None  # missing files
     upload_path: str | None = None  # missing files: original server path
@@ -103,8 +104,12 @@ class OwnerTasks:
     # Section keys whose source report was absent -- rendered as "this
     # check has not been run", not as "nothing to do".
     unrun_checks: list[str] = field(default_factory=list)
-    # Counts of findings that do not need the owner (the footnote): media
-    # the owner could not supply, and internal references no reader sees.
+    # Counts of findings that do not need the owner: media the owner could
+    # not supply, and internal references no reader sees. Kept as data --
+    # they are the by-product of the filters that hold those findings out
+    # of the worklist, and cli.py reports them to the archivist -- but
+    # deliberately not rendered in the worksheet: a page of decisions is
+    # not the place for a list of things nobody has to decide.
     handled_missing_count: int = 0
     handled_internal_count: int = 0
     # Total external links checked (broken + live), for the section-1 prose.
@@ -112,6 +117,13 @@ class OwnerTasks:
     # sha256 of each source report, so a returned response file can be
     # reconciled against the exact capture it was generated from.
     source_hashes: dict[str, str | None] = field(default_factory=dict)
+
+    def decisions(self) -> list[OwnerTask]:
+        """The tasks the owner actually owes us an answer for. Auth-gated
+        links are excluded: they arrive pre-answered "leave as is" (see
+        _task_payload), so counting them made the progress bar read "256 of
+        347 handled" before the owner had done anything at all."""
+        return [t for t in self.tasks if t.group != "authgated"]
 
     def by_type(self, task_type: str) -> list[OwnerTask]:
         return [t for t in self.tasks if t.type == task_type]
@@ -249,8 +261,13 @@ def load_tasks(output_dir: Path, config: "SiteConfig") -> OwnerTasks:
                 type="external_link",
                 target=result["url"],
                 pages=sorted(result.get("pages", [])),
-                detected={"status": result.get("status"), "reason": result.get("reason")},
+                detected={
+                    "status": result.get("status"),
+                    "reason": result.get("reason"),
+                    "kind": result.get("kind"),
+                },
                 group="authgated" if "auth-gated" in reason else "dead",
+                texts=list(result.get("texts", [])),
             )
         )
 
@@ -283,6 +300,7 @@ def load_tasks(output_dir: Path, config: "SiteConfig") -> OwnerTasks:
                     target=target,
                     pages=sorted(entry["pages"]),
                     context=entry["context"],
+                    texts=[entry["context"]],
                 )
             )
 
@@ -382,7 +400,7 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.9em; 
 
 .owner-progress {
   position: sticky; top: 0; z-index: 10;
-  display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap;
+  display: flex; align-items: center; gap: 0.6rem 0.7rem; flex-wrap: wrap;
   padding: 0.7rem 0; margin-bottom: 1.5rem;
   background: var(--bg); border-bottom: 1px solid var(--line);
 }
@@ -392,6 +410,14 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.9em; 
 }
 .progress-track > span { display: block; height: 100%; width: 0; background: var(--done); }
 .progress-count { font-variant-numeric: tabular-nums; font-size: 0.92rem; color: var(--muted); }
+/* The name field and the one Save button live in the bar, so the bar is
+   the whole save affordance and there is nothing to scroll to the bottom
+   for. 7rem and no more: at 320px the field and the button have to share
+   a row, or the bar grows to four rows and eats a third of a phone
+   screen. Measured at 320/360/390, not guessed. The status line always
+   takes a row of its own, and is empty until the first save. */
+#respondent { flex: 1 1 7rem; min-width: 5rem; }
+.owner-progress .save-status { flex-basis: 100%; margin: 0; }
 
 button {
   font: inherit; font-size: 0.92rem; padding: 0.4rem 0.9rem;
@@ -419,6 +445,12 @@ section { margin: 2.5rem 0; }
   overflow-wrap: anywhere; margin: 0 0 0.25rem;
 }
 .task-target { font-size: 0.95rem; }
+/* The link's own wording, under the address. Quoted, not monospace: it is
+   prose the owner wrote, not machinery. Each wording is a Google search
+   for itself, so it is styled as the link it is -- dotted, to read as an
+   offer rather than as the dead address above it. */
+.task-context { margin: 0 0 0.3rem; overflow-wrap: anywhere; }
+.task-search { text-decoration-style: dotted; text-underline-offset: 2px; }
 .task-filename { font-size: 1.15rem; font-weight: 600; }
 /* The reason string can be a whole urllib traceback line with no spaces
    in it (host='...', port=80) -- without this it pushes the page wider
@@ -438,6 +470,9 @@ section { margin: 2.5rem 0; }
 }
 .task-action { margin-left: 0.4rem; max-width: 100%; }
 .task-url, .task-note { display: block; width: 100%; margin-top: 0.45rem; }
+/* The URL box leads the card, so it gets a readable measure rather than
+   stretching the full width of a wide window. */
+.task-url { max-width: 34rem; }
 /* An author `display` rule outranks the UA stylesheet's [hidden]{display:none},
    so without this the reveal fields are visible on every unanswered card. */
 [hidden] { display: none !important; }
@@ -455,19 +490,14 @@ details.task-group > summary {
 .review-body ul { margin: 0.2rem 0 0; padding-left: 1.3rem; font-size: 0.88rem; }
 .review-body li { overflow-wrap: anywhere; margin: 0.1rem 0; }
 .review-empty { color: var(--muted); }
+.review-presumed { color: var(--muted); font-size: 0.88rem; margin: 0.9rem 0 0; }
 
-.save-area { margin: 2rem 0; padding: 1rem; border: 1px solid var(--card-line); border-radius: 5px; }
-.respondent-label { display: block; font-size: 0.92rem; margin-bottom: 0.7rem; }
-#respondent { display: block; margin-top: 0.3rem; width: 100%; max-width: 22rem; }
 .save-status { margin: 0.7rem 0 0; font-size: 0.92rem; color: var(--done); }
 
 .resume { margin: 1.5rem 0; padding: 0.9rem 1rem; border: 1px dashed var(--card-line); border-radius: 5px; }
 .resume.dragover { border-color: var(--link); background: var(--todo-bg); }
 .resume p { margin: 0 0 0.5rem; font-size: 0.92rem; color: var(--muted); }
 .resume-status { font-size: 0.88rem; }
-
-#handled-footnote { margin-top: 2.5rem; font-size: 0.92rem; color: var(--muted); }
-#handled-footnote summary { cursor: pointer; }
 
 @media (prefers-color-scheme: dark) {
   :root {
@@ -510,7 +540,80 @@ _MISSING_ACTIONS: tuple[tuple[str, str], ...] = (
     ("defer", "I need to look for it"),
 )
 
-_URL_PLACEHOLDER = "https://…"
+# The URL box leads each card and is the fast path through the worksheet:
+# pasting an address picks the action by itself (see the script), so most
+# owners never open the dropdown. Hence a placeholder that asks a question
+# rather than one that shows a URL's shape.
+# What a failure means, for the person whose site it is. The operator's
+# own string (`reason`) is a urllib traceback line -- "unreachable
+# (HTTPConnectionPool(host='bnb.bl.uk', port=80): Max retries exceeded
+# with url: / (Caused by NameResolutionError(" -- which tells a site owner
+# nothing and makes the whole page look like it was written for someone
+# else. It stays in broken-external-links.md/.html/.json, where the reader
+# is you; here it is translated.
+#
+# Keyed on linkcheck's `kind`, classified from the *full* error string at
+# check time. `reason` cannot be re-classified here: it is truncated at
+# 120 characters, usually mid-exception-name.
+_PLAIN_KIND: dict[str, str] = {
+    "dns": "This website no longer exists -- nothing answers to that address any more.",
+    "tls": "This website's security certificate is not valid, so a browser will refuse "
+           "to open it.",
+    "timeout": "This website never answered. It may be gone, or just very slow.",
+    "refused": "This website is still there, but it refused to talk to us.",
+    "redirect_loop": "This address sends a visitor round in a circle and never arrives.",
+    "unreachable": "We could not reach this website at all.",
+    # The collapsed group's own case. Without this a 403 falls through to
+    # _PLAIN_STATUS and reads "the website refused to show this page",
+    # which contradicts the heading above it ("probably fine").
+    "auth": "This asked for a login, so we could not check it. It most likely works "
+            "perfectly for a real visitor.",
+}
+
+_PLAIN_STATUS: dict[int, str] = {
+    400: "The website rejected this address as malformed -- usually a typo in the link.",
+    401: "This needs a login or a subscription.",
+    403: "The website refused to show this page.",
+    404: "The page is gone. The website is still there, but this page is not.",
+    408: "This website never answered. It may be gone, or just very slow.",
+    410: "The website says this page was deliberately removed.",
+    429: "The website asked us to slow down, so we could not confirm this one.",
+    500: "The website is broken at the moment. Worth trying again yourself in a day or two.",
+    502: "The website is broken at the moment. Worth trying again yourself in a day or two.",
+    503: "The website is offline at the moment. Worth trying again yourself in a day or two.",
+    504: "The website is offline at the moment. Worth trying again yourself in a day or two.",
+}
+
+_GOOGLE_SEARCH = "https://www.google.com/search?q="
+
+
+def _plain_reason(detected: dict) -> str:
+    """The failure, in a sentence an owner can act on. Falls back on the
+    older reports: a `broken-external-links.json` written before `kind`
+    existed still carries `reason`, whose "unreachable (" prefix is enough
+    to tell a network failure from an HTTP one."""
+    kind = detected.get("kind")
+    status = detected.get("status")
+    if kind is None and "auth-gated" in (detected.get("reason") or ""):
+        kind = "auth"  # a report written before `kind` existed
+    if kind in _PLAIN_KIND:
+        return _PLAIN_KIND[kind]
+    if isinstance(status, int):
+        if status in _PLAIN_STATUS:
+            return _PLAIN_STATUS[status]
+        if 300 <= status < 400:
+            return "This address no longer leads anywhere definite."
+        if 400 <= status < 500:
+            return f"The website turned this request away (code {status})."
+        if 500 <= status < 600:
+            return "The website is broken at the moment. Worth trying again yourself in a day or two."
+    if (detected.get("reason") or "").startswith("unreachable ("):
+        return _PLAIN_KIND["unreachable"]
+    return "We could not confirm this link."
+
+
+_URL_PLACEHOLDER = "Do you have a new URL? Paste it here."
+_MISSING_URL_PLACEHOLDER = "Is it online somewhere else? Paste the address here."
 _URL_LABEL = "Replacement address"
 _NOTE_PLACEHOLDER = "Anything we should know (optional)"
 _WAYBACK_PREFIX = "https://web.archive.org/web/2020/"
@@ -554,16 +657,60 @@ def _select_html(options: tuple[tuple[str, str], ...], default: str) -> str:
     return "".join(parts)
 
 
-def _action_inputs_html(task_id: str) -> str:
-    """Both fields carry an id and an aria-label: `placeholder` alone is not
-    an accessible name, and a form field with neither id nor name is also
+def _url_input_html(task_id: str, placeholder: str, hidden: bool) -> str:
+    """The replacement-address box. Rendered *before* the select and
+    visible from the start, because filling it in is what picks the
+    action. `type="text"`, not `type="url"`: an owner pastes
+    `example.org/page` as readily as `https://example.org/page` and the
+    browser's own validation rejecting it helps nobody -- we want whatever
+    they have, and a person reads it at the other end.
+
+    Carries an id and an aria-label: `placeholder` alone is not an
+    accessible name, and a form field with neither id nor name is also
     what browsers warn about."""
     return (
-        f'<input class="task-url" id="url-{_esc(task_id)}" name="url-{_esc(task_id)}" type="url" '
-        f'aria-label="{_esc(_URL_LABEL)}" placeholder="{_esc(_URL_PLACEHOLDER)}" hidden>'
+        f'<input class="task-url" id="url-{_esc(task_id)}" name="url-{_esc(task_id)}" type="text" '
+        f'inputmode="url" autocapitalize="off" spellcheck="false" '
+        f'aria-label="{_esc(_URL_LABEL)}" placeholder="{_esc(placeholder)}"'
+        f'{" hidden" if hidden else ""}>'
+    )
+
+
+def _note_input_html(task_id: str) -> str:
+    return (
         f'<input class="task-note" id="note-{_esc(task_id)}" name="note-{_esc(task_id)}" type="text" '
         f'aria-label="{_esc(_NOTE_PLACEHOLDER)}" placeholder="{_esc(_NOTE_PLACEHOLDER)}" hidden>'
     )
+
+
+def _texts_html(texts: list[str], target: str) -> str:
+    """The link's own wording, under the address it points at. An owner
+    recognises what a link *said* long before they recognise its URL. One
+    target can be linked under several wordings; linkcheck caps how many
+    it keeps.
+
+    Each wording is a Google search for itself, opened in a new tab: the
+    owner's first move on a dead link is to go looking for where it went,
+    and the words make a far better query than the dead URL. `_blank` is
+    deliberate -- leaving this page mid-worksheet is how answers get lost.
+
+    A wording that is just the URL over again is dropped: plenty of pages
+    link a bare address, and repeating it under itself is noise."""
+    bare = {target, target.rstrip("/"), _strip_scheme(target)}
+    shown = [t for t in texts if t and t.rstrip("/") not in bare and _strip_scheme(t) not in bare]
+    if not shown:
+        return ""
+    quoted = " · ".join(
+        f'\u201c<a class="task-search" href="{_esc(_GOOGLE_SEARCH + quote_plus(t))}" '
+        f'target="_blank" rel="noopener noreferrer" '
+        f'aria-label="Search Google for {_esc(t)}">{_esc(t)}</a>\u201d'
+        for t in shown
+    )
+    return f'<p class="task-context">{quoted}</p>'
+
+
+def _strip_scheme(url: str) -> str:
+    return re.sub(r"^[a-z][a-z0-9+.-]*://", "", url.strip()).rstrip("/")
 
 
 def _link_task_html(task: OwnerTask) -> str:
@@ -582,14 +729,15 @@ def _link_task_html(task: OwnerTask) -> str:
     if task.group:
         attrs.append(f'data-group="{_esc(task.group)}"')
 
-    meta = task.detected.get("reason") or task.context or ""
     parts = [f"<article {' '.join(attrs)}>"]
     parts.append(f'<p class="task-target">{_esc(task.target)}</p>')
-    if meta:
-        parts.append(f'<p class="task-meta">{_esc(meta)}</p>')
+    parts.append(_texts_html(task.texts, task.target))
+    if task.type == "external_link":
+        parts.append(f'<p class="task-meta">{_esc(_plain_reason(task.detected))}</p>')
     parts.append(_pages_details_html(task.pages, "Used on"))
+    parts.append(_url_input_html(task.id, _URL_PLACEHOLDER, hidden=bool(default)))
     parts.append(f'<label class="task-action-label">What to do {_select_html(_LINK_ACTIONS, default)}</label>')
-    parts.append(_action_inputs_html(task.id))
+    parts.append(_note_input_html(task.id))
     parts.append("</article>")
     return "".join(parts)
 
@@ -614,8 +762,9 @@ def _missing_task_html(task: OwnerTask) -> str:
             '<p class="task-variant-note">We only need the original. '
             "We will regenerate the smaller sizes ourselves.</p>"
         )
+    parts.append(_url_input_html(task.id, _MISSING_URL_PLACEHOLDER, hidden=False))
     parts.append(f'<label class="task-action-label">What to do {_select_html(_MISSING_ACTIONS, "")}</label>')
-    parts.append(_action_inputs_html(task.id))
+    parts.append(_note_input_html(task.id))
     parts.append("</article>")
     return "".join(parts)
 
@@ -641,7 +790,9 @@ def _section_external_html(tasks: OwnerTasks) -> str:
   <h2>Links to other websites that no longer work</h2>
   <p class="section-desc">Your pages link out to {tasks.external_checked_count} addresses on
     other websites. We tried all of them on {_esc(date)}; {total} did not load. Tell us
-    what to do with each one. A few may simply have been having a bad day.</p>
+    what to do with each one. A few may simply have been having a bad day.
+    <strong>The words each link was written under are a Google search</strong> -- click one
+    to go looking for where that page moved to, then paste the new address back here.</p>
   <div class="task-group" data-group="dead">
     <h3>Confirmed dead ({len(dead)})</h3>
     <p class="section-desc">These returned a "not found" error, or the website they point
@@ -675,7 +826,8 @@ def _section_internal_html(tasks: OwnerTasks) -> str:
   <h2>Links to pages on your own site that do not exist</h2>
   <p class="section-desc">These point at pages on your own website that we could not find.
     Usually that means a typo in the address, or a page that was deleted at some point.
-    You will often recognise the intended page straight away.</p>
+    You will often recognise the intended page straight away. As above, the words the link
+    was written under are a Google search.</p>
   {rows or "<p>None found.</p>"}
 </section>
 """
@@ -706,30 +858,6 @@ def _section_missing_html(tasks: OwnerTasks) -> str:
 """
 
 
-def _footnote_html(tasks: OwnerTasks) -> str:
-    parts = []
-    if tasks.handled_missing_count:
-        parts.append(
-            f"<p>We also found {tasks.handled_missing_count} other missing items that do not "
-            "need you -- WordPress thumbnail stubs, stylesheets and fonts -- which we either "
-            "regenerated or safely left out.</p>"
-        )
-    if tasks.handled_internal_count:
-        parts.append(
-            f"<p>And {tasks.handled_internal_count} internal references that do not resolve but "
-            "that nobody can see or click -- addresses buried in plugin scripts, image metadata "
-            "and page machinery. They are ours to deal with, not yours.</p>"
-        )
-    if not parts:
-        return ""
-    return f"""
-<details id="handled-footnote">
-  <summary>Things we already handled (no action needed)</summary>
-  {"".join(parts)}
-</details>
-"""
-
-
 def _task_payload(task: OwnerTask) -> dict:
     payload: dict = {
         "id": task.id,
@@ -739,13 +867,18 @@ def _task_payload(task: OwnerTask) -> dict:
         "detected": task.detected,
         "action": "keep" if task.group == "authgated" else None,
         "note": "",
+        # Pre-answered, and therefore outside the progress count and the
+        # review list unless the owner overrides it.
+        "presumed": task.group == "authgated",
     }
     if task.type == "external_link":
         payload["group"] = task.group
+        payload["texts"] = task.texts
         payload["replacement_url"] = ""
         payload["wayback_url"] = _WAYBACK_PREFIX + task.target
     elif task.type == "internal_link":
         payload["context"] = task.context
+        payload["texts"] = task.texts
         payload["replacement_url"] = ""
         payload["wayback_url"] = _WAYBACK_PREFIX + task.target
     elif task.type == "missing_file":
@@ -772,7 +905,12 @@ def _data_island_html(tasks: OwnerTasks) -> str:
             "build_report_sha256": tasks.source_hashes.get("build_report"),
             "capture_run_finished": tasks.capture_finished,
         },
-        "counts": {"total": len(tasks.tasks), "answered": 0, "deferred": 0},
+        "counts": {
+            "total": len(tasks.tasks),
+            "answered": 0,
+            "deferred": 0,
+            "presumed": len(tasks.tasks) - len(tasks.decisions()),
+        },
         "items": [_task_payload(t) for t in tasks.tasks],
     }
     # Inside a <script> element the HTML parser scans raw text for `</script`,
@@ -855,8 +993,11 @@ _JS = """
 
     function reveal() {
       var action = select.value;
-      if (urlInput) { urlInput.hidden = !NEEDS_URL[action]; urlInput.required = !!NEEDS_URL[action]; }
-      if (noteInput) { noteInput.hidden = !NEEDS_NOTE[action]; }
+      // The URL box is visible until the owner picks an action that has
+      // nothing to do with a URL -- it is the fast path through the card,
+      // not a field revealed by the dropdown.
+      if (urlInput) urlInput.hidden = !!action && !NEEDS_URL[action];
+      if (noteInput) noteInput.hidden = !NEEDS_NOTE[action];
       art.setAttribute("data-answered", action ? "true" : "false");
     }
 
@@ -872,14 +1013,32 @@ _JS = """
       if (select.value === "wayback") {
         // The prefill: no field to fill in, the archived address is derived.
         item.replacement_url = art.getAttribute("data-wayback-url") || "";
+        if (urlInput) urlInput.value = "";
       } else if (!NEEDS_URL[select.value]) {
         item.replacement_url = "";
+        // Clear the box as well as the state: it is about to be hidden,
+        // and a hidden field still holding text the saved file does not
+        // contain is how the page and the answer come to disagree.
+        if (urlInput) urlInput.value = "";
       }
       reveal();
       touched();
     });
+    // Pasting an address *is* the answer: it selects "I have a new address
+    // for this" so the owner never has to open the dropdown, and emptying
+    // the box takes the card back to unanswered.
     if (urlInput) urlInput.addEventListener("input", function () {
-      item.replacement_url = urlInput.value; touched();
+      var typed = urlInput.value.trim();
+      item.replacement_url = urlInput.value;
+      if (typed && !select.value) {
+        select.value = "replace";
+        item.action = "replace";
+      } else if (!typed && select.value === "replace") {
+        select.value = "";
+        item.action = null;
+      }
+      reveal();
+      touched();
     });
     if (noteInput) noteInput.addEventListener("input", function () {
       item.note = noteInput.value; touched();
@@ -889,14 +1048,21 @@ _JS = """
   });
 
   // --- progress + review ----------------------------------------------
+  // Auth-gated links arrive pre-answered "leave as is", so counting them
+  // would open the page at "256 of 347 handled" with nothing done. The
+  // denominator is the decisions the owner actually owes, and it stays
+  // fixed even if they override one of the presumed items.
+  var decisions = data.items.filter(function (i) { return !i.presumed; });
+  var presumed = data.items.length - decisions.length;
+
   function answered() {
     var n = 0;
-    data.items.forEach(function (i) { if (i.action) n++; });
+    decisions.forEach(function (i) { if (i.action) n++; });
     return n;
   }
 
   function updateProgress() {
-    var done = answered(), total = data.items.length;
+    var done = answered(), total = decisions.length;
     all(".progress-count").forEach(function (el) {
       el.textContent = done + " of " + total + " handled";
     });
@@ -911,7 +1077,7 @@ _JS = """
     // Keyed by type *and* action so each group can carry its own wording;
     // unanswered items collapse into one group across all three sections.
     var groups = {}, titles = {}, order = [];
-    data.items.forEach(function (i) {
+    decisions.forEach(function (i) {
       var key = i.action ? i.type + "|" + i.action : "";
       if (!groups[key]) {
         groups[key] = [];
@@ -925,7 +1091,7 @@ _JS = """
       if (!b) return -1;
       return titles[a] < titles[b] ? -1 : 1;
     });
-    if (!order.length) { box.textContent = ""; return; }
+    box.textContent = "";
     var dl = document.createElement("dl");
     order.forEach(function (key) {
       var items = groups[key];
@@ -944,8 +1110,14 @@ _JS = """
       dd.appendChild(ul);
       dl.appendChild(dd);
     });
-    box.textContent = "";
-    box.appendChild(dl);
+    if (order.length) box.appendChild(dl);
+    if (presumed) {
+      var note = document.createElement("p");
+      note.className = "review-presumed";
+      note.textContent = "Plus " + presumed + " login-protected link" +
+        (presumed === 1 ? "" : "s") + " we are leaving exactly as they are.";
+      box.appendChild(note);
+    }
   }
 
   function refresh() { updateProgress(); renderReview(); }
@@ -964,10 +1136,13 @@ _JS = """
     out.respondent = name && name.value.trim() ? name.value.trim() : null;
     var done = 0, deferred = 0;
     out.items.forEach(function (i) {
+      if (i.presumed) return;  // same denominator the owner was shown
       if (i.action) done++;
       if (i.action === "defer") deferred++;
     });
-    out.counts = { total: out.items.length, answered: done, deferred: deferred };
+    out.counts = {
+      total: out.items.length, answered: done, deferred: deferred, presumed: presumed
+    };
     return out;
   }
 
@@ -984,7 +1159,7 @@ _JS = """
     setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
     dirty = false;
 
-    var left = data.items.length - answered();
+    var left = decisions.length - answered();
     var status = document.querySelector(".save-status");
     if (!status) return;
     status.textContent = left === 0
@@ -1154,8 +1329,11 @@ def render_owner_tasks_html(tasks: OwnerTasks) -> str:
 
 <div class="owner-progress">
   <span class="progress-track"><span></span></span>
-  <span class="progress-count">0 of {len(tasks.tasks)} handled</span>
+  <span class="progress-count">0 of {len(tasks.decisions())} handled</span>
+  <input id="respondent" type="text" autocomplete="name" aria-label="Your name (optional)"
+    placeholder="Your name (optional)">
   <button type="button" class="save-button">Save my answers</button>
+  <p class="save-status" role="status"></p>
 </div>
 
 <div class="resume" id="resume">
@@ -1172,16 +1350,6 @@ def render_owner_tasks_html(tasks: OwnerTasks) -> str:
   <h2>Review your answers</h2>
   <div class="review-body"></div>
 </section>
-
-<div class="save-area">
-  <label class="respondent-label">Your name (optional)
-    <input id="respondent" type="text" autocomplete="name">
-  </label>
-  <button type="button" class="save-button">Save my answers</button>
-  <p class="save-status" role="status"></p>
-</div>
-
-{_footnote_html(tasks)}
 
 {_data_island_html(tasks)}
 <script>{_JS}</script>

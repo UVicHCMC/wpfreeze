@@ -24,6 +24,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -71,10 +72,22 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; background: #f4f4f
 """
 
 
+# The words a reader actually sees on a link. An owner recognises
+# "the Stationers' Register" far quicker than the URL under it, so the
+# owner-tasks worksheet shows the wording next to the address. Bounded on
+# both axes: one target can be linked from hundreds of pages under as many
+# different wordings, and any one of them can be a whole sentence.
+_MAX_LINK_TEXTS = 3
+_MAX_LINK_TEXT_LEN = 120
+
+
 @dataclass
 class ExternalLink:
     url: str
     pages: list[str] = field(default_factory=list)
+    # Distinct link wordings, first-seen order. Absent from files written
+    # before this field existed -- see load_links.
+    texts: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -84,6 +97,30 @@ class LinkCheckResult:
     ok: bool
     status: int | None
     reason: str | None
+    texts: list[str] = field(default_factory=list)
+    # Why it failed, in one machine-readable word -- see _classify_error.
+    # `reason` is the operator's string and keeps the full urllib detail;
+    # this is what a *reader*-facing report translates into plain English
+    # (ownertasks.py), which it cannot do from `reason` because that is
+    # truncated at 120 characters, usually mid-exception-name.
+    kind: str | None = None
+
+
+def _link_text(tag) -> str:
+    """The visible wording of one `<a>`: its text, or the alt text of the
+    image it wraps, or its title/aria-label -- an image link and an
+    icon-only link both have to say something."""
+    text = tag.get_text(" ", strip=True)
+    if not text:
+        image = tag.find("img")
+        if image is not None:
+            text = (image.get("alt") or "").strip()
+    if not text:
+        text = (tag.get("title") or tag.get("aria-label") or "").strip()
+    text = " ".join(text.split())
+    if len(text) > _MAX_LINK_TEXT_LEN:
+        text = text[: _MAX_LINK_TEXT_LEN - 1].rstrip() + "\u2026"
+    return text
 
 
 def extract_external_links(site_dir: Path, profile: SiteProfile) -> list[ExternalLink]:
@@ -95,6 +132,7 @@ def extract_external_links(site_dir: Path, profile: SiteProfile) -> list[Externa
     inspecting build-report.json, so this works even if build-report.json
     is stale or missing (e.g. `build` ran with a different policy since)."""
     by_url: dict[str, list[str]] = {}
+    texts_by_url: dict[str, list[str]] = {}
     for document in sorted(site_dir.rglob("*")):
         if not document.is_file() or document.suffix.lower() not in (".html", ".htm"):
             continue
@@ -115,7 +153,14 @@ def extract_external_links(site_dir: Path, profile: SiteProfile) -> list[Externa
             pages = by_url.setdefault(url, [])
             if page not in pages:
                 pages.append(page)
-    return [ExternalLink(url=url, pages=sorted(pages)) for url, pages in sorted(by_url.items())]
+            texts = texts_by_url.setdefault(url, [])
+            text = _link_text(tag)
+            if text and text not in texts and len(texts) < _MAX_LINK_TEXTS:
+                texts.append(text)
+    return [
+        ExternalLink(url=url, pages=sorted(pages), texts=texts_by_url.get(url, []))
+        for url, pages in sorted(by_url.items())
+    ]
 
 
 def write_links(links: list[ExternalLink], output_dir: Path, base_url: str) -> Path:
@@ -123,7 +168,9 @@ def write_links(links: list[ExternalLink], output_dir: Path, base_url: str) -> P
     data = {
         "base_url": base_url,
         "extracted_at": datetime.now(timezone.utc).isoformat(),
-        "links": [{"url": link.url, "pages": link.pages} for link in links],
+        "links": [
+            {"url": link.url, "pages": link.pages, "texts": link.texts} for link in links
+        ],
     }
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return path
@@ -140,7 +187,55 @@ def load_links(output_dir: Path) -> list[ExternalLink] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    return [ExternalLink(url=entry["url"], pages=list(entry.get("pages", []))) for entry in data.get("links", [])]
+    return [
+        ExternalLink(
+            url=entry["url"],
+            pages=list(entry.get("pages", [])),
+            texts=list(entry.get("texts", [])),
+        )
+        for entry in data.get("links", [])
+    ]
+
+
+def links_have_texts(links: list[ExternalLink]) -> bool:
+    """Whether an extraction carries link wordings at all. False for a
+    file written before `texts` existed -- and for the degenerate case of
+    a site whose every external link is wordless, where re-extracting is
+    harmless anyway. See cli.run_checklinks: `--recheck` skips the scan,
+    so without this an old extraction would silently keep producing a
+    worksheet with no wordings in it."""
+    return any(link.texts for link in links)
+
+
+# Ordered: the first pattern that matches a connection error wins, so the
+# specific ones (a name that does not resolve, a certificate that does not
+# verify) come before the general ones. Matched against the *whole* error
+# string, not the truncated `reason`.
+_ERROR_KINDS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("dns", re.compile(r"NameResolutionError|getaddrinfo|Name or service not known"
+                       r"|nodename nor servname|Temporary failure in name resolution")),
+    ("tls", re.compile(r"SSLError|SSLCertVerification|CERTIFICATE_VERIFY_FAILED"
+                       r"|WRONG_VERSION_NUMBER|UNSAFE_LEGACY|certificate verify failed")),
+    ("timeout", re.compile(r"ConnectTimeout|ReadTimeout|TimeoutError|timed out")),
+    ("refused", re.compile(r"Connection refused|ConnectionRefused|ConnectionResetError"
+                           r"|RemoteDisconnected|ProtocolError|Connection aborted")),
+    ("redirect_loop", re.compile(r"TooManyRedirects|exceeded 30 redirects")),
+)
+
+
+def _classify_error(error: str) -> str:
+    for kind, pattern in _ERROR_KINDS:
+        if pattern.search(error):
+            return kind
+    return "unreachable"
+
+
+def _failure_kind(outcome: FetchOutcome) -> str:
+    if outcome.error is not None:
+        return _classify_error(outcome.error)
+    if outcome.flag == FLAG_AUTH_GATED:
+        return "auth"
+    return "http"
 
 
 def _describe_failure(outcome: FetchOutcome) -> str:
@@ -188,6 +283,8 @@ def check_links(
                 ok=ok,
                 status=outcome.http_status,
                 reason=None if ok else _describe_failure(outcome),
+                texts=link.texts,
+                kind=None if ok else _failure_kind(outcome),
             )
             if progress is not None:
                 progress.tick(detail=link.url)
@@ -278,7 +375,10 @@ def write_results_json(results: list[LinkCheckResult], output_dir: Path, base_ur
         "base_url": base_url,
         "checked_at": checked_at,
         "results": [
-            {"url": r.url, "pages": r.pages, "ok": r.ok, "status": r.status, "reason": r.reason}
+            {
+                "url": r.url, "pages": r.pages, "ok": r.ok, "status": r.status,
+                "reason": r.reason, "texts": r.texts, "kind": r.kind,
+            }
             for r in results
         ],
     }

@@ -45,6 +45,7 @@ from wpfreeze.inventory import discover_inventory
 from wpfreeze.linkcheck import (
     check_links,
     extract_external_links,
+    links_have_texts,
     load_links,
     write_links,
     write_report,
@@ -1240,6 +1241,30 @@ def run_checklinks(
                 "`wpfreeze checklinks` (without --recheck) first."
             )
             return 2
+        # An extraction written before link wordings were recorded would
+        # otherwise keep producing a worksheet with no wordings in it, for
+        # every recheck, forever. Re-scanning is the cheap offline half of
+        # the job (see linkcheck's module docstring), so just do it -- but
+        # only if the built site is actually here, since running without
+        # it is the whole point of --recheck.
+        target = site_dir or (config.output_dir / "site")
+        if links and not links_have_texts(links) and target.exists():
+            profile = scope_profile_from_config(config.base_url, config.extra_hosts)
+            rescanned = extract_external_links(target, profile)
+            write_links(rescanned, config.output_dir, config.base_url)
+            # Say so when the set moves. On janellejenstad it dropped 228
+            # URLs that only ever existed in a build superseded hours
+            # later -- the saved extraction can be older than the site it
+            # claims to describe, and silently checking 228 links no
+            # reader can reach is worse than the scan it saved.
+            was = {link.url for link in links}
+            now = {link.url for link in rescanned}
+            if was != now:
+                print(
+                    f"Re-scanned the built site: {len(now - was)} external link(s) added, "
+                    f"{len(was - now)} no longer present."
+                )
+            links = rescanned
     else:
         target = site_dir or (config.output_dir / "site")
         if not target.exists():
@@ -1312,7 +1337,7 @@ def _announce_owner_tasks(config: SiteConfig) -> None:
     except (OwnerTasksInputMissing, OSError) as exc:
         logger.debug("owner-tasks not regenerated: %s", exc)
         return
-    open_items = sum(1 for t in tasks.tasks if t.group != "authgated")
+    open_items = len(tasks.decisions())
     print(f"Owner worksheet: {dest} ({open_items} item(s) needing the site owner's decision)")
 
 
@@ -1340,6 +1365,12 @@ def run_owner_tasks(config: SiteConfig, output_path: Path | None = None, *, prin
         f"  {counts[0]} external link(s), {counts[1]} internal link(s), "
         f"{counts[2]} missing file(s) for the owner to resolve"
     )
+    handled = tasks.handled_missing_count + tasks.handled_internal_count
+    if handled:
+        # The worksheet itself does not mention these -- they are ours to
+        # deal with, and a decision page is not the place for them -- so
+        # this is the only place the archivist sees the number.
+        print(f"  {handled} further finding(s) filtered out as not the owner's to decide")
     for unrun in tasks.unrun_checks:
         print(f"  note: the {unrun} check has not run -- that section is omitted")
     return 0

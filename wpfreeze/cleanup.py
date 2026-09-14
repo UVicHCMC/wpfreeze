@@ -429,7 +429,8 @@ def _excised_content_section(build_report: dict | None) -> tuple[list[str], bool
     dead_fragment_links = policy.get("dead_fragment_links_removed", 0)
     comment_count_blurbs = policy.get("comment_count_blurbs_removed", 0)
     newsletter_captions_removed = policy.get("newsletter_captions_removed", 0)
-    if not (forms_removed or telemetry or feeds or wp_meta):
+    actionbar_links = policy.get("wpcom_actionbar_links_removed", 0)
+    if not (forms_removed or telemetry or feeds or wp_meta or actionbar_links):
         return ([], False)
 
     lines = ["## Content intentionally excised", ""]
@@ -468,6 +469,11 @@ def _excised_content_section(build_report: dict | None) -> tuple[list[str], bool
         other.append(f"{feeds} feed link(s)")
     if wp_meta:
         other.append(f"{wp_meta} WP protocol-discovery link(s)")
+    if actionbar_links:
+        other.append(
+            f"{actionbar_links} link(s) in WordPress.com's injected action bar "
+            "(Sign up, Copy shortlink, Report this content...)"
+        )
     if other:
         lines.append(
             "Also removed, with nothing visible either way (dead `<head>`/script "

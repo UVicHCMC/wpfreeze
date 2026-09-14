@@ -36,8 +36,11 @@ def _ok(url: str) -> dict:
     return {"url": url, "pages": ["a.html"], "ok": True, "status": 200, "reason": None}
 
 
-def _dead(url: str, pages: list[str], status: int = 404) -> dict:
-    return {"url": url, "pages": pages, "ok": False, "status": status, "reason": f"HTTP {status}"}
+def _dead(url: str, pages: list[str], status: int = 404, texts: list[str] | None = None) -> dict:
+    return {
+        "url": url, "pages": pages, "ok": False, "status": status,
+        "reason": f"HTTP {status}", "texts": texts if texts is not None else ["the dead one"],
+    }
 
 
 def _authgated(url: str, pages: list[str]) -> dict:
@@ -443,7 +446,7 @@ def _render(tmp_path: Path, *, build_report: bool = True, manifest: bool = True)
         tmp_path,
         "broken-external-links.json",
         _broken_links(
-            _dead('https://gone.example/a?x=1&y=2', ["about.html"]),
+            _dead('https://gone.example/a?x=1&y=2', ["about.html"], texts=['the "good" bits']),
             _authgated("https://journal.example/", ["research.html"]),
         ),
     )
@@ -516,13 +519,105 @@ def test_render_has_full_task_anatomy_per_the_markup_contract(tmp_path: Path):
     assert 'data-group="dead"' in html and 'data-group="authgated"' in html
     assert 'class="task-action" data-default="keep"' in html  # auth-gated default
     assert '<option value="keep" selected>' in html  # correct with JS disabled
-    # Both reveal fields exist, start hidden, and carry an id + accessible
-    # name (a placeholder alone is neither).
+    # Both fields carry an id + accessible name (a placeholder alone is
+    # neither); the note still starts hidden.
     for cls in ("task-url", "task-note"):
         field = re.search(rf'<input class="{cls}"[^>]*>', html).group(0)
-        assert " hidden>" in field, field
         assert ' id="' in field and ' name="' in field, field
         assert ' aria-label="' in field, field
+    assert " hidden>" in re.search(r'<input class="task-note"[^>]*>', html).group(0)
+
+
+def test_render_leads_each_card_with_the_url_box(tmp_path: Path):
+    """Pasting an address is the fast path through a card -- it selects the
+    action by itself -- so the box precedes the dropdown and is visible
+    from the start. Only a card that arrives pre-answered hides it."""
+    html = _render(tmp_path)
+
+    dead = re.search(r'<article class="task" data-item-id="[^"]*" data-task-type="external_link"'
+                     r'[^>]*data-group="dead">(.*?)</article>', html, re.S).group(1)
+    assert dead.index('class="task-url"') < dead.index('class="task-action"')
+    assert " hidden>" not in re.search(r'<input class="task-url"[^>]*>', dead).group(0)
+    assert "Do you have a new URL?" in dead
+
+    authgated = re.search(r'<article class="task"[^>]*data-group="authgated">(.*?)</article>',
+                          html, re.S).group(1)
+    assert " hidden>" in re.search(r'<input class="task-url"[^>]*>', authgated).group(0)
+
+
+def test_render_shows_the_wording_of_a_dead_link(tmp_path: Path):
+    """A site owner recognises what a link said long before they recognise
+    the URL under it."""
+    html = _render(tmp_path)
+
+    context = re.search(r'<p class="task-context">(.*?)</p>', html).group(1)
+    assert ">the &quot;good&quot; bits</a>" in context
+    # section 2 renders its context the same way, and no longer duplicates
+    # it into the meta line
+    assert ">a &quot;quoted&quot; link</a>" in html
+    assert '<p class="task-meta">a &quot;quoted&quot; link</p>' not in html
+
+
+def test_render_makes_each_wording_a_google_search(tmp_path: Path):
+    """The owner's first move on a dead link is to go looking for where it
+    went, and the words are a better query than the dead URL."""
+    html = _render(tmp_path)
+
+    link = re.search(r'<a class="task-search"[^>]*>', html).group(0)
+    assert 'href="https://www.google.com/search?q=the+%22good%22+bits"' in link
+    assert 'target="_blank"' in link and 'rel="noopener noreferrer"' in link
+    # `_blank` matters: leaving the page mid-worksheet is how answers get lost.
+    assert html.count('target="_blank"') == html.count('class="task-search"')
+    assert 'aria-label="Search Google for the &quot;good&quot; bits"' in link
+
+
+def test_plain_reason_translates_every_failure_an_owner_can_see(tmp_path: Path):
+    """`reason` is a urllib traceback line truncated at 120 characters --
+    unusable to an owner, and unclassifiable after the fact, which is why
+    linkcheck records `kind` at check time."""
+    from wpfreeze.ownertasks import _plain_reason
+
+    dns = _plain_reason({"kind": "dns", "status": None, "reason": "unreachable (HTTPConn"})
+    assert dns.startswith("This website no longer exists")
+    assert "no longer exists" not in _plain_reason({"kind": "timeout", "status": None})
+    assert _plain_reason({"status": 404}).startswith("The page is gone")
+    assert _plain_reason({"status": 410}).startswith("The website says")
+    assert "code 418" in _plain_reason({"status": 418})
+    assert _plain_reason({"status": 503}).startswith("The website is offline")
+    # A report written before `kind` existed still says something sane.
+    assert _plain_reason({"status": None, "reason": "unreachable (HTTPConnectionPool"}) == (
+        "We could not reach this website at all."
+    )
+    assert _plain_reason({}) == "We could not confirm this link."
+    # An auth-gated 403 must not read "the website refused to show this
+    # page" under a heading that says the group is probably fine.
+    assert _plain_reason({"kind": "auth", "status": 403}).startswith("This asked for a login")
+    assert _plain_reason(
+        {"status": 403, "reason": "HTTP 403 (auth-gated -- may not actually be broken)"}
+    ).startswith("This asked for a login")
+
+
+def test_render_never_shows_an_owner_a_urllib_traceback(tmp_path: Path):
+    _write(
+        tmp_path,
+        "broken-external-links.json",
+        _broken_links(
+            {
+                "url": "http://bnb.bl.uk/", "pages": ["a.html"], "ok": False, "status": None,
+                "texts": ["British National Bibliography"], "kind": "dns",
+                "reason": "unreachable (HTTPConnectionPool(host='bnb.bl.uk', port=80): Max "
+                          "retries exceeded with url: / (Caused by NameResolutionError(\"HTTPConn",
+            }
+        ),
+    )
+    html = render_owner_tasks_html(load_tasks(tmp_path, _config(tmp_path)))
+    # The island keeps the operator's own string for reconciliation; what
+    # matters is that nothing renders it.
+    body = html[: html.index('<script type="application/json"')]
+
+    assert "HTTPConnectionPool" not in body
+    assert "NameResolutionError" not in body
+    assert "This website no longer exists" in body
 
 
 def test_render_folds_variants_and_shows_the_note(tmp_path: Path):
@@ -534,11 +629,34 @@ def test_render_folds_variants_and_shows_the_note(tmp_path: Path):
     assert html.count('data-task-type="missing_file"') == 1
 
 
+def test_render_drops_a_wording_that_is_just_the_url_again(tmp_path: Path):
+    """Plenty of pages link a bare address; printing it under itself is
+    noise, not context."""
+    from wpfreeze.ownertasks import _texts_html
+
+    assert _texts_html(["http://deep.sas.upenn.edu"], "http://deep.sas.upenn.edu") == ""
+    assert _texts_html(["deep.sas.upenn.edu/"], "http://deep.sas.upenn.edu") == ""
+    assert "the archive" in _texts_html(["the archive"], "http://deep.sas.upenn.edu")
+
+
 def test_render_counts_match_the_task_set(tmp_path: Path):
     html = _render(tmp_path)
 
     assert html.count('<article class="task"') == 4  # 2 external + 1 internal + 1 missing
-    assert "0 of 4 handled" in html
+    # 3, not 4: the auth-gated link arrives pre-answered "leave as is", and
+    # counting it opened the page at "1 of 4 handled" with nothing done.
+    assert "0 of 3 handled" in html
+    assert "0 of 4 handled" not in html
+
+
+def test_render_has_no_handled_for_you_footnote(tmp_path: Path):
+    """The filtered findings are the archivist's business (cli.py prints
+    the count); a worksheet of decisions is not the place for a list of
+    things nobody has to decide."""
+    html = _render(tmp_path)
+
+    assert "handled-footnote" not in html
+    assert "no action needed" not in html
 
 
 def test_render_marks_an_unrun_section_rather_than_emitting_it_empty(tmp_path: Path):
@@ -559,9 +677,14 @@ def test_json_island_round_trips_and_prefills_authgated(tmp_path: Path):
 
     assert data["schema"] == "wpfreeze/owner-response@1"
     assert data["counts"]["total"] == 4
+    assert data["counts"]["presumed"] == 1
     assert len(data["items"]) == 4
     authgated = [i for i in data["items"] if i.get("group") == "authgated"]
     assert authgated and all(i["action"] == "keep" for i in authgated)
+    assert all(i["presumed"] for i in authgated)
+    assert not any(i["presumed"] for i in data["items"] if i.get("group") != "authgated")
+    dead = next(i for i in data["items"] if i.get("group") == "dead")
+    assert dead["texts"] == ['the "good" bits']
     assert all(i["action"] is None for i in data["items"] if i["type"] == "missing_file")
 
 
@@ -578,11 +701,17 @@ def test_write_owner_tasks_writes_the_file(tmp_path: Path):
 def test_render_includes_the_interaction_layer(tmp_path: Path):
     html = _render(tmp_path)
 
-    assert html.count('class="save-button"') == 2  # sticky bar and save area
+    assert html.count('class="save-button"') == 1  # one save affordance, in the sticky bar
     assert 'class="progress-track"' in html
     assert 'id="review"' in html and 'class="review-body"' in html
     assert 'id="resume"' in html and 'id="resume-file"' in html
     assert 'id="respondent"' in html
+    # The name field, the button and the status line all live in the bar:
+    # there is no second block at the foot of the page to scroll to.
+    bar = re.search(r'<div class="owner-progress">(.*?)</div>', html, re.S).group(1)
+    assert 'id="respondent"' in bar and 'class="save-button"' in bar
+    assert 'class="save-status"' in bar
+    assert "save-area" not in html
     assert "Picking up where you left off? Drop your saved file here." in html
     assert "Review your answers" in html
 

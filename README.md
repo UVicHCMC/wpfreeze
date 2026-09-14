@@ -456,10 +456,13 @@ wpfreeze --version                       # the installed version
   targets on another host) and checks whether each one still resolves,
   writing `broken-external-links.md`/`.html` grouped by the internal page
   each broken link was found on. Also (re)writes `external-links.json`,
-  the page → external-URL list it just found — `--recheck` re-verifies
-  that persisted list's liveness without re-scanning the built site (or
-  even needing `site/` to still exist), so link rot can be checked again
-  later without a rebuild. Also refreshes `owner-tasks.html` from the
+  the page → external-URL list it just found, with the wording of each
+  link — `--recheck` re-verifies that persisted list's liveness without
+  re-scanning the built site (or even needing `site/` to still exist), so
+  link rot can be checked again later without a rebuild. The exception is
+  an `external-links.json` written before link wordings were recorded: if
+  `site/` is there, `--recheck` re-scans it once and says what changed,
+  rather than producing a worksheet with no wordings in it forever. Also refreshes `owner-tasks.html` from the
   check it just ran (`--no-owner-tasks` skips that), so a re-check never
   leaves a stale worksheet behind. See "Checking external links" below.
 - **`owner-tasks`** writes `owner-tasks.html`, an interactive worklist for
@@ -548,7 +551,7 @@ preview/           only after `upload.sh --local` -- site + reports, assembled f
 external-links.json       only after `wpfreeze checklinks` -- the page -> external-URL list it found
 broken-external-links.md  only after `wpfreeze checklinks` -- broken links, grouped by internal page
 broken-external-links.html  the same, styled like report.html
-broken-external-links.json  the same check as machine-readable results (ok/status/reason per URL)
+broken-external-links.json  the same check as machine-readable results (ok/status/reason/kind/link wording per URL)
 owner-tasks.html          only after `wpfreeze owner-tasks` -- the interactive worklist to email the site owner
 ```
 
@@ -646,6 +649,23 @@ touching the capture, so re-running is always safe. In that tree:
   248-page site they were 228 distinct external URLs and **66% of everything
   `checklinks` reported as broken**, all of them bot-protection 403s rather
   than genuine breakage. Turn off with `policy: {strip_login_links: false}`.
+- **WordPress.com's injected action bar is removed** — the floating strip
+  carrying *Sign up*, *Log in*, *Copy shortlink*, *Report this content*,
+  *View post in Reader* and *Manage subscriptions*, plus the two scripts
+  that reveal and configure it. Every control in it operates a live hosted
+  blog, and it arrives `display:none` revealed by a script the build
+  localises, so left alone it can genuinely appear in the archive and offer
+  a reader a "Sign up" button for a site that no longer exists. It is also
+  per-page — its shortlink is a distinct `wp.me` URL each time and its
+  report link carries the page's own address — which makes it the single
+  largest source of external links in a WordPress.com capture: on a real
+  248-page site it was **688 of 1154 unique external targets (60%)**, so
+  removing it cuts a `checklinks` run by well over half. Matched on
+  `id="actionbar"` *plus* a corroborating `actnbr-` class or a
+  wordpress.com/wp.me link inside it, never the id alone. Self-hosted
+  WordPress never has it. The footer credit ("Website Powered by
+  WordPress.com") is attribution, not chrome, and is left alone. Turn off
+  with `policy: {strip_wpcom_actionbar: false}`.
 - **A WordPress core comment form's caption goes with it, not just the
   form.** Detected by its `id="respond"`/`class="comment-respond"`
   wrapper — WordPress's own hardcoded markup, not something a theme's
@@ -997,7 +1017,12 @@ were (including "no external links at all").
 
 Alongside the two rendered reports, `checklinks` writes
 `broken-external-links.json` — the same check as machine-readable results,
-one entry per URL with `ok`/`status`/`reason`. It makes a `--recheck`
+one entry per URL with `ok`/`status`/`reason`, the wording each page links
+it under, and `kind` — the failure in one machine-readable word (`dns`,
+`tls`, `timeout`, `refused`, `redirect_loop`, `auth`, `http`,
+`unreachable`), classified from the whole error at check time because
+`reason` is truncated at 120 characters and cannot be classified after
+the fact. It makes a `--recheck`
 diffable against a previous day's run, and it is what the owner worksheet
 below is built from.
 
@@ -1035,31 +1060,44 @@ they do touches the live site.
 It asks about three things, and only three:
 
 1. **Links to other websites that no longer work.** Grouped by target URL,
-   not by page, so a link used on nine pages is one decision. These are
-   split in two: the confirmed dead, and — collapsed, and pre-answered
-   "leave as is" — the ones that merely refused an automated check
-   (`401`/`403`: journal articles, library databases, members-only pages).
-   That second group is usually large and usually fine, and presenting it
-   as broken is the fastest way to lose the owner's trust in the rest.
+   not by page, so a link used on nine pages is one decision. Each shows
+   the words the link is written under — an owner recognises "the
+   Stationers' Register" long before they recognise the URL beneath it.
+   Each also says what went wrong in a sentence aimed at its reader —
+   "This website no longer exists", "The page is gone. The website is
+   still there, but this page is not" — never the urllib traceback line,
+   which stays in the reports written for you. These are split in two: the
+   confirmed dead, and — collapsed, and pre-answered "leave as is" — the
+   ones that merely refused an automated check (`401`/`403`: journal articles, library databases, members-only
+   pages). That second group is usually large and usually fine, and
+   presenting it as broken is the fastest way to lose the owner's trust in
+   the rest. It is also left out of the progress count, which counts only
+   the decisions the owner actually owes: a worksheet that opens at "256
+   of 347 handled" before they have touched it means nothing.
 2. **Links to pages on their own site that don't exist.** Usually typos or
    pages deleted at some point. The owner generally recognises the
    intended page immediately, which makes these the most fixable items on
    the list.
 3. **Files we couldn't download.** Images and media the pages reference
    but the server no longer has. Filtered to things an owner could
-   plausibly still have a copy of — WordPress thumbnail stubs, stylesheets
-   and fonts are counted in a footnote rather than listed — and WordPress
-   resize variants are folded into their original, since the smaller sizes
-   are regenerable. On one real site that turned 69 missing records into
-   five actual requests.
+   plausibly still have a copy of (WordPress thumbnail stubs, stylesheets
+   and fonts are ours to deal with, and the worksheet does not mention
+   them at all — the count is printed on the console instead, for you) —
+   and WordPress resize variants are folded into their original, since the
+   smaller sizes are regenerable. On one real site that turned 69 missing
+   records into five actual requests.
 
-For each item they choose an action: replace it with a new address, point
-it at a Wayback snapshot, keep the words but drop the link (with or
-without a "no longer available" note), delete it outright, leave it alone,
-or defer. Missing files add "I'll send you this file" — **the page never
-uploads anything.** Files come back however suits the owner: email, a USB
-stick, a shared drive. The report asks them to keep the filenames
-unchanged, and records the expected filename for every file they promise,
+Each item leads with a box asking for a new address, and pasting one
+chooses the action by itself, so the common case never involves the
+dropdown at all. The link's own wording is a Google search for itself,
+opened in a new tab, since "go and find where this moved to" is the first
+thing an owner does and the words make a far better query than a dead URL. Otherwise they choose an action there: replace it with a
+new address, point it at a Wayback snapshot, keep the words but drop the
+link (with or without a "no longer available" note), delete it outright,
+leave it alone, or defer. Missing files add "I'll send you this file" —
+**the page never uploads anything.** Files come back however suits the
+owner: email, a USB stick, a shared drive. The report asks them to keep
+the filenames unchanged, and records the expected filename for every file they promise,
 so you can reconcile a folder against the JSON.
 
 The file they return, `<project>-owner-response-<date>.json`, records each

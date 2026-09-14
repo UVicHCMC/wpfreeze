@@ -2307,3 +2307,81 @@ def test_unattended_freeze_asks_nothing_even_in_a_terminal(tmp_path: Path, monke
     monkeypatch.setattr(cli, "run_checklinks", lambda *a, **k: pytest.fail("checklinks was not declared"))
 
     assert cli.run_freeze(config, "proj") == 0
+
+
+# --- checklinks --recheck and link wordings --------------------------------
+
+
+def _recheck_config(output_dir: Path) -> SiteConfig:
+    return SiteConfig(base_url="https://example.com/", output_dir=output_dir, name="examplesite")
+
+
+def _stale_links_file(output_dir: Path) -> None:
+    """An `external-links.json` from before link wordings were recorded."""
+    (output_dir / "external-links.json").write_text(
+        json.dumps(
+            {
+                "base_url": "https://example.com/",
+                "extracted_at": "2026-08-28T00:00:00+00:00",
+                "links": [{"url": "https://gone.example/x", "pages": ["a.html"]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _fake_check_links(seen: list):
+    from wpfreeze.linkcheck import LinkCheckResult
+
+    def check(links, **kwargs):
+        seen.extend(links)
+        return [
+            LinkCheckResult(url=l.url, pages=l.pages, ok=False, status=404, reason="HTTP 404", texts=l.texts)
+            for l in links
+        ]
+
+    return check
+
+
+def test_recheck_reextracts_when_the_saved_links_predate_link_wordings(tmp_path, monkeypatch, capsys):
+    """`--recheck` skips the scan by design, so an extraction written
+    before `texts` existed would otherwise keep producing a worksheet with
+    no link wordings in it, on every recheck, forever. Re-scanning is the
+    cheap offline half of the job, so it happens silently."""
+    from wpfreeze import cli
+
+    output_dir = tmp_path / "out"
+    (output_dir / "site").mkdir(parents=True)
+    (output_dir / "site" / "a.html").write_text(
+        '<html><body><a href="https://gone.example/x">the dead one</a></body></html>', encoding="utf-8"
+    )
+    _stale_links_file(output_dir)
+    seen: list = []
+    monkeypatch.setattr(cli, "check_links", _fake_check_links(seen))
+
+    cli.run_checklinks(_recheck_config(output_dir), None, recheck=True, print_wrapup=False)
+
+    assert [link.texts for link in seen] == [["the dead one"]]
+    saved = json.loads((output_dir / "external-links.json").read_text(encoding="utf-8"))
+    assert saved["links"][0]["texts"] == ["the dead one"]
+    results = json.loads((output_dir / "broken-external-links.json").read_text(encoding="utf-8"))
+    assert results["results"][0]["texts"] == ["the dead one"]
+
+
+def test_recheck_without_the_built_site_uses_the_saved_links_as_they_are(tmp_path, monkeypatch, capsys):
+    """Re-checking link rot without the built site on disk is the whole
+    point of --recheck; a missing `site/` must not turn into a failure."""
+    from wpfreeze import cli
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True)
+    _stale_links_file(output_dir)
+    seen: list = []
+    monkeypatch.setattr(cli, "check_links", _fake_check_links(seen))
+    monkeypatch.setattr(
+        cli, "extract_external_links", lambda *a, **k: pytest.fail("scanned a site that is not there")
+    )
+
+    assert cli.run_checklinks(_recheck_config(output_dir), None, recheck=True, print_wrapup=False) == 1
+    assert [link.url for link in seen] == ["https://gone.example/x"]
+    assert [link.texts for link in seen] == [[]]

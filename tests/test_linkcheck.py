@@ -63,7 +63,118 @@ def test_extract_resolves_protocol_relative_links(tmp_path: Path):
 
     links = extract_external_links(tmp_path, _PROFILE)
 
-    assert links == [ExternalLink(url="https://other.example/x", pages=["index.html"])]
+    assert links == [ExternalLink(url="https://other.example/x", pages=["index.html"], texts=["x"])]
+
+
+def test_extract_records_the_wording_of_each_link(tmp_path: Path):
+    """The owner-tasks worksheet shows what a link *said* beside the
+    address it points at: an owner recognises the words long before the
+    URL. Distinct wordings for one target are kept in first-seen order,
+    capped, and each one truncated."""
+    _write_html(
+        tmp_path,
+        "about.html",
+        '<a href="https://other.example/x">  the  Stationers\u2019 Register </a> '
+        '<a href="https://other.example/x">the same place, said differently</a> '
+        '<a href="https://other.example/x">the same place, said differently</a> '
+        f'<a href="https://other.example/long">{"word " * 60}</a>',
+    )
+
+    links = {link.url: link for link in extract_external_links(tmp_path, _PROFILE)}
+
+    assert links["https://other.example/x"].texts == [
+        "the Stationers\u2019 Register",  # whitespace collapsed
+        "the same place, said differently",  # deduplicated
+    ]
+    long_text = links["https://other.example/long"].texts[0]
+    assert len(long_text) == 120 and long_text.endswith("\u2026")
+
+
+def test_extract_falls_back_to_alt_and_title_for_a_wordless_link(tmp_path: Path):
+    _write_html(
+        tmp_path,
+        "index.html",
+        '<a href="https://other.example/img"><img src="/x.png" alt="the cover"></a> '
+        '<a href="https://other.example/icon" title="our old blog"><span></span></a> '
+        '<a href="https://other.example/none"><span></span></a>',
+    )
+
+    links = {link.url: link.texts for link in extract_external_links(tmp_path, _PROFILE)}
+
+    assert links["https://other.example/img"] == ["the cover"]
+    assert links["https://other.example/icon"] == ["our old blog"]
+    assert links["https://other.example/none"] == []  # nothing to say, so nothing shown
+
+
+def test_links_have_texts_distinguishes_an_extraction_from_before_the_field(tmp_path: Path):
+    from wpfreeze.linkcheck import links_have_texts
+
+    (tmp_path / "external-links.json").write_text(
+        json.dumps({"links": [{"url": "https://other.example/x", "pages": ["a.html"]}]}),
+        encoding="utf-8",
+    )
+    old = load_links(tmp_path)
+
+    assert old == [ExternalLink(url="https://other.example/x", pages=["a.html"], texts=[])]
+    assert links_have_texts(old) is False
+    assert links_have_texts([ExternalLink(url="u", pages=[], texts=["x"])]) is True
+
+
+def test_classify_error_names_the_failure_from_the_full_error_string(tmp_path: Path):
+    """`reason` is truncated at 120 characters, usually mid-exception-name,
+    so the owner-facing report cannot re-derive this after the fact --
+    which is why it is classified here, where the whole string is still
+    in hand. The samples are real, from janellejenstad and landscapes."""
+    from wpfreeze.linkcheck import _classify_error
+
+    cases = {
+        "dns": "HTTPConnectionPool(host='bnb.bl.uk', port=80): Max retries exceeded with "
+               "url: / (Caused by NameResolutionError(\"...[Errno -2] Name or service not known\"))",
+        "tls": "HTTPSConnectionPool(host='csdh-schn.org', port=443): Max retries exceeded "
+               "with url: / (Caused by SSLError(SSLCertVerificationError(1, 'certificate "
+               "verify failed: unable to get local issuer certificate')))",
+        "timeout": "HTTPConnectionPool(host='metalib.uvic.ca', port=80): Max retries "
+                   "exceeded with url: / (Caused by ConnectTimeoutError(...))",
+        "refused": "('Connection aborted.', RemoteDisconnected('Remote end closed "
+                   "connection without response'))",
+        "redirect_loop": "TooManyRedirects('Exceeded 30 redirects.')",
+        "unreachable": "something nobody has seen before",
+    }
+    for expected, error in cases.items():
+        assert _classify_error(error) == expected, error
+
+
+def test_check_links_records_the_failure_kind(tmp_path: Path, monkeypatch):
+    from wpfreeze import linkcheck
+
+    outcomes = {
+        "https://gone.example/": FetchOutcome(
+            category=WAYBACK_CANDIDATE, http_status=None, attempts=1,
+            error="HTTPConnectionPool(host='gone.example', port=443): NameResolutionError",
+        ),
+        "https://locked.example/": FetchOutcome(
+            category=WAYBACK_CANDIDATE, http_status=403, attempts=1, flag=FLAG_AUTH_GATED
+        ),
+        "https://broken.example/": FetchOutcome(
+            category=WAYBACK_CANDIDATE, http_status=500, attempts=3, flag=FLAG_RETRY_EXHAUSTED
+        ),
+        "https://fine.example/": FetchOutcome(category=SUCCESS, http_status=200, attempts=1),
+    }
+    monkeypatch.setattr(
+        linkcheck, "fetch_with_retries", lambda url, *a, **k: outcomes[url]
+    )
+
+    results = linkcheck.check_links(
+        [ExternalLink(url=url, pages=["a.html"]) for url in outcomes],
+        user_agent="x", rate_limit=0.0, workers=1,
+    )
+
+    assert {r.url: r.kind for r in results} == {
+        "https://gone.example/": "dns",
+        "https://locked.example/": "auth",
+        "https://broken.example/": "http",
+        "https://fine.example/": None,  # nothing went wrong, nothing to classify
+    }
 
 
 def test_write_and_load_links_round_trip(tmp_path: Path):
@@ -167,7 +278,8 @@ def test_write_results_json_round_trips_every_field(tmp_path: Path):
     results = [
         LinkCheckResult(url="https://ok.example/", pages=["a.html"], ok=True, status=200, reason=None),
         LinkCheckResult(
-            url="https://gone.example/", pages=["a.html", "b.html"], ok=False, status=404, reason="HTTP 404"
+            url="https://gone.example/", pages=["a.html", "b.html"], ok=False, status=404,
+            reason="HTTP 404", texts=["gone"], kind="http",
         ),
     ]
 
@@ -178,13 +290,18 @@ def test_write_results_json_round_trips_every_field(tmp_path: Path):
     assert loaded["base_url"] == "https://example.com"
     assert loaded["checked_at"] == "2026-08-24T00:00:00+00:00"
     assert loaded["results"] == [
-        {"url": "https://ok.example/", "pages": ["a.html"], "ok": True, "status": 200, "reason": None},
+        {
+            "url": "https://ok.example/", "pages": ["a.html"], "ok": True, "status": 200,
+            "reason": None, "texts": [], "kind": None,
+        },
         {
             "url": "https://gone.example/",
             "pages": ["a.html", "b.html"],
             "ok": False,
             "status": 404,
             "reason": "HTTP 404",
+            "texts": ["gone"],
+            "kind": "http",
         },
     ]
 

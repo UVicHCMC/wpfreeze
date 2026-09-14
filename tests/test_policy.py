@@ -695,6 +695,96 @@ def test_login_links_are_unwrapped_not_deleted():
         assert label in text
 
 
+# --- WordPress.com's injected action bar -----------------------------------
+
+
+_ACTIONBAR_HTML = """
+<html><body>
+  <p><a href="https://example.org/real">Real content link</a></p>
+  <div class="actnbr-pub-theme actnbr-has-follow" dir="ltr" id="actionbar" style="display: none;">
+    <ul>
+      <li class="actnbr-signup"><a href="https://wordpress.com/start/">Sign up</a></li>
+      <li class="actnbr-shortlink"><a href="https://wp.me/P2k1Pp-2">Copy shortlink</a></li>
+      <li class="flb-report"><a href="https://wordpress.com/abuse/?report_url=https://x/">Report this content</a></li>
+      <li class="actnbr-reader"><a href="https://wordpress.com/reader/blogs/1/posts/2">View post in Reader</a></li>
+      <li class="actnbr-subs"><a href="https://subscribe.wordpress.com/">Manage subscriptions</a></li>
+    </ul>
+  </div>
+  <script id="wpcom-actionbar-placeholder-js-extra">var actionbardata = {"shortlink":"https://wp.me/P2k1Pp-2"};</script>
+  <script>window.addEventListener("DOMContentLoaded", function () {
+    var s = document.createElement("script");
+    s.src = "wp-content/mu-plugins/actionbar/actionbar.js";
+  });</script>
+  <footer><a href="https://wordpress.com/?ref=footer_custom_powered">Website Powered by WordPress.com</a>.</footer>
+</body></html>
+"""
+
+
+def test_wpcom_action_bar_is_removed_with_its_scripts():
+    """WordPress.com injects this into every page it serves. Every control
+    in it is for a live hosted blog, and every one is per-page, so on one
+    real 248-page capture the bar alone was 688 of the 1154 external links
+    the archive contained."""
+    html, stats = _apply(_ACTIONBAR_HTML)
+
+    assert stats.wpcom_actionbars_removed == 1
+    assert stats.wpcom_actionbar_links_removed == 5
+    for gone in ("actionbar", "wp.me", "Copy shortlink", "Report this content",
+                 "subscribe.wordpress.com", "actionbardata", "mu-plugins/actionbar"):
+        assert gone not in html, gone
+    # The site's own content, and the footer credit, are not chrome.
+    assert "https://example.org/real" in html
+    assert "footer_custom_powered" in html
+
+
+def test_action_bar_needs_more_than_the_id_to_match():
+    """"actionbar" is a plausible id for a theme to use for something real,
+    so the id alone is never enough."""
+    html, stats = _apply(
+        '<div id="actionbar"><a href="https://example.org/somewhere">A real toolbar</a></div>'
+    )
+
+    assert stats.wpcom_actionbars_removed == 0
+    assert "A real toolbar" in html
+
+
+def test_action_bar_matches_on_wpcom_links_without_the_class():
+    html, stats = _apply(
+        '<div id="actionbar"><a href="https://wp.me/P2k1Pp-2">Copy shortlink</a></div>'
+    )
+
+    assert stats.wpcom_actionbars_removed == 1
+    assert "wp.me" not in html
+
+
+def test_action_bar_stripping_can_be_turned_off():
+    html, stats = _apply(_ACTIONBAR_HTML, Policy(strip_wpcom_actionbar=False))
+
+    assert stats.wpcom_actionbars_removed == 0
+    assert 'id="actionbar"' in html
+
+
+def test_actionbar_scripts_survive_when_no_bar_was_found():
+    """The scripts go *with* the bar. A page carrying the loader but no bar
+    is not a page this strip has any business editing."""
+    html, stats = _apply(
+        '<script id="wpcom-actionbar-placeholder-js-extra">var actionbardata = {};</script>'
+    )
+
+    assert stats.wpcom_actionbars_removed == 0
+    assert "actionbardata" in html
+
+
+def test_policy_reads_both_link_strip_flags_from_config():
+    """`strip_login_links` was documented as configurable (README, and
+    example-site.yaml sets it) but from_config never read it, so turning it
+    off silently did nothing."""
+    off = Policy.from_config({"strip_login_links": False, "strip_wpcom_actionbar": False})
+    assert off.strip_login_links is False and off.strip_wpcom_actionbar is False
+    on = Policy.from_config({})
+    assert on.strip_login_links is True and on.strip_wpcom_actionbar is True
+
+
 def test_login_link_stripping_can_be_turned_off():
     from bs4 import BeautifulSoup
     from wpfreeze.policy import Policy, PolicyStats, apply_policy

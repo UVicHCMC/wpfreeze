@@ -7,6 +7,56 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `owner-tasks.html` now leads each item with the replacement-address box
+  rather than hiding it behind the dropdown: pasting an address selects
+  "I have a new address for this" by itself, and clearing it takes the
+  item back to unanswered, so the common case never involves the dropdown.
+- **WordPress.com's injected action bar is now stripped at build time**
+  (`policy.strip_wpcom_actionbar`, on by default): the floating strip of
+  Sign up / Log in / Copy shortlink / Report this content / View post in
+  Reader / Manage subscriptions, plus the loader and `actionbardata`
+  scripts that go with it. It is per-page and therefore the largest single
+  source of external links in a WordPress.com capture — measured on a real
+  248-page site, it was 688 of 1154 unique external targets, so a
+  `checklinks` run over that archive drops by 60%. Matched on
+  `id="actionbar"` plus a corroborating `actnbr-` class or wordpress.com /
+  wp.me link, never the id alone; the "Website Powered by WordPress.com"
+  footer credit is attribution and is left alone.
+- The owner worksheet says what went wrong in plain English — "This
+  website no longer exists", "The page is gone. The website is still
+  there, but this page is not" — instead of the urllib line it used to
+  show a site owner ("unreachable (HTTPConnectionPool(host='bnb.bl.uk',
+  port=80): Max retries exceeded..."). That line stays in
+  `broken-external-links.md`/`.html`/`.json`, whose reader is the
+  archivist. `checklinks` now records a `kind` per failed link (`dns`,
+  `tls`, `timeout`, `refused`, `redirect_loop`, `auth`, `http`,
+  `unreachable`), classified from the whole error string at check time —
+  `reason` is truncated at 120 characters, usually mid-exception-name, so
+  it cannot be classified afterwards.
+- Each link's wording in the worksheet is a Google search for itself,
+  opened in a new tab, so an owner can go looking for where the page moved
+  and paste the new address straight back into the box above it.
+- Dead outbound links show the wording they are linked under, beside the
+  address. `checklinks` records it during extraction, so
+  `external-links.json` and `broken-external-links.json` both gained a
+  `texts` field (a bounded list of the distinct wordings a target is
+  linked under, falling back to a wrapped image's alt text or the link's
+  title). An `external-links.json` written before this field is re-scanned
+  once by the next `--recheck` that can see `site/`, which also reports
+  any links that have appeared or disappeared since it was written.
+- The owner worksheet's progress count now counts only the decisions the
+  owner actually owes. Auth-gated links arrive pre-answered "leave as is",
+  and counting them opened janellejenstad's worksheet at "256 of 347
+  handled" before the owner had touched it. The review panel summarises
+  them in one line instead of listing them.
+- The worksheet's name field and its only **Save my answers** button now
+  live in the sticky bar, with the block that used to hold them at the
+  foot of the page removed. There is one save affordance and nothing to
+  scroll to the bottom for.
+- The worksheet no longer carries a "things we already handled" footnote.
+  Filtered findings are the archivist's business, not the owner's:
+  `wpfreeze owner-tasks` prints the count on the console instead.
+
 - `wpfreeze validate` no longer requires a system Java. When `java` is on
   `PATH` *and can run the jar* it still fetches the ~32 MB `vnu.jar`;
   otherwise it fetches the validator project's self-contained
@@ -25,6 +75,11 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
   those (deliberately unpackaged) files aren't beside the install.
 
 ### Fixed
+
+- `policy.strip_login_links` is now actually read from config. The flag was
+  documented in the README and set in `example-site.yaml`, but
+  `Policy.from_config` never read it, so `strip_login_links: false` was
+  silently ignored and login links were always unwrapped.
 
 - `wpfreeze freeze` no longer aborts with exit `2` when no HTML checker can
   be obtained (no JVM and nothing cached). The `validate` step is marked

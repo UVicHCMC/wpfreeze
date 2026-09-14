@@ -284,6 +284,14 @@ class Policy:
     # to the live site's login screen. Unwrapped rather than deleted, so any
     # visible text stays put (see _strip_login_links).
     strip_login_links: bool = True
+    # WordPress.com's injected floating action bar (Sign up / Log in / Copy
+    # shortlink / Report this content / View post in Reader / Manage
+    # subscriptions). Live-service chrome in the same sense as the login
+    # links above, and on a WordPress.com-hosted site the largest single
+    # source of external links in the whole archive. See
+    # _strip_wpcom_actionbar. Absent from self-hosted WordPress, where this
+    # simply never matches.
+    strip_wpcom_actionbar: bool = True
     # Only meaningful when strip_forms removes a comment form's wrapper (see
     # _comment_wrapper): whether the "N comments" post-meta blurb built
     # around the now-dead #respond link is removed outright (True, the
@@ -334,6 +342,8 @@ class Policy:
             strip_wp_meta_links=bool(raw.get("strip_wp_meta_links", True)),
             strip_comment_counts=bool(raw.get("strip_comment_counts", True)),
             strip_search_forms=bool(raw.get("strip_search_forms", True)),
+            strip_login_links=bool(raw.get("strip_login_links", True)),
+            strip_wpcom_actionbar=bool(raw.get("strip_wpcom_actionbar", True)),
             dedupe_inline_css=bool(raw.get("dedupe_inline_css", True)),
             telemetry_extra_hosts=list(raw.get("telemetry_extra_hosts", []) or []),
             telemetry_keep_hosts=list(raw.get("telemetry_keep_hosts", []) or []),
@@ -377,6 +387,11 @@ class PolicyStats:
     # instead (comment_count_blurbs_removed). See _clean_dead_fragment_links.
     dead_fragment_links_removed: int = 0
     login_links_removed: int = 0
+    # WordPress.com action bars removed, and the anchors that went with
+    # them -- the link count is the interesting one, since it is what an
+    # external link check would otherwise have spent its time on.
+    wpcom_actionbars_removed: int = 0
+    wpcom_actionbar_links_removed: int = 0
     comment_count_blurbs_removed: int = 0
     # Divi newsletter-module captions removed alongside their form -- see
     # _newsletter_caption_sibling. Not every "newsletter" removal has one
@@ -565,6 +580,73 @@ def _strip_login_links(soup: BeautifulSoup, stats: PolicyStats) -> None:
         if _is_login_link(anchor["href"]):
             anchor.unwrap()
             stats.login_links_removed += 1
+
+
+# WordPress.com injects a floating "action bar" into every page it serves:
+# Sign up / Log in / Copy shortlink / Report this content / View post in
+# Reader / Manage subscriptions. Every one of those is a control for a
+# live hosted blog, and every one of them is per-page -- the shortlink is
+# a distinct wp.me URL and the report link carries the page's own address
+# -- so on one real 248-page capture the bar alone was 692 of the 1154
+# external links the archive contained, 59% of everything `checklinks` had
+# to check.
+#
+# It arrives `style="display:none"` and is revealed by a script the build
+# localises, so left in place it can actually appear in the archive and
+# offer a reader a "Sign up" button for a blog that no longer exists.
+#
+# Matched on the id *plus* a corroborating signal, never the id alone:
+# "actionbar" is a plausible id for a theme to use for something real.
+_WPCOM_ACTIONBAR_ID = "actionbar"
+_WPCOM_ACTIONBAR_CLASS_PREFIX = "actnbr-"
+_WPCOM_ACTIONBAR_HOSTS = ("wordpress.com", "wp.me")
+# Two scripts belong to the bar and nothing else: the loader that appends
+# actionbar.css/actionbar.js on DOMContentLoaded, and the `actionbardata`
+# blob WordPress prints beside it (site id, nonce, admin-ajax URL, the
+# page's own wp.me shortlink). Both are dead weight once the bar they
+# decorate is gone -- and the data blob is one of the places the inline-
+# script rewriter finds addresses no reader can see, so removing it also
+# takes work off the internal-link report.
+_WPCOM_ACTIONBAR_SCRIPT_MARKER = "mu-plugins/actionbar/"
+_WPCOM_ACTIONBAR_SCRIPT_ID_PREFIX = "wpcom-actionbar"
+
+
+def _is_wpcom_actionbar(tag) -> bool:
+    classes = tag.get("class") or []
+    if any(c.startswith(_WPCOM_ACTIONBAR_CLASS_PREFIX) for c in classes):
+        return True
+    for anchor in tag.find_all("a", href=True):
+        host = (urlsplit(anchor["href"]).hostname or "").lower()
+        if host.endswith(_WPCOM_ACTIONBAR_HOSTS):
+            return True
+    return False
+
+
+def _strip_wpcom_actionbar(soup: BeautifulSoup, stats: PolicyStats) -> None:
+    """Remove the WordPress.com action bar, and the loader that reveals it.
+
+    Decomposed, not unwrapped as login links are: there is no content
+    here to preserve. Every string in it ("Sign up", "Copy shortlink") is
+    a label on a control that cannot work, not something the site's author
+    wrote.
+    """
+    for tag in soup.find_all(id=_WPCOM_ACTIONBAR_ID):
+        if not _is_wpcom_actionbar(tag):
+            continue
+        stats.wpcom_actionbar_links_removed += len(tag.find_all("a", href=True))
+        tag.decompose()
+        stats.wpcom_actionbars_removed += 1
+    if not stats.wpcom_actionbars_removed:
+        return
+    for script in soup.find_all("script"):
+        identifier = (script.get("id") or "").lower()
+        source = (script.get("src") or "").lower()
+        if identifier.startswith(_WPCOM_ACTIONBAR_SCRIPT_ID_PREFIX):
+            script.decompose()
+        elif _WPCOM_ACTIONBAR_SCRIPT_MARKER in source:
+            script.decompose()
+        elif not source and _WPCOM_ACTIONBAR_SCRIPT_MARKER in (script.string or ""):
+            script.decompose()
 
 
 def _is_search_form(form) -> bool:
@@ -772,3 +854,5 @@ def apply_policy(
         _strip_wp_meta_links(soup, stats)
     if policy.strip_login_links:
         _strip_login_links(soup, stats)
+    if policy.strip_wpcom_actionbar:
+        _strip_wpcom_actionbar(soup, stats)

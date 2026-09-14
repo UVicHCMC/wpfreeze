@@ -181,6 +181,21 @@ policy:
   # of everything checklinks called broken, all bot-protection 403s.
   strip_login_links: true
 
+  # WordPress.com's injected floating action bar: Sign up / Log in / Copy
+  # shortlink / Report this content / View post in Reader / Manage
+  # subscriptions, plus the two scripts that reveal and configure it.
+  # Every control in it operates a live hosted blog. It arrives
+  # display:none and is revealed by a script the build localises, so left
+  # in place it can actually appear in the archive. It is also per-page
+  # (its own wp.me shortlink, its own report URL), which makes it the
+  # biggest single source of external links in a WordPress.com capture --
+  # on one real 248-page site, 688 of 1154 unique external targets.
+  # Matched on id="actionbar" plus an actnbr- class or a wordpress.com /
+  # wp.me link inside it, never the id alone. Self-hosted WordPress never
+  # has one. The "Website Powered by WordPress.com" footer credit is
+  # attribution, not chrome, and is left alone.
+  strip_wpcom_actionbar: true
+
   # Lift <style> blocks that are byte-identical across many pages into a
   # single shared stylesheet, linked from each page instead of repeated
   # inline. Not a strip -- nothing is removed, the same CSS is just served
