@@ -10,9 +10,35 @@ from __future__ import annotations
 
 import string
 from dataclasses import dataclass, field
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import SplitResult, parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 _UNRESERVED = set(string.ascii_letters + string.digits + "-._~")
+
+
+def safe_urlsplit(url: str) -> SplitResult | None:
+    """urlsplit, or None if the string cannot be parsed as a URL at all.
+
+    urlsplit does not merely return a poor answer for a malformed URL --
+    for one specific shape it refuses outright and raises. Square brackets
+    in an authority delimit an IPv6 literal ("http://[2001:db8::1]/"), so
+    an unbalanced bracket is a malformed IPv6 address and raises
+    ValueError("Invalid IPv6 URL") rather than returning anything.
+
+    That matters because most callers here are inspecting strings a regex
+    pulled out of page JavaScript, where a fragment like `//]` inside a
+    regex literal is ordinary and common. Every one of those call sites
+    was written expecting an answer, so a refusal propagated all the way
+    out and killed an entire build -- after the crawl had finished -- on
+    one stray bracket in one inline script (2026-09-10, reseaufranco).
+
+    Returning None says "this is not a URL", which is exactly what the
+    callers want to know and what they do with everything else the
+    heuristic scan turns up that isn't real.
+    """
+    try:
+        return urlsplit(url)
+    except ValueError:
+        return None
 
 # Query-string keys that encode a WordPress permalink fallback and are
 # worth keeping until a pretty permalink is known for the content they
@@ -80,7 +106,12 @@ class SiteProfile:
         subdirectory install, which is the only case where base_path isn't
         "/", so the two conditions always arrive together.
         """
-        host = urlsplit(url).hostname or ""
+        parts = safe_urlsplit(url)
+        if parts is None:
+            # Not a URL Python will parse at all (see safe_urlsplit).
+            # Whatever it is, it is not a resource of this site.
+            return False
+        host = parts.hostname or ""
         if not self.owns_host(host):
             return False
         if host in self.extra_hosts:
@@ -93,7 +124,7 @@ class SiteProfile:
             # config line would quietly mean something different depending on
             # whether the target happened to be a subdirectory install.
             return True
-        path = urlsplit(url).path
+        path = parts.path
         return path.startswith(self.base_path) or path == self.base_path.rstrip("/")
 
 

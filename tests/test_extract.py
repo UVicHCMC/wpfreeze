@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import pytest
+from wpfreeze.build import _is_unlikely_rewrite_target
 from wpfreeze.extract import (
     HYPERLINK,
     RENDER,
     extract_from_css,
     extract_from_html,
+    find_url_shaped_strings,
     is_bare_asset_directory,
     is_unlikely_real_url,
+    is_unparseable_url,
     is_wp_admin_infrastructure,
 )
 
@@ -506,3 +510,63 @@ def test_is_unlikely_real_url_still_excludes_wp_admin():
     trailing-slash rule, and it composes is_wp_admin_infrastructure back
     in explicitly rather than inheriting it implicitly."""
     assert is_unlikely_real_url("https://example.com/wp-admin/admin-ajax.php")
+
+
+# --- Strings Python's URL parser refuses outright -------------------------
+#
+# urlsplit raises ValueError("Invalid IPv6 URL") for an unbalanced square
+# bracket rather than returning a poor answer, and a heuristic scan of page
+# JavaScript turns these up routinely -- `//]` closing a regex literal is
+# the shape that killed a real build after its crawl had finished
+# (2026-09-10, reseaufranco). They must be filtered out like any other
+# false positive, never raised.
+
+UNPARSEABLE = [
+    "//]",                      # regex literal in minified JS: /^//]$/
+    "//G]]",
+    "http://[",
+    "http://[broken",
+    "https://x[1].com/photo.png",
+    "http://a]b/c",
+]
+
+
+@pytest.mark.parametrize("value", UNPARSEABLE)
+def test_is_unparseable_url_flags_what_urlsplit_refuses(value):
+    assert is_unparseable_url(value)
+
+
+@pytest.mark.parametrize("value", UNPARSEABLE)
+def test_unparseable_strings_are_filtered_not_raised(value):
+    """Both filter chains must return a verdict rather than propagate the
+    ValueError -- extraction's, and build.py's narrower rewriter variant."""
+    assert is_unlikely_real_url(value)
+    assert _is_unlikely_rewrite_target(value)
+
+
+@pytest.mark.parametrize("value", UNPARSEABLE)
+def test_individual_predicates_do_not_raise_on_unparseable(value):
+    """The predicates are public and composed in several orders, so each
+    must survive one of these on its own, not merely behind the chain."""
+    assert is_wp_admin_infrastructure(value) is False
+    assert is_bare_asset_directory(value) is False
+
+
+def test_real_urls_still_parse_and_are_not_filtered():
+    """The guard must not swallow ordinary URLs along with the garbage."""
+    for value in [
+        "https://example.com/photo.png",
+        "//example.com/photo.png",
+        "/wp-content/uploads/2024/photo.jpg",
+        "http://[2001:db8::1]/valid-ipv6.png",   # balanced brackets: a real URL
+    ]:
+        assert not is_unparseable_url(value), value
+        assert not is_unlikely_real_url(value), value
+
+
+def test_find_url_shaped_strings_survives_a_script_with_a_regex_literal():
+    """End-to-end at the scan boundary: this is the call that raised."""
+    script = '''var cfg={"ajax":"https://example.com/a.png","re":/^//]$/};'''
+    found = find_url_shaped_strings(script)
+    assert "https://example.com/a.png" in found
+    assert not any(is_unparseable_url(u) for u in found)

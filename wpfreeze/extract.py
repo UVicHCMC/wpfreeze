@@ -21,7 +21,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
-from wpfreeze.urlnorm import resolve_url
+from wpfreeze.urlnorm import resolve_url, safe_urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +182,10 @@ def is_bare_asset_directory(url: str) -> bool:
     images_uri, with or without a trailing slash) without also excluding
     every genuine page URL a script or JSON-LD block happens to quote.
     """
-    path = urlsplit(url.rstrip()).path
+    parts = safe_urlsplit(url.rstrip())
+    if parts is None:
+        return False  # unparseable: is_unparseable_url has the final say
+    path = parts.path
     if not path.startswith(_ASSET_TREE_PREFIXES):
         return False
     return "." not in path.rsplit("/", 1)[-1]
@@ -231,14 +234,35 @@ def is_wp_admin_infrastructure(url: str) -> bool:
     that was never going to resolve on any static archive, of any
     WordPress site, regardless of what this one happens to link to.
     """
-    return urlsplit(url).path.startswith(_WP_ADMIN_INFRASTRUCTURE_PREFIXES)
+    parts = safe_urlsplit(url)
+    if parts is None:
+        return False  # unparseable: is_unparseable_url has the final say
+    return parts.path.startswith(_WP_ADMIN_INFRASTRUCTURE_PREFIXES)
+
+
+def is_unparseable_url(url: str) -> bool:
+    """True for a string Python's own URL parser refuses outright.
+
+    A heuristic scan of page JavaScript turns up plenty of things that
+    merely look URL-shaped, and an unbalanced square bracket -- `//]` at
+    the end of a regex literal, say -- is one that urlsplit will not parse
+    at all (see urlnorm.safe_urlsplit). Whatever else such a string is, it
+    is not a resource anybody can fetch, so it belongs with the rest of
+    the false positives rather than in a traceback.
+
+    Checked first in both filter chains below, so nothing downstream --
+    resolution, lookup_variants, the rewriter -- is ever handed a string
+    that cannot be parsed.
+    """
+    return safe_urlsplit(url) is None
 
 
 def is_unlikely_real_url(url: str) -> bool:
     """Combines the structural checks a heuristic-scan result must pass to
     be treated as a real, fetchable resource rather than a false positive."""
     return (
-        _is_bare_directory_reference(url)
+        is_unparseable_url(url)
+        or _is_bare_directory_reference(url)
         or is_implausibly_long(url)
         or is_wp_admin_infrastructure(url)
     )
@@ -270,7 +294,9 @@ def decode_static_bundle(url: str) -> list[str] | None:
     nothing about the record looking wrong. Expanding here keeps each
     component's identity in its path, where normalization cannot lose it.
     """
-    parts = urlsplit(url)
+    parts = safe_urlsplit(url)
+    if parts is None:
+        return None
     # urlsplit assigns everything after the *first* '?' to .query, so the
     # second '?' of the '??' marker leads the spec.
     if not parts.path.endswith(_STATIC_CONCAT_PATH) or not parts.query.startswith("?"):

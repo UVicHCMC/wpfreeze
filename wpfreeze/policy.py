@@ -50,7 +50,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit
+
+from wpfreeze.urlnorm import safe_urlsplit
 
 from bs4 import BeautifulSoup, NavigableString
 
@@ -410,12 +411,15 @@ class PolicyStats:
 def _is_telemetry_ref(url: str, blocked: frozenset[str], kept: list[str]) -> bool:
     """True if a src/href points at telemetry -- by third-party host, or by
     a path signature that catches trackers served from the site's own host."""
-    host = urlsplit(url).netloc.lower()
+    parts = safe_urlsplit(url)
+    if parts is None:
+        return False  # not a URL at all, so not a tracker either
+    host = parts.netloc.lower()
     if any(k and k.lower() in host for k in kept):
         return False
     if any(b in host for b in blocked):
         return True
-    path = urlsplit(url).path.lower()
+    path = parts.path.lower()
     return any(sig in path for sig in _TELEMETRY_PATH_SIGNATURES)
 
 
@@ -551,9 +555,8 @@ def _is_login_link(href: str) -> bool:
     """
     if not href:
         return False
-    try:
-        parts = urlsplit(href)
-    except ValueError:
+    parts = safe_urlsplit(href)
+    if parts is None:
         return False
     path = (parts.path or "").lower().rstrip("/")
     host = (parts.hostname or "").lower()
@@ -616,7 +619,10 @@ def _is_wpcom_actionbar(tag) -> bool:
     if any(c.startswith(_WPCOM_ACTIONBAR_CLASS_PREFIX) for c in classes):
         return True
     for anchor in tag.find_all("a", href=True):
-        host = (urlsplit(anchor["href"]).hostname or "").lower()
+        parts = safe_urlsplit(anchor["href"])
+        if parts is None:
+            continue
+        host = (parts.hostname or "").lower()
         if host.endswith(_WPCOM_ACTIONBAR_HOSTS):
             return True
     return False

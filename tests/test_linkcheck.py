@@ -318,3 +318,21 @@ def test_write_results_json_keeps_null_status_and_reason(tmp_path: Path):
 
     assert entry["status"] is None
     assert entry["reason"] == "unreachable (timeout)"
+
+
+def test_extract_skips_a_malformed_href_without_raising(tmp_path: Path):
+    """checklinks scans hrefs from the built markup, and a link the build
+    deliberately left alone is still sitting there. An unbalanced bracket is
+    not a URL urlsplit will parse (see urlnorm.safe_urlsplit), so it must be
+    passed over rather than aborting the whole link check."""
+    _write_html(
+        tmp_path,
+        "index.html",
+        '<a href="https://other.example/dead">dead</a> '
+        '<a href="http://[broken">malformed</a> '
+        '<a href="//]">also malformed</a>',
+    )
+
+    links = extract_external_links(tmp_path, _PROFILE)
+
+    assert [link.url for link in links] == ["https://other.example/dead"]

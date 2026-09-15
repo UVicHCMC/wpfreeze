@@ -76,6 +76,29 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A stray square bracket in a page's JavaScript no longer kills the whole
+  build.** Finding references inside inline `<script>` blocks means
+  pattern-matching for things that look like URLs, then inspecting each
+  candidate — and Python's `urlsplit` does not merely give a poor answer for
+  one shape, it refuses outright: an unbalanced `[` reads as a malformed IPv6
+  literal and raises `ValueError("Invalid IPv6 URL")`. A fragment like `//]`
+  closing a regex literal is ordinary in minified JavaScript. Every call site
+  was written expecting an answer, so the refusal propagated out and aborted
+  the build *after* the crawl had already finished. Unparseable strings are
+  now filtered out like any other false positive, via a new
+  `urlnorm.safe_urlsplit`.
+
+  `resolve_url` had guarded the extraction entry point against precisely this
+  since it was written; the crash came in through the doors that bypass it.
+  An audit of every URL-parsing call reachable from page markup closed the
+  rest: `SiteProfile.in_scope` (asked by crawl, build, checklinks *and*
+  rescan — the widest reach of any of them), `lookup_variants` (raw anchor
+  hrefs in the attachment-page scan), `verify_site` (re-reads references the
+  rewriter deliberately left alone), `policy._is_telemetry_ref` and
+  `policy._is_wpcom_actionbar` (both run on every build), and
+  `linkcheck.extract_external_links`, where a malformed href was additionally
+  being reported as a broken external link rather than passed over.
+
 - **A WordPress multisite subdirectory install now builds an `index.html`.**
   Previously only a site at the domain root got one: a site at
   `example.com/subsite/` had its home page written to `site/subsite.html` —

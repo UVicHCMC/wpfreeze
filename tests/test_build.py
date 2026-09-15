@@ -1098,3 +1098,42 @@ def test_write_build_report_records_that_content_issues_did_not_run(tmp_path: Pa
 
     data = json.loads(write_build_report(BuildStats(), tmp_path).read_text())
     assert data["content_issues"] is None
+
+
+# --- References that Python's URL parser refuses to parse ------------------
+
+
+def test_verify_site_survives_a_malformed_reference_left_in_the_output(tmp_path):
+    """A reference the rewriter declined to touch is still sitting in the
+    built document, so verification meets it a second time -- and this is a
+    shape urlsplit raises on rather than parses (unbalanced bracket, read as
+    a malformed IPv6 literal). It must be counted, not raised."""
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "real.png").write_bytes(b"\x89PNG")
+    (site / "index.html").write_text(
+        '<html><body>'
+        '<img src="real.png">'
+        '<a href="http://[broken">malformed</a>'
+        '<a href="//]">also malformed</a>'
+        '</body></html>',
+        encoding="utf-8",
+    )
+
+    report = verify_site(site)
+
+    assert report.documents == 1
+    assert report.checked == 1         # only the real reference is checkable
+    assert report.broken == []         # and it resolves
+    assert report.skipped == 2         # both malformed ones set aside, not raised
+
+
+def test_lookup_variants_survives_a_malformed_url():
+    """Reached with a raw anchor href during the attachment-page scan, which
+    never passes through resolve()'s urljoin guard."""
+    from wpfreeze.build import lookup_variants
+
+    assert lookup_variants("http://[broken/wp-content/uploads/x.jpg") == [
+        "http://[broken/wp-content/uploads/x.jpg"
+    ]
+    assert lookup_variants("//]") == ["//]"]

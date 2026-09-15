@@ -794,3 +794,26 @@ def test_login_link_stripping_can_be_turned_off():
     apply_policy(soup, Policy(strip_login_links=False), stats)
     assert stats.login_links_removed == 0
     assert soup.find("a") is not None
+
+
+def test_telemetry_and_actionbar_checks_survive_a_malformed_href():
+    """Both inspect href/src values straight from page markup, where an
+    unbalanced bracket is not a URL urlsplit will parse (see
+    urlnorm.safe_urlsplit). They run on every build, so raising here would
+    abort one over a link the archive does not even need."""
+    from bs4 import BeautifulSoup
+
+    from wpfreeze.policy import _is_telemetry_ref, _is_wpcom_actionbar
+
+    for value in ["http://[broken", "//]", "https://x[1].com/t.gif"]:
+        assert _is_telemetry_ref(value, frozenset({"google-analytics.com"}), []) is False
+
+    soup = BeautifulSoup('<div><a href="http://[broken">x</a></div>', "html.parser")
+    assert _is_wpcom_actionbar(soup.div) is False
+
+    # A real action bar is still detected with a malformed sibling present.
+    soup = BeautifulSoup(
+        '<div><a href="//]">x</a><a href="https://wordpress.com/log-in">in</a></div>',
+        "html.parser",
+    )
+    assert _is_wpcom_actionbar(soup.div) is True

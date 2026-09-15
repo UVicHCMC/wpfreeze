@@ -44,6 +44,7 @@ from wpfreeze.extract import (
     decode_static_bundle,
     is_bare_asset_directory,
     is_implausibly_long,
+    is_unparseable_url,
     is_url_shaped,
     is_wp_admin_infrastructure,
 )
@@ -51,7 +52,7 @@ from wpfreeze.manifest import FLAG_ATTACHMENT_PAGE, Manifest, ManifestRecord, St
 from wpfreeze.normalize import NormalizeStats, apply_normalizations
 from wpfreeze.policy import Policy, PolicyStats, apply_policy
 from wpfreeze.search import SEARCH_ASSET_PATH, ContentIssues, SearchStats, apply_search, write_search_asset
-from wpfreeze.urlnorm import PERMALINK_QUERY_KEYS, scope_profile_from_config
+from wpfreeze.urlnorm import PERMALINK_QUERY_KEYS, safe_urlsplit, scope_profile_from_config
 
 if TYPE_CHECKING:
     from wpfreeze.cli import SearchSettings
@@ -84,7 +85,12 @@ def _is_unlikely_rewrite_target(url: str) -> bool:
     self-referential page URLs) with zero new noise in unresolved_samples
     versus reusing is_unlikely_real_url as-is.
     """
-    return is_implausibly_long(url) or is_wp_admin_infrastructure(url) or is_bare_asset_directory(url)
+    return (
+        is_unparseable_url(url)
+        or is_implausibly_long(url)
+        or is_wp_admin_infrastructure(url)
+        or is_bare_asset_directory(url)
+    )
 
 
 def _unescape_forward_slashes(text: str) -> tuple[str, list[int]]:
@@ -207,8 +213,8 @@ def lookup_variants(url: str, *, owned: bool = True) -> list[str]:
     resolving to a stale, empty `fonts.googleapis.com/css` capture instead of
     being left unresolved or matching its own real record.
     """
-    parts = urlsplit(url)
-    if not parts.netloc:
+    parts = safe_urlsplit(url)
+    if parts is None or not parts.netloc:
         return [url]
 
     # Ordered, not set-based: the URL's own spelling must be tried before
@@ -1002,12 +1008,19 @@ def verify_site(site_dir: Path, written_after: float | None = None) -> VerifyRep
             if not value or value.lower().startswith(_SKIP_PREFIXES):
                 report.skipped += 1
                 continue
-            if urlsplit(value).scheme or value.startswith("//"):
+            parts = safe_urlsplit(value)
+            if parts is None:
+                # Not a URL at all (see urlnorm.safe_urlsplit). It was left
+                # alone during rewriting for the same reason; there is
+                # nothing on disk it could be pointing at.
+                report.skipped += 1
+                continue
+            if parts.scheme or value.startswith("//"):
                 report.external += 1
                 continue
 
             report.checked += 1
-            path = unquote(urlsplit(value).path)
+            path = unquote(parts.path)
             if not path:
                 continue  # a bare query or fragment: same document
             base = "" if relative_dir == "." else relative_dir

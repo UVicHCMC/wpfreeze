@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 import pytest
 
-from wpfreeze.urlnorm import SiteProfile, normalize_url, resolve_url
+from wpfreeze.urlnorm import SiteProfile, normalize_url, resolve_url, safe_urlsplit
 
 # A profile for a site that: serves https, redirects www -> non-www
 # (canonical_host = "example.com"), and prefers a trailing slash on
@@ -245,3 +247,45 @@ def test_the_primary_host_is_still_confined_when_extra_hosts_exist():
     assert MULTISITE_WITH_CDN.in_scope("https://example.com/courses/about/")
     assert not MULTISITE_WITH_CDN.in_scope("https://example.com/siblinglab/")
     assert not MULTISITE_WITH_CDN.in_scope("https://cdn.unrelated.net/a.js")
+
+
+# --- safe_urlsplit --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["//]", "http://[", "https://x[1].com/a.png", "http://a]b/c"],
+)
+def test_safe_urlsplit_returns_none_where_urlsplit_raises(value):
+    """urlsplit refuses an unbalanced square bracket outright -- it reads as
+    a malformed IPv6 literal -- instead of returning a poor answer. Callers
+    inspecting regex-scraped page JavaScript need a verdict, not an
+    exception, so this reports "not a URL" the way they already handle every
+    other false positive."""
+    with pytest.raises(ValueError):
+        urlsplit(value)
+    assert safe_urlsplit(value) is None
+
+
+def test_safe_urlsplit_is_ordinary_urlsplit_for_real_urls():
+    for value in [
+        "https://example.com/a/b.png?x=1#f",
+        "//example.com/a.png",
+        "/wp-content/uploads/photo.jpg",
+        "http://[2001:db8::1]/valid-ipv6.png",  # balanced: a genuine IPv6 URL
+    ]:
+        assert safe_urlsplit(value) == urlsplit(value), value
+
+
+@pytest.mark.parametrize("value", ["//]", "http://[", "https://x[1].com/a.png"])
+def test_in_scope_rejects_an_unparseable_url_instead_of_raising(value):
+    """in_scope is the widest-reach caller of all: crawl, build, checklinks
+    and rescan all ask it. A string urlsplit refuses is not a resource of
+    this site, so the answer is False -- never an exception that takes the
+    whole run down with it."""
+    assert SLASH_PROFILE.in_scope(value) is False
+
+
+def test_in_scope_still_answers_normally_for_real_urls():
+    assert SLASH_PROFILE.in_scope("https://example.com/about/") is True
+    assert SLASH_PROFILE.in_scope("https://elsewhere.example/about/") is False

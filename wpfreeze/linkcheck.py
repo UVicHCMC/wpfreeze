@@ -37,7 +37,7 @@ from bs4 import BeautifulSoup
 
 from wpfreeze.fetch import SUCCESS, FetchConfig, FetchOutcome, RateLimiter, fetch_with_retries
 from wpfreeze.manifest import FLAG_AUTH_GATED, FLAG_RETRY_EXHAUSTED
-from wpfreeze.urlnorm import SiteProfile
+from wpfreeze.urlnorm import SiteProfile, safe_urlsplit
 
 if TYPE_CHECKING:
     from wpfreeze.progress import Progress
@@ -145,8 +145,15 @@ def extract_external_links(site_dir: Path, profile: SiteProfile) -> list[Externa
                 continue
             if href.startswith("//"):
                 href = f"https:{href}"
-            elif not urlsplit(href).scheme:
-                continue  # relative -- internal by construction after build
+            # Checked after the protocol-relative fixup, so the parse sees
+            # the same string the checker would fetch. A malformed href the
+            # build left alone is still in the markup; without this it would
+            # be reported as a broken external link rather than passed over.
+            parts = safe_urlsplit(href)
+            if parts is None or not parts.scheme:
+                # Not a URL at all, or relative -- internal by construction
+                # after build. Nothing to check either way.
+                continue
             url = href.split("#", 1)[0]
             if profile.in_scope(url):
                 continue
