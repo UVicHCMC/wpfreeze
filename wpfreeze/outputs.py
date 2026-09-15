@@ -54,20 +54,31 @@ class OutputPathCollisionError(Exception):
     one silently overwrite the other."""
 
 
-def internal_output_path(url_path: str) -> str:
+def internal_output_path(url_path: str, base_path: str = "/") -> str:
     """Map an internal URL path to its intended output file path.
 
-    /foo/bar/ -> /foo/bar.html; / -> /index.html; archive pagination
-    /category/essays/page/2/ -> /category/essays/page-2.html; anything
-    already file-like (a dot in the final segment) keeps its path
-    unchanged. Directory-likeness is judged the same way regardless of
-    whether the URL happens to carry a trailing slash -- the site's own
-    trailing-slash preference (probed into SiteProfile) must not change
-    Module 1's own output convention, so a no-trailing-slash site's
-    "/foo/bar" still becomes "/foo/bar.html", not "/foo/bar" verbatim.
+    /foo/bar/ -> /foo/bar.html; the site's own root -> /index.html;
+    archive pagination /category/essays/page/2/ ->
+    /category/essays/page-2.html; anything already file-like (a dot in the
+    final segment) keeps its path unchanged. Directory-likeness is judged
+    the same way regardless of whether the URL happens to carry a trailing
+    slash -- the site's own trailing-slash preference (probed into
+    SiteProfile) must not change Module 1's own output convention, so a
+    no-trailing-slash site's "/foo/bar" still becomes "/foo/bar.html", not
+    "/foo/bar" verbatim.
+
+    `base_path` is the site's root as SiteProfile probed it -- "/" for an
+    ordinary site, "/subsite/" for one site of a multisite network living
+    in a subdirectory. It is what makes the home page land on
+    /index.html. Without it a subdirectory install's root falls through to
+    the ordinary directory rule and becomes /subsite.html, a lone file
+    sitting beside the /subsite/ directory holding every other page, and
+    the built site has no index.html anywhere -- browse its root and you
+    get nothing. Sibling paths keep the base_path prefix; only the root
+    itself is rewritten, so the tree still mirrors the live site's URLs.
     """
     stripped = url_path.rstrip("/")
-    if stripped == "":
+    if stripped == base_path.rstrip("/"):
         return "/index.html"
 
     pagination_match = _PAGINATION_RE.match(stripped)
@@ -149,7 +160,7 @@ def _assign_output_path(
     host = (urlsplit(record.url).hostname or "").lower()
     if profile.owns_host(host):
         url_path = urlsplit(record.url).path or "/"
-        output_path = internal_output_path(url_path)
+        output_path = internal_output_path(url_path, profile.base_path)
         existing = internal_seen.get(output_path)
         if existing is not None and existing != record.url:
             raise OutputPathCollisionError(f"{record.url} and {existing} both map to {output_path}")
@@ -221,6 +232,19 @@ def generate_redirects_htaccess(manifest: Manifest) -> str:
         "",
         "# --- Mechanical rules: directory request -> explicit output file ---",
         "RewriteEngine On",
+    ]
+
+    # A subdirectory install's root is the one path the generic rule below
+    # gets wrong: internal_output_path sends /subsite/ to /index.html, but
+    # ^(.*)/$ would send it to /subsite.html, which no longer exists. Emit
+    # the special case first so an archive redeployed at its original path
+    # still serves its home page. A site already at "/" needs nothing --
+    # the webserver's own DirectoryIndex finds index.html.
+    base_path = manifest.site_profile.base_path if manifest.site_profile is not None else "/"
+    if base_path.rstrip("/"):
+        lines.append(f"RewriteRule ^{_htaccess_safe(base_path.strip('/'))}/?$ /index.html [L]")
+
+    lines += [
         "RewriteCond %{REQUEST_FILENAME} !-f",
         r"RewriteRule ^(.*)/$ /$1.html [L]",
         "",

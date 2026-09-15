@@ -76,6 +76,17 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A WordPress multisite subdirectory install now builds an `index.html`.**
+  Previously only a site at the domain root got one: a site at
+  `example.com/subsite/` had its home page written to `site/subsite.html` —
+  a lone file sitting beside the `site/subsite/` directory holding every
+  other page — so the built site had no `index.html` anywhere and browsing
+  the archive root gave nothing. The site's own root now maps to
+  `/index.html`; sibling paths keep their prefix, so the tree still mirrors
+  the live site's URLs. `redirects.htaccess` gains a matching rule ahead of
+  the generic directory rule, so an archive redeployed at its original path
+  still serves its home page.
+
 - `policy.strip_login_links` is now actually read from config. The flag was
   documented in the README and set in `example-site.yaml`, but
   `Policy.from_config` never read it, so `strip_login_links: false` was
