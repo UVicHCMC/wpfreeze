@@ -5,6 +5,16 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-09-16
+
+A colleague's rebuild crashed on the pre-fix `is_wp_admin_infrastructure`
+code after they upgraded, indistinguishable by `--version` from a build
+that had the fix — the version number had not moved since 1.0.0 despite
+five behavioural commits landing under it. From here, every commit that
+adds a `Fixed`/`Changed` entry bumps this file and `pyproject.toml`'s
+`version` together, so `--version` is always a true answer to "do I have
+this fix".
+
 ### Changed
 
 - `owner-tasks.html` now leads each item with the replacement-address box
