@@ -86,9 +86,10 @@ wayback:
 # search-index, upload-script, owner-tasks. `checklinks` is deliberately
 # not in the default list (it hits third-party hosts and is slow) --
 # `freeze` offers to run it at the end of the sequence instead; list it
-# here explicitly if you always want it as a declared step. `owner-tasks`
-# is likewise opt-in, and only useful after `checklinks` has run: list
-# both, in that order, if you want the owner's worklist built every time.
+# here explicitly if you always want it as a declared step. `checklinks`
+# also refreshes the owner's worklist (owner-tasks.html), so listing it is
+# enough to get that built every time; `owner-tasks` on its own only
+# regenerates the worklist from the last check, without re-checking links.
 freeze:
   steps: [acquire, build, validate]
   # true makes freeze behave in a real terminal exactly as it does when

@@ -122,6 +122,18 @@ pipx inject wpfreeze 'pagefind[extended]'
 If you'd rather not use `pipx`, a plain `pip install git+https://...` works
 identically, just without the automatic environment isolation.
 
+### Upgrading
+
+```bash
+pipx upgrade wpfreeze
+wpfreeze --version
+```
+
+Check that the version printed matches the newest entry in
+[`CHANGELOG.md`](CHANGELOG.md). Every fix is released under its own
+version number, so `--version` is the reliable answer to "do I have that
+fix yet" — if it still shows the old number, the upgrade didn't take.
+
 ### For development
 
 ```bash
@@ -362,7 +374,7 @@ freeze:
 ```
 
 Permitted steps: `acquire`, `build`, `validate`, `diagnose`, `report`,
-`checklinks`, `search-index`, `upload-script`. `freeze` never infers a step
+`checklinks`, `search-index`, `upload-script`, `owner-tasks`. `freeze` never infers a step
 from another config key — `upload-script` only runs if you list it, even
 if `upload.remote` is set.
 
@@ -385,7 +397,8 @@ wpfreeze status        <project>
 wpfreeze rescan        <project> [--apply] [--profile-from-config]
 wpfreeze upload-script <project> [--site-dir DIR]
 wpfreeze search-index  <project> [--site-dir DIR]
-wpfreeze checklinks    <project> [--site-dir DIR] [--recheck]
+wpfreeze checklinks    <project> [--site-dir DIR] [--recheck] [--no-owner-tasks]
+wpfreeze owner-tasks   <project> [--output PATH]
 wpfreeze help                            # same as -h/--help; every subcommand also takes its own -h
 wpfreeze --version                       # the installed version
 ```
@@ -552,7 +565,7 @@ external-links.json       only after `wpfreeze checklinks` -- the page -> extern
 broken-external-links.md  only after `wpfreeze checklinks` -- broken links, grouped by internal page
 broken-external-links.html  the same, styled like report.html
 broken-external-links.json  the same check as machine-readable results (ok/status/reason/kind/link wording per URL)
-owner-tasks.html          only after `wpfreeze owner-tasks` -- the interactive worklist to email the site owner
+owner-tasks.html          only after `wpfreeze checklinks` or `owner-tasks` -- the interactive worklist to email the site owner
 ```
 
 `report.html` and `cleanup-todo.html` have no external dependencies — no
@@ -632,6 +645,14 @@ touching the capture, so re-running is always safe. In that tree:
   CSS/JS files under `assets/bundles/`.
 - Links to WordPress attachment pages are redirected to the media they wrap.
 - The acquisition-generated redirect map is copied to `site/.htaccess`.
+- A **subdirectory install** (a multisite subsite at
+  `example.com/subsite/`, say) gets its home page at `site/index.html`;
+  every other page keeps its path prefix, so the tree still mirrors the
+  live site's URLs, and `site/.htaccess` gains a rule so `/subsite/` still
+  resolves. Output paths are fixed at acquisition time and stored in the
+  manifest, so a capture made before 1.0.1 needs `wpfreeze acquire
+  <project> --resume` before `build` to pick this up — `build` alone keeps
+  the old layout, home page at `site/subsite.html`.
 - **Live-web machinery is stripped** so the archive is genuinely
   self-contained: analytics and tag managers (third-party *and* the
   self-hosted analytics plugins WordPress serves from its own domain),
