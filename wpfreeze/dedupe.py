@@ -94,8 +94,11 @@ def extract_shared_css(
     rewrite_css,
     stats: DedupeStats,
     min_redundant_bytes: int = MIN_REDUNDANT_BYTES,
-) -> None:
+) -> set[str]:
     """Write shared stylesheets and repoint the pages that carried them.
+
+    Returns the site-relative paths of the shared stylesheets written, so
+    the build's ledger knows they are its own output (see prune.py).
 
     `rewrite_css(css_text, page_url, output_path)` is the build's own CSS
     rewriter, passed in so this module does not need to know how references
@@ -104,6 +107,7 @@ def extract_shared_css(
     reference counts.
     """
     touched_pages: set[str] = set()
+    written: set[str] = set()
     for digest, occurrences in index.occurrences.items():
         raw = index.raw_by_hash[digest]
         size = len(raw.encode("utf-8"))
@@ -131,6 +135,7 @@ def extract_shared_css(
         destination = site_dir / shared_path.lstrip("/")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(shared_css, encoding="utf-8")
+        written.add(shared_path.lstrip("/"))
 
         updated_pages = set()
         for occ in occurrences:
@@ -154,3 +159,4 @@ def extract_shared_css(
             touched_pages |= updated_pages
             stats.bytes_saved += redundant
     stats.pages_updated = len(touched_pages)
+    return written

@@ -56,6 +56,7 @@ from wpfreeze.urlnorm import PERMALINK_QUERY_KEYS, safe_urlsplit, scope_profile_
 
 if TYPE_CHECKING:
     from wpfreeze.cli import SearchSettings
+    from wpfreeze.prune import PruneReport
     from wpfreeze.progress import Progress
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,9 @@ class BuildStats:
     dedupe: DedupeStats = field(default_factory=DedupeStats)
     search: SearchStats = field(default_factory=SearchStats)
     unresolved_samples: list[dict] = field(default_factory=list)
+    # Every site-relative path this build wrote, for prune.py's ledger.
+    # Bookkeeping, not a statistic: write_build_report leaves it out.
+    written: set[str] = field(default_factory=set)
 
     @property
     def considered(self) -> int:
@@ -447,6 +451,7 @@ class BundleReassembler:
         destination = self.site_dir / output_path.lstrip("/")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text("".join(chunks), encoding="utf-8")
+        self.stats.written.add(output_path.lstrip("/"))
 
         self.stats.bundles_reassembled += 1
         self.stats.bundle_components_missing += missing
@@ -837,6 +842,7 @@ def build_site(
 
         destination = site_dir / record.output_path.lstrip("/")
         destination.parent.mkdir(parents=True, exist_ok=True)
+        stats.written.add(record.output_path.lstrip("/"))
 
         if is_html:
             stats.pages += 1
@@ -888,7 +894,7 @@ def build_site(
         # shared file's own location and must not inflate the build's
         # reference counts.
         scratch = LinkRewriter(lookup, BuildStats(), bundler, attachment_media, base_url, extra_hosts)
-        extract_shared_css(css_index, site_dir, scratch.rewrite_css, stats.dedupe)
+        stats.written |= extract_shared_css(css_index, site_dir, scratch.rewrite_css, stats.dedupe)
 
     # The redirect map is an acquisition product (directory->file rules plus
     # ?attachment_id=/alias 301s); it only helps if it travels with the site
@@ -896,6 +902,7 @@ def build_site(
     redirects = output_dir / "redirects.htaccess"
     if redirects.exists():
         (site_dir / ".htaccess").write_bytes(redirects.read_bytes())
+        stats.written.add(".htaccess")
         stats.redirects_copied = True
 
     if search_enabled:
@@ -905,6 +912,7 @@ def build_site(
         # build_site returns so verify_site finds the file those tags
         # point at.
         write_search_asset(site_dir)
+        stats.written.add(SEARCH_ASSET_PATH.lstrip("/"))
 
     return stats
 
@@ -1068,6 +1076,7 @@ def write_build_report(
     output_dir: Path,
     verify: "VerifyReport | None" = None,
     content_issues: ContentIssues | None = None,
+    prune: "PruneReport | None" = None,
 ) -> Path:
     """Persist build stats to build-report.json, mirroring
     validate.write_validation_report. Makes this run's findings --
@@ -1094,6 +1103,8 @@ def write_build_report(
     """
     path = output_dir / "build-report.json"
     data = asdict(stats)
+    del data["written"]
+    data["prune"] = None if prune is None else asdict(prune)
     data["verification"] = (
         None
         if verify is None

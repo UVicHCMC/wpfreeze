@@ -56,10 +56,12 @@ from wpfreeze.outputs import compute_output_paths, generate_redirects_htaccess
 from wpfreeze.policy import Policy
 from wpfreeze.progress import Progress
 from wpfreeze.projects import AmbiguousProject, ProjectNotFound, resolve_project, validate_name
+from wpfreeze.prune import format_prune_summary, load_ledger, prune_site, write_ledger
 from wpfreeze.report import assess_dry_run, format_readiness, inventory_records, write_report_html, write_report_json
 from wpfreeze.rescan import format_rescan_summary, rescan
 from wpfreeze.runlock import RunLock, RunLockHeld
 from wpfreeze.search import (
+    BUNDLE_SUBDIR as SEARCH_BUNDLE_SUBDIR,
     SearchUnavailable,
     format_content_issues_summary,
     format_search_summary,
@@ -963,7 +965,21 @@ def _run_build_body(
         content_issues = scan_content_issues(target, config.search)
         print(format_content_issues_summary(content_issues))
 
-    write_build_report(stats, config.output_dir, verify_report, content_issues)
+    # Last of the writers: the Pagefind bundle has to exist (or not) before
+    # deciding what in the site directory is this build's own output.
+    # `pagefind/` is owned wholesale whenever indexing ran at all --
+    # run_pagefind_index wipes and regenerates it -- and retired by the
+    # next build that doesn't index.
+    owned_dirs = {SEARCH_BUNDLE_SUBDIR} if search_result is not None else set()
+    prune_report = prune_site(
+        target, load_ledger(config.output_dir, target), stats.written, owned_dirs
+    )
+    write_ledger(config.output_dir, target, stats.written, owned_dirs)
+    prune_summary = format_prune_summary(prune_report)
+    if prune_summary:
+        print(prune_summary)
+
+    write_build_report(stats, config.output_dir, verify_report, content_issues, prune_report)
 
     if write_todo:
         _announce_cleanup_todo(config.output_dir)

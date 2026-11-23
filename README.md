@@ -554,7 +554,8 @@ logs/              one file per run, full DEBUG-level detail
 site/              servable static site (only after `wpfreeze build`)
 site/pagefind/     search index -- only when `search: enabled: true` (see "Offline search")
 site/assets/pagefind-search.js  the search-wiring script -- same condition
-build-report.json  build's own stats -- unresolved refs, verification, what policy stripped
+build-report.json  build's own stats -- unresolved refs, verification, what policy stripped, what was cleaned up
+build-files.json   every file the last `build` wrote, so the next one can remove what it no longer produces
 vnu-report.json    HTML/CSS issues from `wpfreeze validate`
 diagnostics.json   capture-integrity summary from `wpfreeze diagnose`
 cleanup-todo.md    human-readable punch list synthesized from the three reports above
@@ -739,6 +740,27 @@ reference against a real file on disk and reporting any that are broken —
 only files this run itself wrote, so a file you've placed in `site/`
 yourself (to view alongside the build through your own local server, say)
 is never scanned as if it were part of the build.
+
+**A rebuild cleans up after the previous one.** `build` writes into the
+existing `site/` rather than a fresh directory, so anything an earlier
+build produced that this one no longer does (a page whose output path
+changed, a reassembled bundle whose contents moved, the search index after
+`search.enabled` is turned off) is removed, along with any directory that
+leaves empty. Otherwise it would ship with the site, and nothing else
+would notice: verification only looks at this run's own output. The rule
+is narrow on purpose:
+
+- Only a file the previous build *recorded writing* is ever deleted. The
+  record is `build-files.json`, kept beside `site/` (never inside it, so
+  it's never uploaded) and kept separately for each `--site-dir`.
+- Even then, only if it's exactly as that build left it. One you've
+  hand-edited since is kept and listed in the build summary, for you to
+  delete if it shouldn't ship.
+- A file no build wrote (one you put there yourself, or one left by a
+  build older than 1.0.2) is never touched, only listed, along with a
+  reminder that it will ship. The first build after upgrading has no
+  record to go on, so it deletes nothing and lists anything stale for you
+  to remove by hand.
 
 **Not rewritten**: URLs that only exist inside executed JavaScript (a
 gallery that assembles image paths at runtime, a JS-only nav). Discovery and

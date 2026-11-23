@@ -5,6 +5,29 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-11-23
+
+### Fixed
+
+- **A rebuild no longer leaves the previous build's output behind.**
+  `build` wrote into the existing `site/` and never removed anything, so
+  a file an earlier build produced and this one doesn't (a page whose
+  output path changed, a bundle whose content hash moved, the whole
+  Pagefind index after `search.enabled` was turned off) stayed there and
+  shipped with the site. Verification only scans the current run's own
+  output, so nothing reported it. This came up for real: 1.0.1's
+  subdirectory-install fix moved reseaufranco's home page from
+  `site/reseaufranco.html` to `site/index.html`, and the old copy shipped
+  until it was removed by hand. `build` now records every file it writes
+  in `build-files.json` (beside `site/`, never in it) and, on the next
+  build, deletes only files from that record that this build didn't
+  write *and* that are unchanged since (same size and mtime). A stale
+  file that has been hand-edited is kept and listed. A file no build
+  recorded writing, including anything put there by hand, is never
+  deleted, only listed in the build summary and in `build-report.json`'s
+  new `prune` section. Because the first build after upgrading has no
+  record to go on, it deletes nothing.
+
 ## [1.0.1] — 2026-09-16
 
 A colleague's rebuild crashed on the pre-fix `is_wp_admin_infrastructure`
