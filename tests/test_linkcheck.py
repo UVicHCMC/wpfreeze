@@ -106,18 +106,16 @@ def test_extract_falls_back_to_alt_and_title_for_a_wordless_link(tmp_path: Path)
     assert links["https://other.example/none"] == []  # nothing to say, so nothing shown
 
 
-def test_links_have_texts_distinguishes_an_extraction_from_before_the_field(tmp_path: Path):
-    from wpfreeze.linkcheck import links_have_texts
+def test_an_extraction_from_before_link_wordings_still_loads(tmp_path: Path):
+    from wpfreeze.linkcheck import links_extracted_at
 
     (tmp_path / "external-links.json").write_text(
         json.dumps({"links": [{"url": "https://other.example/x", "pages": ["a.html"]}]}),
         encoding="utf-8",
     )
-    old = load_links(tmp_path)
 
-    assert old == [ExternalLink(url="https://other.example/x", pages=["a.html"], texts=[])]
-    assert links_have_texts(old) is False
-    assert links_have_texts([ExternalLink(url="u", pages=[], texts=["x"])]) is True
+    assert load_links(tmp_path) == [ExternalLink(url="https://other.example/x", pages=["a.html"], texts=[])]
+    assert links_extracted_at(tmp_path) is None
 
 
 def test_classify_error_names_the_failure_from_the_full_error_string(tmp_path: Path):

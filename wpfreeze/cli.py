@@ -43,9 +43,10 @@ from wpfreeze.diagnostics import build_diagnostics, format_diagnostics_summary, 
 from wpfreeze.fetch import DEFAULT_USER_AGENT, FetchConfig, RateLimiter
 from wpfreeze.inventory import discover_inventory
 from wpfreeze.linkcheck import (
+    LINKS_FILENAME,
     check_links,
     extract_external_links,
-    links_have_texts,
+    links_extracted_at,
     load_links,
     write_links,
     write_report,
@@ -1232,7 +1233,6 @@ def _run_search_index_body(config: SiteConfig, target: Path, progress: "Progress
 def run_checklinks(
     config: SiteConfig,
     site_dir: Path | None,
-    recheck: bool,
     *,
     print_wrapup: bool = True,
     write_owner_tasks: bool = True,
@@ -1241,55 +1241,49 @@ def run_checklinks(
     whether it still resolves, writing `broken-external-links.md`/`.html`
     grouped by the internal page each broken link was found on.
 
-    Two phases, independently runnable (see linkcheck.py's module
-    docstring for why): without `--recheck`, scans the built site and
-    (re)writes `external-links.json`, the persisted page -> external-URL
-    list, before checking it. With `--recheck`, skips the scan entirely
-    and re-verifies the URLs already in `external-links.json` -- so link
-    rot can be re-checked on a later day without the built site even
-    being present, let alone re-running `build`.
+    Whenever the built site is present it is scanned, and the result
+    (re)written to `external-links.json`, before checking. The scan is the
+    cheap, offline half of the job; the saved list is a stand-in for a
+    site that is no longer on disk, not a cache worth trusting over the
+    site itself -- on janellejenstad a saved list carried 228 URLs that
+    only ever existed in a build superseded hours later. So the saved
+    list is used only when the default `<output_dir>/site` is gone, which
+    is what lets link rot be re-checked months later without a rebuild.
+    An explicit `--site-dir` that doesn't exist is an error, never quietly
+    swapped for the saved list.
     """
-    if recheck:
-        links = load_links(config.output_dir)
-        if links is None:
-            print(
-                f"No {config.output_dir / 'external-links.json'} found; run "
-                "`wpfreeze checklinks` (without --recheck) first."
-            )
-            return 2
-        # An extraction written before link wordings were recorded would
-        # otherwise keep producing a worksheet with no wordings in it, for
-        # every recheck, forever. Re-scanning is the cheap offline half of
-        # the job (see linkcheck's module docstring), so just do it -- but
-        # only if the built site is actually here, since running without
-        # it is the whole point of --recheck.
-        target = site_dir or (config.output_dir / "site")
-        if links and not links_have_texts(links) and target.exists():
-            profile = scope_profile_from_config(config.base_url, config.extra_hosts)
-            rescanned = extract_external_links(target, profile)
-            write_links(rescanned, config.output_dir, config.base_url)
-            # Say so when the set moves. On janellejenstad it dropped 228
-            # URLs that only ever existed in a build superseded hours
-            # later -- the saved extraction can be older than the site it
-            # claims to describe, and silently checking 228 links no
-            # reader can reach is worse than the scan it saved.
-            was = {link.url for link in links}
-            now = {link.url for link in rescanned}
-            if was != now:
-                print(
-                    f"Re-scanned the built site: {len(now - was)} external link(s) added, "
-                    f"{len(was - now)} no longer present."
-                )
-            links = rescanned
-    else:
-        target = site_dir or (config.output_dir / "site")
-        if not target.exists():
-            print(f"No built site found at {target}; run `wpfreeze build` first.")
-            return 2
+    target = site_dir or (config.output_dir / "site")
+    saved = load_links(config.output_dir)
+    links_path = config.output_dir / LINKS_FILENAME
+    if target.exists():
         profile = scope_profile_from_config(config.base_url, config.extra_hosts)
         links = extract_external_links(target, profile)
-        path = write_links(links, config.output_dir, config.base_url)
-        print(f"Found {len(links)} unique external link(s) across the built site; saved to {path}")
+        write_links(links, config.output_dir, config.base_url)
+        print(f"Found {len(links)} unique external link(s) across the built site; saved to {links_path}")
+        if saved is not None:
+            was = {link.url for link in saved}
+            now = {link.url for link in links}
+            if was != now:
+                print(
+                    f"  compared with the previous scan: {len(now - was)} added, "
+                    f"{len(was - now)} no longer present."
+                )
+    elif site_dir is None and saved is not None:
+        when = links_extracted_at(config.output_dir) or "an unknown date"
+        print(
+            f"No built site at {target}; re-checking the {len(saved)} external link(s) "
+            f"saved in {links_path} (scanned {when})."
+        )
+        links = saved
+    elif site_dir is None:
+        print(
+            f"No built site found at {target}, and no saved {LINKS_FILENAME} to fall back on; "
+            "run `wpfreeze build` first."
+        )
+        return 2
+    else:
+        print(f"No built site found at {target}.")
+        return 2
 
     if not links:
         print("No external links to check.")
@@ -1427,7 +1421,7 @@ def run_freeze(config: SiteConfig, project: str) -> int:
         # a checker that can't be obtained is a skipped step, not a failure.
         "diagnose": lambda: run_diagnose(config),
         "report": lambda: run_report(config, html_only=False, json_only=False),
-        "checklinks": lambda: run_checklinks(config, None, recheck=False, print_wrapup=False),
+        "checklinks": lambda: run_checklinks(config, None, print_wrapup=False),
         "search-index": lambda: run_search_index(config, None, print_wrapup=False),
         "upload-script": lambda: run_upload_script(config, None),
         "owner-tasks": lambda: run_owner_tasks(config, None, print_wrapup=False),
@@ -1569,7 +1563,7 @@ def _maybe_offer_checklinks_at_end(config: SiteConfig, summary: RunSummary) -> N
     # third-party link is a fact about the internet, not a freeze failure
     # -- same reasoning as `validate`'s informational-only exit code. Its
     # result (and timing) still lands in the wrap-up below.
-    time_step(summary, "checklinks", lambda: run_checklinks(config, None, recheck=False, print_wrapup=False))
+    time_step(summary, "checklinks", lambda: run_checklinks(config, None, print_wrapup=False))
 
 
 def _add_project_arg(p: argparse.ArgumentParser) -> None:
@@ -1702,8 +1696,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     checklinks_p.add_argument(
         "--recheck",
         action="store_true",
-        help="re-check the external links already saved in external-links.json instead of re-scanning "
-        "the built site -- works without the built site present",
+        help="no longer needed, kept so existing scripts still run: checklinks always re-scans the "
+        "built site when it is present, and re-checks the links saved in external-links.json when it "
+        "is not",
     )
     checklinks_p.add_argument(
         "--no-owner-tasks",
@@ -1917,9 +1912,9 @@ def _dispatch(argv: list[str] | None) -> int:
     if args.command == "search-index":
         return run_search_index(config, args.site_dir)
     if args.command == "checklinks":
-        return run_checklinks(
-            config, args.site_dir, recheck=args.recheck, write_owner_tasks=not args.no_owner_tasks
-        )
+        if args.recheck:
+            print("Note: --recheck is no longer needed and has no effect; see `wpfreeze checklinks -h`.")
+        return run_checklinks(config, args.site_dir, write_owner_tasks=not args.no_owner_tasks)
     if args.command == "owner-tasks":
         return run_owner_tasks(config, args.output)
 

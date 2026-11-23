@@ -397,7 +397,7 @@ wpfreeze status        <project>
 wpfreeze rescan        <project> [--apply] [--profile-from-config]
 wpfreeze upload-script <project> [--site-dir DIR]
 wpfreeze search-index  <project> [--site-dir DIR]
-wpfreeze checklinks    <project> [--site-dir DIR] [--recheck] [--no-owner-tasks]
+wpfreeze checklinks    <project> [--site-dir DIR] [--no-owner-tasks]
 wpfreeze owner-tasks   <project> [--output PATH]
 wpfreeze help                            # same as -h/--help; every subcommand also takes its own -h
 wpfreeze --version                       # the installed version
@@ -470,12 +470,11 @@ wpfreeze --version                       # the installed version
   writing `broken-external-links.md`/`.html` grouped by the internal page
   each broken link was found on. Also (re)writes `external-links.json`,
   the page → external-URL list it just found, with the wording of each
-  link — `--recheck` re-verifies that persisted list's liveness without
-  re-scanning the built site (or even needing `site/` to still exist), so
-  link rot can be checked again later without a rebuild. The exception is
-  an `external-links.json` written before link wordings were recorded: if
-  `site/` is there, `--recheck` re-scans it once and says what changed,
-  rather than producing a worksheet with no wordings in it forever. Also refreshes `owner-tasks.html` from the
+  link. Once `site/` is gone, `checklinks` re-checks that saved list
+  instead, so link rot can still be checked months later without a
+  rebuild; while `site/` is there, it is always re-scanned. (`--recheck`
+  used to choose between the two by hand; it is still accepted, but no
+  longer does anything.) Also refreshes `owner-tasks.html` from the
   check it just ran (`--no-owner-tasks` skips that), so a re-check never
   leaves a stale worksheet behind. See "Checking external links" below.
 - **`owner-tasks`** writes `owner-tasks.html`, an interactive worklist for
@@ -1030,23 +1029,30 @@ one, and writes `broken-external-links.md`/`.html`, listing only the
 internal pages that link to something now broken (a page with no dead
 external links doesn't appear at all).
 
-It's two phases, run together by default:
+It's two phases:
 
 1. **Scan** the built site for external links, grouped by unique target
    URL with every page that links to it, and save that list to
    `external-links.json`.
 2. **Check** each URL in that list and write the report.
 
-`--recheck` runs only the second phase, against whatever
-`external-links.json` already has on disk — no re-scan, and the built
-`site/` doesn't even need to still be present. Link rot accrues after the
+The scan always runs when `site/` is there: it's offline and takes
+seconds, and a saved list can be older than the site it describes (one
+real archive's saved list carried 228 links that existed only in a build
+replaced hours later). If the scan finds a different set of links from
+the saved list, it says how many were added and how many are gone. Once
+`site/` has been removed, `checklinks` skips the scan and re-checks the
+saved list, saying when that list was made. Link rot accrues after the
 archive is made, not just at build time, so this is how you check again
-weeks or months later without re-running `build`:
+weeks or months later without re-running `build`. It's the same command
+either way:
 
 ```bash
-wpfreeze checklinks site            # scan + check
-wpfreeze checklinks site --recheck  # check again later, no rescan needed
+wpfreeze checklinks site
 ```
+
+The fallback applies only to the default `site/` location: a `--site-dir`
+that doesn't exist is an error, not a silent switch to the saved list.
 
 Checking uses the same per-host politeness/backoff as `acquire` (see
 `rate_limit`/`concurrency` in the config) — these are hosts wpfreeze
@@ -1065,7 +1071,7 @@ it under, and `kind` — the failure in one machine-readable word (`dns`,
 `tls`, `timeout`, `refused`, `redirect_loop`, `auth`, `http`,
 `unreachable`), classified from the whole error at check time because
 `reason` is truncated at 120 characters and cannot be classified after
-the fact. It makes a `--recheck`
+the fact. It makes a re-check
 diffable against a previous day's run, and it is what the owner worksheet
 below is built from.
 

@@ -75,7 +75,8 @@ def _is_owner_actionable(context: str | None) -> bool:
 class OwnerTasksInputMissing(Exception):
     """`broken-external-links.json` is absent. The caller should tell the
     user to run `wpfreeze checklinks` first and exit 2 -- the same shape
-    `checklinks --recheck` uses for a missing `external-links.json`."""
+    `checklinks` uses when there is neither a built site nor a saved
+    `external-links.json`."""
 
 
 @dataclass

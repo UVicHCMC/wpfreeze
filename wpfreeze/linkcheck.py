@@ -10,10 +10,12 @@ that leave the site) is a cheap, offline, repeatable operation, while
 `check_links` (asking each of those URLs whether it still resolves) is a
 slow, network-bound one hitting hosts wpfreeze does not own or control.
 Persisting the extraction to `external-links.json` (see write_links/
-load_links) means a site owner can re-run the live check on a later day
--- link rot accrues after the archive is made, not just at build time --
-without needing the built site on disk at all, let alone re-running
-`build`. See cli.py's `run_checklinks` for both entry points.
+load_links) means the live check can still be re-run on a later day --
+link rot accrues after the archive is made, not just at build time --
+once the built site is no longer on disk. That is the *only* time the
+saved list is used: whenever the site is there, it is re-scanned, because
+the scan is the cheap half and a saved list can be older than the site it
+claims to describe. See cli.py's `run_checklinks`.
 
 Only `<a href>` is in scope: img/script/css externals are already handled
 by build's own localization policy (see outputs.py), and `<a href>` is
@@ -183,16 +185,30 @@ def write_links(links: list[ExternalLink], output_dir: Path, base_url: str) -> P
     return path
 
 
-def load_links(output_dir: Path) -> list[ExternalLink] | None:
-    """The persisted extraction, or None if it doesn't exist or is
-    unreadable -- callers treat both as "run the non-recheck path first",
-    same convention as cleanup.py's _load_json."""
+def _read_links_file(output_dir: Path) -> dict | None:
     path = output_dir / LINKS_FILENAME
     if not path.exists():
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def links_extracted_at(output_dir: Path) -> str | None:
+    """When the persisted extraction was written, as stored (ISO 8601),
+    or None if there isn't a readable one."""
+    data = _read_links_file(output_dir)
+    return None if data is None else data.get("extracted_at")
+
+
+def load_links(output_dir: Path) -> list[ExternalLink] | None:
+    """The persisted extraction, or None if it doesn't exist or is
+    unreadable -- callers treat both as "nothing saved", same convention
+    as cleanup.py's _load_json."""
+    data = _read_links_file(output_dir)
+    if data is None:
         return None
     return [
         ExternalLink(
@@ -202,16 +218,6 @@ def load_links(output_dir: Path) -> list[ExternalLink] | None:
         )
         for entry in data.get("links", [])
     ]
-
-
-def links_have_texts(links: list[ExternalLink]) -> bool:
-    """Whether an extraction carries link wordings at all. False for a
-    file written before `texts` existed -- and for the degenerate case of
-    a site whose every external link is wordless, where re-extracting is
-    harmless anyway. See cli.run_checklinks: `--recheck` skips the scan,
-    so without this an old extraction would silently keep producing a
-    worksheet with no wordings in it."""
-    return any(link.texts for link in links)
 
 
 # Ordered: the first pattern that matches a connection error wins, so the
@@ -375,7 +381,7 @@ def write_results_json(results: list[LinkCheckResult], output_dir: Path, base_ur
     computed and then discarded. A later consumer (the owner-tasks report)
     needs them, and parsing the markdown back out is not an option -- so
     this mirrors write_links's header shape (base_url + one ISO timestamp)
-    and writes every result, `ok` included. It also makes a `--recheck`
+    and writes every result, `ok` included. It also makes a re-check
     diffable against a prior day's run."""
     path = output_dir / f"{REPORT_BASENAME}.json"
     data = {

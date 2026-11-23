@@ -5,6 +5,24 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-11-23
+
+### Changed
+
+- **`checklinks` always re-scans the built site when it is there**, and
+  falls back to the saved `external-links.json` only once `site/` is
+  gone, saying when that list was made. Previously `--recheck` chose the
+  saved list even with `site/` present, and the saved list can be older
+  than the site it describes: on a real WordPress.com archive it carried
+  228 links that existed only in a build replaced hours later, all of
+  which were checked and handed to the site owner. Scanning takes
+  seconds and is offline, so trusting a possibly stale list gained
+  nothing. A re-scan whose set of links differs from the saved list now
+  says how many were added and how many are gone. A `--site-dir` that
+  doesn't exist is an error, never a silent switch to the saved list.
+  `--recheck` is still accepted so existing scripts keep running, but it
+  does nothing now except print a note saying so.
+
 ## [1.0.2] — 2026-11-23
 
 ### Fixed

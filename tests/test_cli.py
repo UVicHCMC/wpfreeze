@@ -2309,7 +2309,7 @@ def test_unattended_freeze_asks_nothing_even_in_a_terminal(tmp_path: Path, monke
     assert cli.run_freeze(config, "proj") == 0
 
 
-# --- checklinks --recheck and link wordings --------------------------------
+# --- checklinks: scan when the site is there, saved list when it isn't ----
 
 
 def _recheck_config(output_dir: Path) -> SiteConfig:
@@ -2343,34 +2343,33 @@ def _fake_check_links(seen: list):
     return check
 
 
-def test_recheck_reextracts_when_the_saved_links_predate_link_wordings(tmp_path, monkeypatch, capsys):
-    """`--recheck` skips the scan by design, so an extraction written
-    before `texts` existed would otherwise keep producing a worksheet with
-    no link wordings in it, on every recheck, forever. Re-scanning is the
-    cheap offline half of the job, so it happens silently."""
+def test_checklinks_rescans_the_built_site_even_when_a_saved_list_exists(tmp_path, monkeypatch, capsys):
+    """The saved list can be older than the site it claims to describe
+    (janellejenstad: 228 URLs from a build superseded hours later), and
+    scanning is the cheap half of the job -- so a present site always
+    wins, and the difference from the saved list is reported."""
     from wpfreeze import cli
 
     output_dir = tmp_path / "out"
     (output_dir / "site").mkdir(parents=True)
     (output_dir / "site" / "a.html").write_text(
-        '<html><body><a href="https://gone.example/x">the dead one</a></body></html>', encoding="utf-8"
+        '<html><body><a href="https://new.example/y">the live one</a></body></html>', encoding="utf-8"
     )
     _stale_links_file(output_dir)
     seen: list = []
     monkeypatch.setattr(cli, "check_links", _fake_check_links(seen))
 
-    cli.run_checklinks(_recheck_config(output_dir), None, recheck=True, print_wrapup=False)
+    cli.run_checklinks(_recheck_config(output_dir), None, print_wrapup=False)
 
-    assert [link.texts for link in seen] == [["the dead one"]]
+    assert [(link.url, link.texts) for link in seen] == [("https://new.example/y", ["the live one"])]
     saved = json.loads((output_dir / "external-links.json").read_text(encoding="utf-8"))
-    assert saved["links"][0]["texts"] == ["the dead one"]
-    results = json.loads((output_dir / "broken-external-links.json").read_text(encoding="utf-8"))
-    assert results["results"][0]["texts"] == ["the dead one"]
+    assert [entry["url"] for entry in saved["links"]] == ["https://new.example/y"]
+    assert "1 added, 1 no longer present" in capsys.readouterr().out
 
 
-def test_recheck_without_the_built_site_uses_the_saved_links_as_they_are(tmp_path, monkeypatch, capsys):
-    """Re-checking link rot without the built site on disk is the whole
-    point of --recheck; a missing `site/` must not turn into a failure."""
+def test_checklinks_without_the_built_site_rechecks_the_saved_links(tmp_path, monkeypatch, capsys):
+    """Re-checking link rot months later, after site/ is gone, still works
+    -- and says how old the list it is trusting is."""
     from wpfreeze import cli
 
     output_dir = tmp_path / "out"
@@ -2382,6 +2381,46 @@ def test_recheck_without_the_built_site_uses_the_saved_links_as_they_are(tmp_pat
         cli, "extract_external_links", lambda *a, **k: pytest.fail("scanned a site that is not there")
     )
 
-    assert cli.run_checklinks(_recheck_config(output_dir), None, recheck=True, print_wrapup=False) == 1
+    assert cli.run_checklinks(_recheck_config(output_dir), None, print_wrapup=False) == 1
     assert [link.url for link in seen] == ["https://gone.example/x"]
-    assert [link.texts for link in seen] == [[]]
+    assert "scanned 2026-08-28T00:00:00+00:00" in capsys.readouterr().out
+
+
+def test_checklinks_with_neither_a_site_nor_a_saved_list_refuses(tmp_path, monkeypatch, capsys):
+    from wpfreeze import cli
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True)
+    monkeypatch.setattr(cli, "check_links", lambda *a, **k: pytest.fail("checked nothing"))
+
+    assert cli.run_checklinks(_recheck_config(output_dir), None, print_wrapup=False) == 2
+    assert "run `wpfreeze build` first" in capsys.readouterr().out
+
+
+def test_a_missing_explicit_site_dir_is_an_error_not_a_fallback(tmp_path, monkeypatch, capsys):
+    """Naming a directory and getting last month's list instead, with only
+    a console line to say so, is worse than being told the name is wrong."""
+    from wpfreeze import cli
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True)
+    _stale_links_file(output_dir)
+    monkeypatch.setattr(cli, "check_links", lambda *a, **k: pytest.fail("fell back to the saved list"))
+
+    assert cli.run_checklinks(_recheck_config(output_dir), tmp_path / "typo", print_wrapup=False) == 2
+    assert "No built site found at" in capsys.readouterr().out
+
+
+def test_recheck_is_still_accepted_and_says_it_is_no_longer_needed(tmp_path, monkeypatch, capsys):
+    from wpfreeze import cli
+
+    monkeypatch.chdir(tmp_path)
+    _write_yaml(tmp_path / "examplesite.yaml", {"name": "examplesite", "base_url": "https://example.com/", "output_dir": "out"})
+    (tmp_path / "out").mkdir()
+    _stale_links_file(tmp_path / "out")
+    seen: list = []
+    monkeypatch.setattr(cli, "check_links", _fake_check_links(seen))
+
+    assert main(["checklinks", "examplesite", "--recheck", "--no-owner-tasks"]) == 1
+    assert "--recheck is no longer needed" in capsys.readouterr().out
+    assert [link.url for link in seen] == ["https://gone.example/x"]
