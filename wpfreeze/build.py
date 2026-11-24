@@ -647,6 +647,48 @@ class LinkRewriter:
             return [self._rewrite_json_urls(v, page_url, page_output, context) for v in obj]
         return obj
 
+    def _rewrite_importmap(self, text: str, page_url: str, page_output: str) -> str:
+        """Rewrite a <script type="importmap">'s address values.
+
+        An import map address must be absolute or start with `/`, `./` or
+        `../`; anything else is a bare specifier, which the browser rejects
+        as a target and maps to null ("blocked by a null value"). The
+        rewriter's page-relative output for a same-directory file
+        (`wp-includes/js/.../index.min.js`) is exactly that shape, so it
+        gets a `./` prefix here. WordPress 6.5+ emits one of these for its
+        script modules (@wordpress/interactivity); on a real capture the
+        bare-path rewrite broke every page using the image lightbox.
+
+        Only values are rewritten. Specifier keys are names, not
+        references, and WordPress emits no `scopes`."""
+        try:
+            data = json.loads(text)
+        except (ValueError, TypeError):
+            return text
+        if not isinstance(data, dict):
+            return text
+
+        def address(value):
+            if not isinstance(value, str) or not is_url_shaped(value) or _is_unlikely_rewrite_target(value):
+                return value
+            replacement = self.resolve(value, page_url, page_output, "script:importmap")
+            if replacement is None:
+                return value
+            if not replacement.startswith(("./", "../", "/")) and "://" not in replacement:
+                replacement = "./" + replacement
+            return replacement
+
+        imports = data.get("imports")
+        if isinstance(imports, dict):
+            data["imports"] = {k: address(v) for k, v in imports.items()}
+        scopes = data.get("scopes")
+        if isinstance(scopes, dict):
+            data["scopes"] = {
+                scope: ({k: address(v) for k, v in m.items()} if isinstance(m, dict) else m)
+                for scope, m in scopes.items()
+            }
+        return json.dumps(data, separators=(",", ":"))
+
     def rewrite_url_shaped_strings(self, text: str, page_url: str, page_output: str, context: str) -> str:
         """Rewrite resolvable URL-shaped substrings inside `text`, which is
         not (or not entirely) valid JSON on its own -- a plain <script>
@@ -746,6 +788,9 @@ class LinkRewriter:
                 continue
             script_type = (tag.get("type") or "").lower()
             data = None
+            if script_type == "importmap":
+                tag.string = self._rewrite_importmap(script_text, page_url, page_output)
+                continue
             if not script_type or script_type in ("application/json", "application/ld+json"):
                 try:
                     data = json.loads(script_text)

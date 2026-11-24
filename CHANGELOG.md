@@ -5,6 +5,25 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.4] — 2026-11-24
+
+### Fixed
+
+- **Inline scripts on WordPress 6.9+ sites no longer break in the built
+  site.** WordPress ends every inline script with a `//# sourceURL=…`
+  comment, and the link rewriter read `//#` as a protocol-relative URL
+  with no host, resolved it to the page itself, and replaced it with
+  `index.html# sourceURL=…`. That removed the comment marker and turned
+  each such script into a syntax error, taking down every plugin
+  configured through one (theme settings, social sharing, page caching
+  and so on). Seen on 640 built pages across three real sites. A
+  protocol-relative URL now has to start with a host.
+- **Import maps keep working after the rewrite.** A rewritten address for
+  a file in the same directory (`wp-includes/js/…`) is a bare specifier
+  inside a `<script type="importmap">`, and the browser rejects bare
+  specifiers as targets. That broke WordPress's own script modules, such
+  as the image lightbox. Those addresses now start with `./`.
+
 ## [1.0.3] — 2026-11-23
 
 ### Changed

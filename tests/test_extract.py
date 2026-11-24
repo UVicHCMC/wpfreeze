@@ -570,3 +570,17 @@ def test_find_url_shaped_strings_survives_a_script_with_a_regex_literal():
     found = find_url_shaped_strings(script)
     assert "https://example.com/a.png" in found
     assert not any(is_unparseable_url(u) for u in found)
+
+
+def test_hostless_double_slash_is_not_url_shaped():
+    """`//# sourceURL=...` / `//# sourceMappingURL=...` comments, and a
+    regex literal's `//]`, have no host and are not protocol-relative URLs."""
+    script = (
+        'var a=1;\n//# sourceURL=foo-js-extra\n'
+        '//# sourceMappingURL=foo.js.map\n'
+        'var b="//cdn.example.com/x.js", c="//[2001:db8::1]/y.png";'
+    )
+    found = find_url_shaped_strings(script)
+    assert not any(u.startswith("//#") for u in found), found
+    assert "//cdn.example.com/x.js" in found
+    assert "//[2001:db8::1]/y.png" in found

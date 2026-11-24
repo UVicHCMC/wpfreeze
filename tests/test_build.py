@@ -1137,3 +1137,50 @@ def test_lookup_variants_survives_a_malformed_url():
         "http://[broken/wp-content/uploads/x.jpg"
     ]
     assert lookup_variants("//]") == ["//]"]
+
+
+def test_inline_script_sourceurl_comment_is_not_rewritten():
+    """WordPress 6.9+ ends every inline <script> with `//# sourceURL=<handle>`.
+    `//#` once matched the protocol-relative pattern with an empty host,
+    resolved against the page to the page itself, and got rewritten to
+    `index.html# sourceURL=...` -- eating the comment marker and turning
+    every such script into a SyntaxError (seen on 640 built pages across
+    three real sites). A protocol-relative URL needs a host."""
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/", "/index.html")
+    rewriter, _ = _rewriter(manifest)
+
+    script = 'var cfg = {"a":1};\n//# sourceURL=ghostkit-helper-js-extra\n'
+    html = f'<script id="ghostkit-helper-js-extra">{script}</script>'
+    out = rewriter.rewrite_html(html, f"{BASE}/", "/index.html")
+
+    assert "//# sourceURL=ghostkit-helper-js-extra" in out
+    assert "index.html#" not in out
+
+
+def test_importmap_addresses_stay_valid_import_map_targets():
+    """A page-relative `wp-includes/...` is a bare specifier inside an
+    import map, which the browser maps to null; it needs `./`. A deeper
+    page's `../` form is already valid and must not gain a prefix."""
+    manifest = Manifest()
+    _fetched(manifest, f"{BASE}/", "/index.html")
+    _fetched(manifest, f"{BASE}/a/b/", "/a/b.html")
+    module = f"{BASE}/wp-includes/js/dist/script-modules/interactivity/index.min.js?ver=6a43"
+    _fetched(
+        manifest, module, "/wp-includes/js/dist/script-modules/interactivity/index.min.js",
+        content_type="text/javascript",
+    )
+    rewriter, _ = _rewriter(manifest)
+    escaped = module.replace("/", "\\/")
+    html = (
+        '<script id="wp-importmap" type="importmap">'
+        f'{{"imports":{{"@wordpress/interactivity":"{escaped}","ext":"https://cdn.example.net/x.js"}}}}'
+        "</script>"
+    )
+
+    top = rewriter.rewrite_html(html, f"{BASE}/", "/index.html")
+    assert '"@wordpress/interactivity":"./wp-includes/js/dist/script-modules/interactivity/index.min.js"' in top
+    assert '"ext":"https://cdn.example.net/x.js"' in top
+
+    deep = rewriter.rewrite_html(html, f"{BASE}/a/b/", "/a/b.html")
+    assert '"@wordpress/interactivity":"../wp-includes/js/dist/script-modules/interactivity/index.min.js"' in deep

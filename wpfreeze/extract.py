@@ -39,7 +39,14 @@ _SKIPPED_SCHEMES = ("data:", "mailto:", "tel:", "javascript:", "#")
 # this exclusion those get matched whole and queued as if they were real
 # pages, wasting a live-fetch + Wayback-lookup cycle on each one (seen on
 # a real crawl, though it degrades to a one-time cost, not a hang).
-_ABSOLUTE_OR_PROTOCOL_RELATIVE_RE = re.compile(r"(?:https?:)?//[^\s\"'<>\\*{}]+", re.IGNORECASE)
+# The first character after `//` must be able to start a host (alphanumeric,
+# or `[` for an IPv6 literal): without that, WordPress 6.9+'s
+# `//# sourceURL=<handle>` comment at the end of every inline script matched
+# as a hostless URL, resolved to the page itself, and was rewritten into
+# `index.html# sourceURL=...` -- a SyntaxError in every such script.
+_ABSOLUTE_OR_PROTOCOL_RELATIVE_RE = re.compile(
+    r"(?:https?:)?//[A-Za-z0-9\[][^\s\"'<>\\*{}]*", re.IGNORECASE
+)
 _WP_PATH_RE = re.compile(r"/wp-(?:content|includes)/[^\s\"'<>\\*{}]+", re.IGNORECASE)
 _ASSET_EXT_RE = re.compile(
     r"/[^\s\"'<>\\*{}]+\.(?:jpe?g|png|gif|webp|svg|bmp|ico|mp4|webm|mp3|pdf|css|js|woff2?|ttf|eot)"
