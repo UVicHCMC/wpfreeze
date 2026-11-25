@@ -1240,3 +1240,12 @@ def test_lookup_variants_match_an_href_spelled_differently_from_the_manifest_key
     assert key in lookup_variants(f"{BASE}/bcヘ/")
     assert key in lookup_variants(f"{BASE}/bc%e3%83%98/")
     assert key in lookup_variants(f"{BASE}/bcヘ")
+
+
+def test_interactivity_directive_values_are_left_untouched_and_not_reported():
+    manifest = Manifest()
+    rewriter, stats = _rewriter(manifest)
+    html = '<img data-wp-bind--srcset="state.enlargedSrcset" data-wp-on--click="actions.showLightbox">'
+    out = rewriter.rewrite_html(html, f"{BASE}/post/", "/post.html")
+    assert 'data-wp-bind--srcset="state.enlargedSrcset"' in out
+    assert stats.unresolved == 0

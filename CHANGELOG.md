@@ -5,6 +5,21 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-11-25
+
+### Fixed
+
+- **The WordPress image lightbox no longer creates fake "missing" pages.**
+  The lightbox marks up each image with attributes for WordPress's own
+  scripts, such as `data-wp-bind--srcset="state.enlargedSrcset"`. Their
+  values name script settings, not addresses, but wpfreeze read that one as
+  a link. During acquisition it requested `<page>/state.enlargedSrcset`
+  once per page with a lightbox and recorded each 404 as a missing page (30
+  of 166 on one real site), and the build counted them again as unresolved
+  references. These attributes are now skipped, except `data-wp-context`,
+  which can hold real image addresses. A rebuild clears them from the build
+  report; the missing-page records go with the next fresh `acquire`.
+
 ## [1.1.0] — 2026-11-25
 
 ### Added

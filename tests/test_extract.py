@@ -136,6 +136,25 @@ def test_non_url_data_attrs_are_ignored():
     assert links == []
 
 
+def test_interactivity_directives_are_not_read_as_urls():
+    """Real case (JCLS, WordPress core image lightbox): data-wp-bind--srcset
+    holds the store reference `state.enlargedSrcset`, which the srcset
+    branch queued as `<page>/state.enlargedSrcset` -- a 404 per page."""
+    html = (
+        '<img data-wp-bind--srcset="state.enlargedSrcset" data-wp-bind--src="state.enlargedSrc"'
+        ' data-wp-on--click="actions.showLightbox" data-wp-text="state.ariaLabel">'
+    )
+    assert extract_from_html(html, BASE) == []
+
+
+def test_interactivity_context_json_is_still_searched_for_urls():
+    """WordPress 6.4's lightbox kept the full-size image URL in
+    data-wp-context, so that one directive must still be read."""
+    html = """<figure data-wp-context='{"uploadedSrc":"https://example.com/wp-content/uploads/big.png"}'></figure>"""
+    links = extract_from_html(html, BASE)
+    assert any(l.url == "https://example.com/wp-content/uploads/big.png" for l in links)
+
+
 def test_meta_og_image_and_twitter_image_are_render():
     html = (
         '<meta property="og:image" content="/img/share.jpg">'

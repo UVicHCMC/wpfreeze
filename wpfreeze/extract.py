@@ -110,6 +110,19 @@ class ExtractedLink:
     context: str  # e.g. "a[href]", "img[srcset]", "script:json" -- for debugging/tests
 
 
+def is_interactivity_directive(attr_name: str) -> bool:
+    """Whether a data-* attribute is a WordPress Interactivity API directive
+    (WordPress 6.4+, e.g. the core image lightbox), whose value is a store
+    reference such as `state.enlargedSrcset` or `actions.showLightbox` and
+    never an address. Read as one, `data-wp-bind--srcset="state.
+    enlargedSrcset"` sent the crawler to `<page>/state.enlargedSrcset`
+    once per lightbox page -- 30 bogus 404 "missing" records on one real
+    capture. `data-wp-context` is the exception: it holds JSON data, and
+    in WordPress 6.4 the lightbox put real image URLs there."""
+    name = attr_name.lower()
+    return name.startswith("data-wp-") and name != "data-wp-context"
+
+
 def is_url_shaped(value: str) -> bool:
     """True if `value`, taken as a whole, looks like a URL (as opposed to
     a URL merely appearing somewhere inside a larger string).
@@ -499,6 +512,8 @@ def extract_from_html(html: str, base_url: str) -> list[ExtractedLink]:
         # "URL" and mangled further by normalize_url's slash collapsing.
         for attr_name, attr_value in tag.attrs.items():
             if not attr_name.startswith("data-") or not isinstance(attr_value, str):
+                continue
+            if is_interactivity_directive(attr_name):
                 continue
             if "srcset" in attr_name.lower():
                 for url in _parse_srcset(attr_value):

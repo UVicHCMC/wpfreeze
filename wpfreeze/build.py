@@ -44,6 +44,7 @@ from wpfreeze.extract import (
     decode_static_bundle,
     is_bare_asset_directory,
     is_implausibly_long,
+    is_interactivity_directive,
     is_unparseable_url,
     is_url_shaped,
     is_wp_admin_infrastructure,
@@ -830,6 +831,8 @@ class LinkRewriter:
             for attr_name, attr_value in list(tag.attrs.items()):
                 if not attr_name.startswith("data-") or not isinstance(attr_value, str) or not attr_value:
                     continue
+                if is_interactivity_directive(attr_name):
+                    continue  # a store reference, never an address
                 context = f"{tag.name}[{attr_name}]"
                 if "srcset" in attr_name.lower():
                     tag[attr_name] = self.rewrite_srcset(attr_value, page_url, page_output)
