@@ -5,6 +5,20 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-11-25
+
+### Added
+
+- **Outlook "Safe Links" are replaced by the address they wrap.** A link
+  copied out of an Outlook email into a post arrives as
+  `https://<region>.safelinks.protection.outlook.com/?url=…&data=…`. It
+  reaches the right page only while Microsoft keeps honouring the wrapper,
+  and its `data=` carries the original recipient's email address. `build`
+  now writes the wrapped address instead, follows a Safe Link inside a Safe
+  Link (from a forwarded email), and leaves anything whose wrapped address
+  isn't a plain web link alone. On by default; turn off with
+  `policy: {unwrap_safelinks: false}`.
+
 ## [1.0.7] — 2026-11-25
 
 ### Fixed

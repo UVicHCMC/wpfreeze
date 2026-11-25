@@ -670,6 +670,14 @@ touching the capture, so re-running is always safe. In that tree:
   248-page site they were 228 distinct external URLs and **66% of everything
   `checklinks` reported as broken**, all of them bot-protection 403s rather
   than genuine breakage. Turn off with `policy: {strip_login_links: false}`.
+- **Outlook "Safe Links" are replaced by the address they wrap.** A link
+  copied out of an Outlook email arrives as
+  `https://<region>.safelinks.protection.outlook.com/?url=…&data=…`: it
+  reaches the right page only while Microsoft keeps honouring the wrapper,
+  and `data=` carries the original recipient's email address. The `url=`
+  inside becomes the link (and a site's own page then resolves to its local
+  copy). A Safe Link of a Safe Link, from a forwarded email, is followed
+  through. Turn off with `policy: {unwrap_safelinks: false}`.
 - **WordPress.com's injected action bar is removed** — the floating strip
   carrying *Sign up*, *Log in*, *Copy shortlink*, *Report this content*,
   *View post in Reader* and *Manage subscriptions*, plus the two scripts

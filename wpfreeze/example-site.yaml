@@ -182,6 +182,14 @@ policy:
   # of everything checklinks called broken, all bot-protection 403s.
   strip_login_links: true
 
+  # Replace Microsoft Outlook "Safe Links"
+  # (https://<region>.safelinks.protection.outlook.com/?url=...&data=...),
+  # which turn up when someone pastes a link out of an Outlook email, with
+  # the address they wrap. Same destination for a reader, but no longer
+  # dependent on Microsoft's redirector, and the original recipient's email
+  # address (carried in data=) leaves the page.
+  unwrap_safelinks: true
+
   # WordPress.com's injected floating action bar: Sign up / Log in / Copy
   # shortlink / Report this content / View post in Reader / Manage
   # subscriptions, plus the two scripts that reveal and configure it.

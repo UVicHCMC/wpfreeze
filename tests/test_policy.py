@@ -817,3 +817,63 @@ def test_telemetry_and_actionbar_checks_survive_a_malformed_href():
         "html.parser",
     )
     assert _is_wpcom_actionbar(soup.div) is True
+
+
+# --- Outlook Safe Links ----------------------------------------------------
+
+_SAFELINK = (
+    "https://can01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fwww.nic.bc.ca%2Fabout-us%2F"
+    "research%2Fcarti%2Fprojects%2Ffrom-mio%2F&data=05%7C01%7CAmber.Neumann%40nic.bc.ca%7C8281"
+    "&sdata=C8ck%3D&reserved=0"
+)
+
+
+def _policy_soup(html: str, policy: Policy | None = None) -> tuple[BeautifulSoup, PolicyStats]:
+    soup = BeautifulSoup(html, "html5lib")
+    stats = PolicyStats()
+    apply_policy(soup, policy or Policy(), stats)
+    return soup, stats
+
+
+def test_safelink_is_replaced_by_the_address_it_wraps():
+    """Real case (JCLS): a contributor bio linking through an Outlook Safe
+    Link that carried the original recipient's email address."""
+    soup, stats = _policy_soup(f'<p>lead researcher for <a href="{_SAFELINK.replace("&", "&amp;")}">From Mio</a></p>')
+    anchor = soup.find("a")
+    assert anchor["href"] == "https://www.nic.bc.ca/about-us/research/carti/projects/from-mio/"
+    assert anchor.get_text() == "From Mio"
+    assert "Neumann" not in str(soup)
+    assert stats.safelinks_unwrapped == 1
+
+
+def test_safelink_text_is_replaced_too_when_it_is_the_link_itself():
+    soup, _ = _policy_soup(f'<a href="{_SAFELINK.replace("&", "&amp;")}">{_SAFELINK.replace("&", "&amp;")}</a>')
+    assert soup.find("a").get_text() == "https://www.nic.bc.ca/about-us/research/carti/projects/from-mio/"
+
+
+def test_a_safelink_of_a_safelink_is_followed_through():
+    from urllib.parse import quote
+
+    outer = "https://nam12.safelinks.protection.outlook.com/?url=" + quote(_SAFELINK, safe="") + "&data=x"
+    soup, stats = _policy_soup(f'<a href="{outer.replace("&", "&amp;")}">x</a>')
+    assert soup.find("a")["href"] == "https://www.nic.bc.ca/about-us/research/carti/projects/from-mio/"
+    assert stats.safelinks_unwrapped == 1
+
+
+def test_safelink_lookalikes_and_non_http_targets_are_left_alone():
+    html = (
+        '<a href="https://safelinks.protection.outlook.com.evil.example/?url=https%3A%2F%2Fa.example%2F">a</a>'
+        '<a href="https://eur02.safelinks.protection.outlook.com/?url=javascript%3Aalert(1)">b</a>'
+        '<a href="https://eur02.safelinks.protection.outlook.com/?data=no-url">c</a>'
+        '<a href="https://www.addtoany.com/add_to/email?linkurl=https%3A%2F%2Fexample.com%2F">d</a>'
+    )
+    soup, stats = _policy_soup(html)
+    assert stats.safelinks_unwrapped == 0
+    assert [a["href"] for a in soup.find_all("a")][3].startswith("https://www.addtoany.com/")
+
+
+def test_safelink_unwrapping_can_be_turned_off():
+    soup, stats = _policy_soup(f'<a href="{_SAFELINK.replace("&", "&amp;")}">x</a>', Policy(unwrap_safelinks=False))
+    assert stats.safelinks_unwrapped == 0
+    assert "safelinks" in soup.find("a")["href"]
+    assert Policy.from_config({"unwrap_safelinks": False}).unwrap_safelinks is False

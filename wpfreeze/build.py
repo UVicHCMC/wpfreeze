@@ -1233,6 +1233,8 @@ def format_build_summary(stats: BuildStats) -> str:
         )
     if p.login_links_removed:
         lines.append(f"  {p.login_links_removed} login/admin link(s) unwrapped (dead on an archive)")
+    if p.safelinks_unwrapped:
+        lines.append(f"  {p.safelinks_unwrapped} Outlook Safe Link(s) replaced by the address they wrap")
     if p.wpcom_actionbars_removed:
         lines.append(
             f"  {p.wpcom_actionbars_removed} WordPress.com action bar(s) removed, taking "

@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from urllib.parse import parse_qs
 
 from wpfreeze.urlnorm import safe_urlsplit
 
@@ -293,6 +294,13 @@ class Policy:
     # _strip_wpcom_actionbar. Absent from self-hosted WordPress, where this
     # simply never matches.
     strip_wpcom_actionbar: bool = True
+    # Microsoft Outlook "Safe Links" (https://<region>.safelinks.protection.
+    # outlook.com/?url=<real address>&data=<recipient, tenant, tracking>)
+    # pasted into post content from an email. Replaced by the address they
+    # wrap: the same destination for a reader, minus a dependency on
+    # Microsoft's redirector and the original recipient's email address in
+    # the page. See _unwrap_safelinks.
+    unwrap_safelinks: bool = True
     # Only meaningful when strip_forms removes a comment form's wrapper (see
     # _comment_wrapper): whether the "N comments" post-meta blurb built
     # around the now-dead #respond link is removed outright (True, the
@@ -345,6 +353,7 @@ class Policy:
             strip_search_forms=bool(raw.get("strip_search_forms", True)),
             strip_login_links=bool(raw.get("strip_login_links", True)),
             strip_wpcom_actionbar=bool(raw.get("strip_wpcom_actionbar", True)),
+            unwrap_safelinks=bool(raw.get("unwrap_safelinks", True)),
             dedupe_inline_css=bool(raw.get("dedupe_inline_css", True)),
             telemetry_extra_hosts=list(raw.get("telemetry_extra_hosts", []) or []),
             telemetry_keep_hosts=list(raw.get("telemetry_keep_hosts", []) or []),
@@ -388,6 +397,7 @@ class PolicyStats:
     # instead (comment_count_blurbs_removed). See _clean_dead_fragment_links.
     dead_fragment_links_removed: int = 0
     login_links_removed: int = 0
+    safelinks_unwrapped: int = 0
     # WordPress.com action bars removed, and the anchors that went with
     # them -- the link count is the interesting one, since it is what an
     # external link check would otherwise have spent its time on.
@@ -583,6 +593,56 @@ def _strip_login_links(soup: BeautifulSoup, stats: PolicyStats) -> None:
         if _is_login_link(anchor["href"]):
             anchor.unwrap()
             stats.login_links_removed += 1
+
+
+_SAFELINKS_HOST_SUFFIX = "safelinks.protection.outlook.com"
+
+
+def _safelink_target(href: str) -> str | None:
+    """The address an Outlook Safe Link wraps, or None if `href` isn't one
+    (or wraps something other than an absolute http(s) URL, which is left
+    alone rather than guessed at). Follows a Safe Link of a Safe Link, which
+    is what a forwarded email produces."""
+    target = None
+    current = href.strip()
+    for _ in range(5):
+        parts = safe_urlsplit(current)
+        if parts is None:
+            break
+        host = (parts.hostname or "").lower()
+        if not (host == _SAFELINKS_HOST_SUFFIX or host.endswith("." + _SAFELINKS_HOST_SUFFIX)):
+            break
+        wrapped = parse_qs(parts.query).get("url", [""])[0].strip()
+        wrapped_parts = safe_urlsplit(wrapped)
+        if wrapped_parts is None or wrapped_parts.scheme.lower() not in ("http", "https") or not wrapped_parts.netloc:
+            break
+        target = current = wrapped
+    return target
+
+
+def _unwrap_safelinks(soup: BeautifulSoup, stats: PolicyStats) -> None:
+    """Point each Outlook Safe Link anchor at the address it wraps.
+
+    Someone copies a link out of an Outlook email into the WordPress editor
+    and gets Microsoft's redirector instead: the reader still lands in the
+    right place, but only while Microsoft keeps honouring the wrapper, and
+    the `data=` parameter carries the original recipient's email address
+    and tenant ids. Seen on a real capture inside a contributor bio. The
+    link's text is replaced too when it is the wrapped URL itself (a
+    pasted bare link), and left alone otherwise.
+
+    Runs before link rewriting, so a Safe Link around one of the site's own
+    pages ends up pointing at the local copy.
+    """
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"]
+        target = _safelink_target(href)
+        if target is None:
+            continue
+        anchor["href"] = target
+        if anchor.string is not None and anchor.string.strip() == href.strip():
+            anchor.string.replace_with(NavigableString(target))
+        stats.safelinks_unwrapped += 1
 
 
 # WordPress.com injects a floating "action bar" into every page it serves:
@@ -860,5 +920,7 @@ def apply_policy(
         _strip_wp_meta_links(soup, stats)
     if policy.strip_login_links:
         _strip_login_links(soup, stats)
+    if policy.unwrap_safelinks:
+        _unwrap_safelinks(soup, stats)
     if policy.strip_wpcom_actionbar:
         _strip_wpcom_actionbar(soup, stats)
