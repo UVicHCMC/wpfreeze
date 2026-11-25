@@ -654,7 +654,19 @@ class LinkRewriter:
                 return replacement if replacement is not None else obj
             return obj
         if isinstance(obj, dict):
-            return {k: self._rewrite_json_urls(v, page_url, page_output, context) for k, v in obj.items()}
+            # A value under a *srcset key is a srcset, not one URL: WordPress's
+            # image lightbox puts `"lightboxSrcset": "a.jpg 1200w, a-300x205.jpg
+            # 300w, ..."` in its interactivity state. Whole, it never resolves,
+            # and every enlarged image stayed pointed at the live site (133
+            # references on one real capture). Same rule as data-*srcset.
+            return {
+                k: (
+                    self.rewrite_srcset(v, page_url, page_output)
+                    if isinstance(v, str) and "srcset" in str(k).lower()
+                    else self._rewrite_json_urls(v, page_url, page_output, context)
+                )
+                for k, v in obj.items()
+            }
         if isinstance(obj, list):
             return [self._rewrite_json_urls(v, page_url, page_output, context) for v in obj]
         return obj

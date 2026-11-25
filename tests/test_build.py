@@ -329,6 +329,29 @@ def test_json_ld_script_urls_are_rewritten_in_place():
     assert stats.rewritten >= 2
 
 
+def test_a_srcset_inside_inline_json_is_rewritten_entry_by_entry():
+    """WordPress's image lightbox keeps `lightboxSrcset` in its interactivity
+    state. Treated as one URL it never resolved, so enlarged images stayed
+    on the live site (133 references on a real capture)."""
+    manifest = Manifest()
+    for name in ("a.jpg", "a-300x200.jpg"):
+        _fetched(manifest, f"{BASE}/wp-content/{name}", f"/wp-content/{name}", content_type="image/jpeg")
+    rewriter, stats = _rewriter(manifest)
+
+    html = (
+        '<script type="application/json" id="wp-script-module-data-@wordpress/interactivity">'
+        '{"state":{"core/image":{"metadata":{"x":{"uploadedSrc":"https:\\/\\/example.com\\/wp-content\\/a.jpg",'
+        '"lightboxSrcset":"https:\\/\\/example.com\\/wp-content\\/a.jpg 1200w, '
+        'https:\\/\\/example.com\\/wp-content\\/a-300x200.jpg 300w"}}}}}'
+        "</script>"
+    )
+    out = rewriter.rewrite_html(html, f"{BASE}/", "/index.html")
+
+    assert '"lightboxSrcset":"wp-content/a.jpg 1200w, wp-content/a-300x200.jpg 300w"' in out
+    assert '"uploadedSrc":"wp-content/a.jpg"' in out
+    assert stats.unresolved == 0
+
+
 def test_json_ld_self_reference_with_fragment_keeps_the_fragment():
     manifest = Manifest()
     _fetched(manifest, f"{BASE}/", "/index.html")

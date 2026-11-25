@@ -5,6 +5,20 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.7] — 2026-11-25
+
+### Fixed
+
+- **Enlarged lightbox images come from the archive, not the original site.**
+  WordPress's image lightbox lists each image's sizes in page data as one
+  string (`a.jpg 1200w, a-300x205.jpg 300w, …`). The rewriter tried to
+  match that whole string as one address, which never works, so every
+  enlarged image kept loading from the live site and would break once it
+  is gone. A value whose name contains "srcset" is now rewritten one
+  address at a time, the same way as an `srcset` attribute. On a real
+  capture this rewrote 632 image addresses and cleared 133 of the build
+  report's unresolved references.
+
 ## [1.0.6] — 2026-11-25
 
 ### Fixed
