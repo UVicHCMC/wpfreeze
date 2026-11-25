@@ -382,8 +382,18 @@ def _walk_json_for_urls(obj) -> list[str]:
         if is_url_shaped(obj) and not is_unlikely_real_url(obj):
             urls.append(obj)
     elif isinstance(obj, dict):
-        for value in obj.values():
-            urls.extend(_walk_json_for_urls(value))
+        for key, value in obj.items():
+            # A string under a *srcset key is a srcset, not one URL -- the
+            # WordPress lightbox's "lightboxSrcset". Read whole, it was
+            # fetched as one long bogus URL and recorded as a missing file
+            # (125 of 166 "missing" records on one real capture). Same rule
+            # as data-*srcset, and as build's _rewrite_json_urls.
+            if isinstance(value, str) and "srcset" in str(key).lower():
+                urls.extend(
+                    u for u in _parse_srcset(value) if is_url_shaped(u) and not is_unlikely_real_url(u)
+                )
+            else:
+                urls.extend(_walk_json_for_urls(value))
     elif isinstance(obj, list):
         for value in obj:
             urls.extend(_walk_json_for_urls(value))

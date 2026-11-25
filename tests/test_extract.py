@@ -155,6 +155,19 @@ def test_interactivity_context_json_is_still_searched_for_urls():
     assert any(l.url == "https://example.com/wp-content/uploads/big.png" for l in links)
 
 
+def test_a_srcset_inside_inline_json_is_split_into_its_urls():
+    """Real case (JCLS): the lightbox's lightboxSrcset was queued whole,
+    fetched as one URL, and recorded as a 404 missing file."""
+    html = (
+        '<script type="application/json" id="wp-script-module-data-@wordpress/interactivity">'
+        '{"state":{"core/image":{"metadata":{"x":{"lightboxSrcset":'
+        '"https://example.com/wp-content/a.jpg 1200w, https://example.com/wp-content/a-300x200.jpg 300w"}}}}}'
+        "</script>"
+    )
+    urls = {l.url for l in extract_from_html(html, BASE)}
+    assert urls == {"https://example.com/wp-content/a.jpg", "https://example.com/wp-content/a-300x200.jpg"}
+
+
 def test_meta_og_image_and_twitter_image_are_render():
     html = (
         '<meta property="og:image" content="/img/share.jpg">'

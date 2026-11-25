@@ -5,6 +5,18 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.2] — 2026-11-25
+
+### Fixed
+
+- **Lightbox image lists no longer show up as missing files.** 1.0.7 taught
+  the build to split the lightbox's `lightboxSrcset` list into separate
+  addresses, but acquisition still requested the whole list as one address.
+  Each request 404'd and was recorded as a missing file: 125 of the 166
+  "missing" entries on one real site. The images themselves were captured
+  all along. Acquisition now splits the list too. The bogus entries go with
+  the next fresh `acquire`.
+
 ## [1.1.1] — 2026-11-25
 
 ### Fixed
