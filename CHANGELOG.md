@@ -5,6 +5,22 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.5] — 2026-11-25
+
+### Fixed
+
+- **Pages with non-ASCII slugs are no longer lost from the capture.**
+  WordPress writes such a slug both ways, raw (`/bcヘリテージ…/`) and
+  percent-encoded (`/bc%E3%83%98…/`), and wpfreeze kept them as two
+  different URLs. Fetching one spelling reported the other as its final
+  address, the canonical link pointed back again, and the page's manifest
+  record was folded into itself and deleted. The page was fetched but never
+  built, and no report listed it as missing: 21 pages of a Japanese/English
+  site and one of another. URLs are now always percent-encoded, so both
+  spellings are one URL, and a redirect that loops back to its own record
+  leaves that record alone. Re-run `acquire` for a site with such slugs:
+  an existing manifest is already missing those pages.
+
 ## [1.0.4] — 2026-11-24
 
 ### Fixed

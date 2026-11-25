@@ -57,6 +57,13 @@ NO_SLASH_HTTP_PROFILE = SiteProfile(
         ("https://example.com/%7Efoo/", "https://example.com/~foo/"),
         ("https://example.com/foo%2Fbar/", "https://example.com/foo%2Fbar/"),
         ("https://example.com/foo%2fbar/", "https://example.com/foo%2Fbar/"),
+        # Raw non-ASCII is percent-encoded as UTF-8, so the Unicode and
+        # encoded spellings of one WordPress slug are one URL (either case
+        # of hex digits).
+        ("https://example.com/bcヘ/", "https://example.com/bc%E3%83%98/"),
+        ("https://example.com/bc%e3%83%98/", "https://example.com/bc%E3%83%98/"),
+        ("https://example.com/al-faẓia", "https://example.com/al-fa%E1%BA%93ia/"),
+        ("https://example.com/café-%C3%A9té/", "https://example.com/caf%C3%A9-%C3%A9t%C3%A9/"),
         # Trailing slash added to directory-like paths.
         ("https://example.com/foo", "https://example.com/foo/"),
         ("https://example.com/foo/bar", "https://example.com/foo/bar/"),

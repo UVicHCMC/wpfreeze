@@ -247,6 +247,17 @@ class Manifest:
         target = self.get_or_create(to_url)
         if from_url == to_url:
             return target
+        if target.url == from_url:
+            # to_url is itself already known to redirect back to from_url,
+            # so get_or_create walked the alias chain round to from_url's own
+            # record. Folding it "into" itself would pop the only record
+            # either URL has and lose the page without trace -- which is
+            # what happened to 21 pages of a real capture when the same
+            # slug's two spellings redirected to each other. Keep the record
+            # as is and don't add the reverse alias, which would only make
+            # the chain circular.
+            logger.debug("redirect cycle %s <-> %s; keeping %s", from_url, to_url, target.url)
+            return target
         target.add_redirect_from(from_url)
         target.add_alias(from_url)
         source = self._records.pop(from_url, None)

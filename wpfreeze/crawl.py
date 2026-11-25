@@ -172,8 +172,11 @@ def _record_success(
         for hop in dict.fromkeys(hops):
             if hop != final_url:
                 manifest.resolve_redirect(hop, final_url)
-        target = manifest.get(final_url)
-        assert target is not None
+        # get_or_create, not get: if final_url is itself a known alias (a
+        # redirect cycle that resolve_redirect refused to fold), the record
+        # holding the content is wherever that alias points, not a key of
+        # its own.
+        target = manifest.get_or_create(final_url)
         if target.status in (Status.FETCHED.value, Status.FETCHED_WAYBACK.value):
             return target
     else:

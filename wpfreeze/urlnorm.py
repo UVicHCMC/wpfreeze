@@ -182,13 +182,29 @@ def resolve_url(base: str, link: str) -> str | None:
 
 def _decode_unreserved_percent_encodings(s: str) -> str:
     """Decode %XX sequences that represent RFC 3986 unreserved characters;
-    uppercase the hex digits of any encoded triples left alone."""
+    uppercase the hex digits of any encoded triples left alone; and
+    percent-encode raw non-ASCII characters as their UTF-8 bytes.
+
+    The last step makes "/bcヘ/" and "/bc%E3%83%98/" one URL. They are the
+    same resource -- requests puts the encoded form on the wire for either --
+    but WordPress emits both spellings (the canonical link and some content
+    links in raw Unicode, other links percent-encoded), and as two manifest
+    keys they formed a redirect cycle: fetching the Unicode spelling reports
+    the encoded final URL, the canonical cascade then folds the encoded one
+    back into the Unicode one, and the record was folded into itself and
+    deleted. 21 pages of a real Japanese/English capture vanished from the
+    manifest that way, with no gap reported. Encoded is the canonical form
+    because it is what the server sees and what raw/ is already named by.
+    """
     out: list[str] = []
     i = 0
     n = len(s)
     while i < n:
         ch = s[i]
-        if ch == "%" and i + 2 < n and _is_hex(s[i + 1]) and _is_hex(s[i + 2]):
+        if ord(ch) > 0x7F:
+            out.extend(f"%{b:02X}" for b in ch.encode("utf-8", "surrogatepass"))
+            i += 1
+        elif ch == "%" and i + 2 < n and _is_hex(s[i + 1]) and _is_hex(s[i + 2]):
             hex_pair = s[i + 1 : i + 3]
             decoded = chr(int(hex_pair, 16))
             if decoded in _UNRESERVED:
@@ -249,7 +265,7 @@ def normalize_url(
       resource's identity (a Google Fonts family=, a CDN's cache-busting
       ver=, an image resize width=) and is left untouched.
     - resolve ./.. segments, collapse duplicate slashes, decode unreserved
-      percent-encodings
+      percent-encodings, percent-encode raw non-ASCII path characters
     - fold www/non-www hosts to the site's canonical host
     - normalize trailing slash to the site's own preference, but only for
       directory-like paths on the site's own host

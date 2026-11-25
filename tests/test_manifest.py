@@ -234,6 +234,26 @@ def test_get_or_create_terminates_on_a_redirect_cycle_instead_of_recursing_forev
     assert other is not None
 
 
+def test_resolve_redirect_never_folds_a_record_into_itself():
+    """Real bug, 2026-11-23 (a Japanese/English site, 21 pages lost): a
+    fetched record /pct/, then a redirect pct-spelling -> Unicode-spelling
+    recorded the other way round already. resolve_redirect(pct, uni) asked
+    get_or_create(uni), which followed the alias uni -> pct back to /pct/'s
+    own record -- and then popped it. Both orders must keep the record."""
+    manifest = Manifest()
+    fetched = manifest.get_or_create("https://example.com/a/")
+    fetched.status = "fetched"
+    manifest.get_or_create("https://example.com/b/")
+    manifest.resolve_redirect("https://example.com/b/", "https://example.com/a/")
+    assert len(manifest) == 1
+
+    kept = manifest.resolve_redirect("https://example.com/a/", "https://example.com/b/")
+    assert kept is fetched
+    assert manifest.get("https://example.com/a/") is fetched
+    assert len(manifest) == 1
+    assert manifest.get_or_create("https://example.com/b/") is fetched
+
+
 def test_redirect_aliases_survive_save_and_load(tmp_path: Path):
     manifest = Manifest()
     manifest.get_or_create("https://example.com/a/", discovered_via="sitemap")
