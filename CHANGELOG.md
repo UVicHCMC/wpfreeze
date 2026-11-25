@@ -5,6 +5,22 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.6] — 2026-11-25
+
+### Fixed
+
+- **Files with non-ASCII names are reachable in the built site.** A file
+  whose address contains a character such as `©`, a narrow no-break space
+  or Japanese text was written to disk under its percent-encoded name,
+  `%C2%A9-photo.jpg`. A browser or web server decodes the link before
+  looking, asks for `©-photo.jpg`, and gets a 404. These are what
+  `checklinks` listed as "missing": 211 files across three real sites,
+  plus every page with a non-ASCII address. Files are now written under
+  their real name and linked by the encoded form. A plain `build` fixes an
+  existing capture, no re-acquire needed. Links written in a different
+  spelling of the same address (raw Unicode, or lowercase `%e3…`) now
+  resolve as well.
+
 ## [1.0.5] — 2026-11-25
 
 ### Fixed

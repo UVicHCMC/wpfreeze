@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import PurePosixPath
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from wpfreeze.manifest import FLAG_ATTACHMENT_PAGE, Manifest, ManifestRecord, Status
 from wpfreeze.urlnorm import SiteProfile
@@ -52,6 +52,51 @@ class OutputPathCollisionError(Exception):
     """Two internal resources mapped to the same output_path. Should be
     impossible under this scheme -- surfaced loudly rather than letting
     one silently overwrite the other."""
+
+
+_NON_ASCII_ESCAPES_RE = re.compile(r"(?:%[89A-Fa-f][0-9A-Fa-f])+")
+
+# What href_quote leaves alone besides alphanumerics and "_.-~": the path
+# separator and RFC 3986's sub-delims, which are legal as-is in a path and
+# common in WordPress filenames. Not ":", which in a relative href's first
+# segment would read as a URL scheme.
+_HREF_SAFE = "/!$&'()*+,;=@"
+
+
+def decode_non_ascii_escapes(path: str) -> str:
+    """Turn a URL path's percent-encoded non-ASCII characters back into
+    the characters, so an output_path names the file as it sits on disk.
+
+    The output_path is a filesystem path as much as a URL: build writes the
+    file at site_dir/output_path and links to it via relative_link. Kept
+    percent-encoded, the file was written literally as `%C2%A9-photo.jpg`,
+    while a browser or Apache decodes the matching href to `©-photo.jpg`
+    before looking for it, so every such file 404'd -- 211 of them across
+    three real captures, and every page with a non-ASCII slug.
+
+    ASCII escapes (`%20`, `%2F`, `%3D`) are deliberately left encoded:
+    decoding them could map two distinct manifest URLs onto one filename
+    ("/a=b" vs "/a%3Db"), and %2F would invent a directory. Non-ASCII can't
+    collide that way, because normalize_url percent-encodes every raw
+    non-ASCII character, so no two records differ only in how one is
+    spelled. A run that isn't valid UTF-8 is left as it was.
+    """
+
+    def _decode(match: re.Match[str]) -> str:
+        try:
+            return unquote(match.group(), errors="strict")
+        except UnicodeDecodeError:
+            return match.group()
+
+    return _NON_ASCII_ESCAPES_RE.sub(_decode, path)
+
+
+def href_quote(path: str) -> str:
+    """Percent-encode an on-disk output path for use in an href or a
+    Location header. The inverse of what the browser/server does before
+    looking for the file: non-ASCII becomes UTF-8 %XX, and a literal "%" in
+    a filename becomes %25, so it survives that one decoding."""
+    return quote(path, safe=_HREF_SAFE)
 
 
 def internal_output_path(url_path: str, base_path: str = "/") -> str:
@@ -128,7 +173,7 @@ def external_output_path(
     """
     parsed = urlsplit(url)
     host = parsed.hostname or "unknown-host"
-    filename = PurePosixPath(parsed.path).name or "index"
+    filename = PurePosixPath(decode_non_ascii_escapes(parsed.path)).name or "index"
 
     if not PurePosixPath(filename).suffix and content_type:
         bare_type = content_type.split(";")[0].strip().lower()
@@ -159,7 +204,7 @@ def _assign_output_path(
 
     host = (urlsplit(record.url).hostname or "").lower()
     if profile.owns_host(host):
-        url_path = urlsplit(record.url).path or "/"
+        url_path = decode_non_ascii_escapes(urlsplit(record.url).path or "/")
         output_path = internal_output_path(url_path, profile.base_path)
         existing = internal_seen.get(output_path)
         if existing is not None and existing != record.url:
@@ -263,7 +308,7 @@ def generate_redirects_htaccess(manifest: Manifest) -> str:
             if origin_path == canonical_path and not origin_query:
                 continue
             lines.append(
-                f"Redirect 301 {_htaccess_safe(request_path)} {_htaccess_safe(record.output_path)}"
+                f"Redirect 301 {_htaccess_safe(request_path)} {_htaccess_safe(href_quote(record.output_path))}"
             )
 
     return "\n".join(lines) + "\n"

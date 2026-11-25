@@ -147,6 +147,7 @@ def test_relative_link_depth():
     assert relative_link("/a/b.html", "/style.css") == "../style.css"
     assert relative_link("/a/b/c.html", "/assets/x.png") == "../../assets/x.png"
     assert relative_link("/a/b.html", "/a/c.html") == "c.html"
+    assert relative_link("/index.html", "/bc\u30d8.html") == "bc%E3%83%98.html"
 
 
 # --- rewriting ------------------------------------------------------------
@@ -504,6 +505,29 @@ def test_build_site_emits_a_tree_with_no_broken_local_references(tmp_path: Path)
     assert 'href="wp-content/style.css"' in (site_dir / "index.html").read_text()
     # A page one level down reaches back up correctly.
     assert 'src="wp-content/logo.png"' in (site_dir / "about.html").read_text()
+
+
+def test_build_site_links_a_non_ascii_file_by_its_encoded_name(tmp_path: Path):
+    """The file sits on disk under its decoded name and the href is the
+    percent-encoded form, which a browser decodes back to that name."""
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    photo = _fetched(
+        manifest,
+        f"{BASE}/wp-content/x_%C2%A9-y.jpg",
+        "/wp-content/x_\u00a9-y.jpg",
+        local_path="raw/wp-content/x_%C2%A9-y.jpg",
+        content_type="image/jpeg",
+    )
+    _write(output_dir, home, f'<img src="{BASE}/wp-content/x_\u00a9-y.jpg">'.encode())
+    _write(output_dir, photo, b"\xff\xd8")
+
+    stats = build_site(manifest, output_dir, site_dir)
+
+    assert stats.unresolved == 0
+    assert (site_dir / "wp-content/x_\u00a9-y.jpg").read_bytes() == b"\xff\xd8"
+    assert 'src="wp-content/x_%C2%A9-y.jpg"' in (site_dir / "index.html").read_text()
 
 
 def test_build_site_never_writes_into_the_capture(tmp_path: Path):
@@ -1184,3 +1208,12 @@ def test_importmap_addresses_stay_valid_import_map_targets():
 
     deep = rewriter.rewrite_html(html, f"{BASE}/a/b/", "/a/b.html")
     assert '"@wordpress/interactivity":"../wp-includes/js/dist/script-modules/interactivity/index.min.js"' in deep
+
+
+def test_lookup_variants_match_an_href_spelled_differently_from_the_manifest_key():
+    """normalize_url keys a non-ASCII slug as uppercase %XX; pages link to
+    it raw and lowercase-escaped as well."""
+    key = f"{BASE}/bc%E3%83%98/"
+    assert key in lookup_variants(f"{BASE}/bcヘ/")
+    assert key in lookup_variants(f"{BASE}/bc%e3%83%98/")
+    assert key in lookup_variants(f"{BASE}/bcヘ")

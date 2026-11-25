@@ -50,9 +50,15 @@ from wpfreeze.extract import (
 )
 from wpfreeze.manifest import FLAG_ATTACHMENT_PAGE, Manifest, ManifestRecord, Status
 from wpfreeze.normalize import NormalizeStats, apply_normalizations
+from wpfreeze.outputs import decode_non_ascii_escapes, href_quote
 from wpfreeze.policy import Policy, PolicyStats, apply_policy
 from wpfreeze.search import SEARCH_ASSET_PATH, ContentIssues, SearchStats, apply_search, write_search_asset
-from wpfreeze.urlnorm import PERMALINK_QUERY_KEYS, safe_urlsplit, scope_profile_from_config
+from wpfreeze.urlnorm import (
+    PERMALINK_QUERY_KEYS,
+    canonical_path_escapes,
+    safe_urlsplit,
+    scope_profile_from_config,
+)
 
 if TYPE_CHECKING:
     from wpfreeze.cli import SearchSettings
@@ -227,13 +233,17 @@ def lookup_variants(url: str, *, owned: bool = True) -> list[str]:
     hosts = [parts.netloc]
     hosts.append(parts.netloc[4:] if parts.netloc.startswith("www.") else "www." + parts.netloc)
 
-    path = parts.path or "/"
-    paths = [path]
-    if path.endswith("/"):
-        if len(path) > 1:
-            paths.append(path.rstrip("/"))
-    elif "." not in path.rsplit("/", 1)[-1]:
-        paths.append(path + "/")
+    # The path as written, then as normalize_url spells it in manifest keys:
+    # a raw-Unicode or lowercase-%xx href names the same page as the
+    # uppercase-%XX key (a real Japanese/English site links both ways).
+    paths = []
+    for path in dict.fromkeys([parts.path or "/", canonical_path_escapes(parts.path or "/")]):
+        paths.append(path)
+        if path.endswith("/"):
+            if len(path) > 1:
+                paths.append(path.rstrip("/"))
+        elif "." not in path.rsplit("/", 1)[-1]:
+            paths.append(path + "/")
 
     schemes = [parts.scheme] if parts.scheme in ("http", "https") else []
     schemes += [s for s in ("https", "http") if s not in schemes]
@@ -356,9 +366,11 @@ def build_attachment_media_map(
 
 
 def relative_link(from_output_path: str, to_output_path: str) -> str:
-    """Relative href from one output_path to another; both are /-rooted."""
+    """Relative href from one output_path to another; both are /-rooted
+    on-disk paths, so the result is percent-encoded (see outputs.href_quote)
+    to name the file once the browser decodes it."""
     from_dir = from_output_path.rsplit("/", 1)[0] or "/"
-    return posix_relpath(to_output_path.lstrip("/"), from_dir.lstrip("/") or ".")
+    return href_quote(posix_relpath(to_output_path.lstrip("/"), from_dir.lstrip("/") or "."))
 
 
 BUNDLE_DIR = "/assets/bundles"
@@ -857,6 +869,13 @@ def build_site(
     """
     policy = policy or Policy()
     search_enabled = bool(search and search.enabled)
+    # Output paths are assigned at acquire time and stored in the manifest;
+    # one from before 1.0.6 still carries %XX escapes for non-ASCII, which
+    # would be written to disk literally where no browser can reach them
+    # (see outputs.decode_non_ascii_escapes). Idempotent, in memory only.
+    for record in manifest.all():
+        if record.output_path:
+            record.output_path = decode_non_ascii_escapes(record.output_path)
     records = build_record_lookup(manifest)
     lookup = {url: record.output_path for url, record in records.items()}
     attachment_media = build_attachment_media_map(manifest, output_dir, lookup)

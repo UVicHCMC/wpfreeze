@@ -8,7 +8,9 @@ from wpfreeze.outputs import (
     compute_output_paths,
     external_asset_bucket,
     external_output_path,
+    decode_non_ascii_escapes,
     generate_redirects_htaccess,
+    href_quote,
     internal_output_path,
 )
 from wpfreeze.urlnorm import SiteProfile
@@ -252,3 +254,58 @@ def test_generate_redirects_htaccess_escapes_raw_whitespace_in_a_malformed_alias
         if line.startswith("Redirect"):
             assert len(line.split(" ")) == 4, line
     assert "Redirect 301 /audrey%20kobayashi/ /audrey-kobayashi.html" in htaccess
+
+
+# --- non-ASCII filenames --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("/bc%E3%83%98/", "/bc\u30d8/"),
+        ("/2024/04/x_%C2%A9-y.jpg", "/2024/04/x_\u00a9-y.jpg"),
+        ("/a%e3%83%98", "/a\u30d8"),
+        # ASCII escapes stay encoded: decoding could collide two records.
+        ("/audrey%20kobayashi/", "/audrey%20kobayashi/"),
+        ("/a%2Fb%3D", "/a%2Fb%3D"),
+        # Not valid UTF-8: left alone rather than guessed at.
+        ("/bad%FF.jpg", "/bad%FF.jpg"),
+    ],
+)
+def test_decode_non_ascii_escapes(path, expected):
+    assert decode_non_ascii_escapes(path) == expected
+
+
+def test_href_quote_round_trips_through_one_decode():
+    from urllib.parse import unquote
+
+    for on_disk in ("/bc\u30d8.html", "/x_\u00a9-y.jpg", "/audrey%20kobayashi.html", "/a (1)+b,c@d.jpg"):
+        assert unquote(href_quote(on_disk)) == on_disk
+    assert href_quote("/a (1)+b,c@d.jpg") == "/a%20(1)+b,c@d.jpg"
+    assert href_quote("weird:name.html") == "weird%3Aname.html"
+
+
+def test_compute_output_paths_names_non_ascii_files_as_they_sit_on_disk():
+    """Regression: output_path kept the URL's %XX escapes, so build wrote
+    the file literally as `x_%C2%A9-y.jpg` while the browser, decoding the
+    href, asked for `x_\u00a9-y.jpg` -- 211 unreachable files across three
+    real captures."""
+    manifest = Manifest()
+    page = _fetched("https://example.com/bc%E3%83%98/")
+    image = _fetched("https://example.com/wp-content/x_%C2%A9-y.jpg")
+    external = _fetched("https://cdn.other.org/img/shot%E2%80%AFAM.png", content_hash="ab" * 32)
+    for r in (page, image, external):
+        manifest.upsert(r)
+    compute_output_paths(manifest, PROFILE, {})
+    assert page.output_path == "/bc\u30d8.html"
+    assert image.output_path == "/wp-content/x_\u00a9-y.jpg"
+    assert external.output_path == "/assets/img/external/shot\u202fAM.png"
+
+
+def test_generate_redirects_htaccess_encodes_a_non_ascii_target():
+    manifest = Manifest()
+    record = _fetched("https://example.com/bc%E3%83%98/")
+    record.output_path = "/bc\u30d8.html"
+    record.add_alias("https://example.com/?p=7")
+    manifest.upsert(record)
+    assert "Redirect 301 /?p=7 /bc%E3%83%98.html" in generate_redirects_htaccess(manifest)

@@ -218,6 +218,14 @@ def _decode_unreserved_percent_encodings(s: str) -> str:
     return "".join(out)
 
 
+def canonical_path_escapes(path: str) -> str:
+    """A URL path's percent-encoding as normalize_url spells it (raw
+    non-ASCII encoded, hex uppercased, unreserved decoded), without the
+    rest of normalisation. For matching an href as written against
+    manifest keys."""
+    return _decode_unreserved_percent_encodings(path)
+
+
 def _is_hex(ch: str) -> bool:
     return ch in "0123456789abcdefABCDEF"
 
