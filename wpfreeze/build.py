@@ -1269,6 +1269,12 @@ def write_build_report(
     path = output_dir / "build-report.json"
     data = asdict(stats)
     del data["written"]
+    # Which wpfreeze made this build: a build from before a fix looks
+    # exactly as current on disk as one made after it, and "rebuild to pick
+    # up fixes" is otherwise unanswerable (see nextsteps).
+    from wpfreeze import __version__
+
+    data["wpfreeze_version"] = __version__
     data["prune"] = None if prune is None else asdict(prune)
     data["verification"] = (
         None

@@ -2456,3 +2456,12 @@ def test_checklinks_with_no_external_links_records_an_empty_result(tmp_path: Pat
     data = json.loads((output_dir / "broken-external-links.json").read_text())
     assert data["results"] == []
     assert "No external links to check." in capsys.readouterr().out
+
+
+def test_build_report_records_the_wpfreeze_version(tmp_path: Path):
+    from wpfreeze import __version__
+    from wpfreeze.cli import run_build
+
+    output_dir = tmp_path / "out"
+    run_build(_minimal_capture(output_dir), None, verify=False)
+    assert json.loads((output_dir / "build-report.json").read_text())["wpfreeze_version"] == __version__

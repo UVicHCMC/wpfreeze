@@ -5,6 +5,15 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.7] — 2026-11-26
+
+### Changed
+
+- **`build-report.json` records which wpfreeze version made the build**
+  (`wpfreeze_version`). On disk, a build made before a fix looks exactly
+  as current as one made after it. This makes "rebuild to pick up fixes"
+  answerable.
+
 ## [1.3.6] — 2026-11-26
 
 ### Fixed
