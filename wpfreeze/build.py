@@ -326,6 +326,56 @@ def build_lookup(manifest: Manifest) -> dict[str, str]:
     return {url: record.output_path for url, record in build_record_lookup(manifest).items()}
 
 
+# Where an attachment page's own media may appear, beyond the linked image
+# build_attachment_media_map prefers. `p.attachment` is WordPress core's
+# prepend_attachment() wrapper; the rest are the main-content containers
+# of core and common themes. Never the header or footer, where the site
+# logo is also an upload.
+_ATTACHMENT_FALLBACK_SCOPES = ("p.attachment", ".entry-content", "#left-area", "main", "article")
+_ATTACHMENT_EXCLUDED_ANCESTORS = ("header", "footer", "nav", "#main-header", "#main-footer", "#top-header")
+
+
+def _captured_upload(url: str, lookup: dict[str, str]) -> str | None:
+    if "/wp-content/uploads/" not in url:
+        return None
+    for variant in lookup_variants(url):
+        target = lookup.get(variant)
+        if target is not None:
+            return target
+    return None
+
+
+def _attachment_media_target(soup: BeautifulSoup, lookup: dict[str, str]) -> str | None:
+    """The output_path of the media an attachment page displays, or None.
+
+    First choice, as before: an `<a href=upload><img></a>` whose target was
+    captured -- the image linked to its full-size file. Otherwise the first
+    captured upload in the page's own content: a plain `<a href>` (how core
+    shows a PDF or audio file), an `<audio>`/`<video>` source, or an
+    `<img src>` (a resized copy, when the full-size file wasn't captured).
+    Only captured files count, so a link never retargets to something absent.
+    """
+    for anchor in soup.select('a[href*="/wp-content/uploads/"]'):
+        if anchor.find("img"):
+            target = _captured_upload(anchor["href"], lookup)
+            if target is not None:
+                return target
+
+    excluded = {id(el) for sel in _ATTACHMENT_EXCLUDED_ANCESTORS for el in soup.select(sel)}
+    for scope_selector in _ATTACHMENT_FALLBACK_SCOPES:
+        for scope in soup.select(scope_selector):
+            if id(scope) in excluded or any(id(a) in excluded for a in scope.parents):
+                continue
+            for el in scope.find_all(["a", "source", "audio", "video", "img"]):
+                url = el.get("href") if el.name == "a" else el.get("src")
+                if not url:
+                    continue
+                target = _captured_upload(url, lookup)
+                if target is not None:
+                    return target
+    return None
+
+
 def build_attachment_media_map(
     manifest: Manifest, output_dir: Path, lookup: dict[str, str]
 ) -> dict[str, str]:
@@ -341,9 +391,11 @@ def build_attachment_media_map(
     The wrapper displays its image as `<a href="full.jpg"><img ...></a>`,
     linking the shown (often resized) image to the full-size file; that
     anchor is the reliable signal (94% of real attachment pages on the test
-    corpus, versus 18% for guessing from the URL slug). Only anchors whose
-    target was actually captured are used, so a link never retargets to
-    something absent.
+    corpus, versus 18% for guessing from the URL slug). A PDF or audio
+    attachment has no such image, so the page's own content is the fallback
+    (see _attachment_media_target). Only captured files are used, so a link
+    never retargets to something absent. Each page is keyed on its aliases
+    too: `?attachment_id=N` links are common in gallery markup.
     """
     media_map: dict[str, str] = {}
     for record in manifest.all():
@@ -353,17 +405,14 @@ def build_attachment_media_map(
         if not source.exists():
             continue
         soup = BeautifulSoup(source.read_text(encoding="utf-8", errors="replace"), "html5lib")
-        for anchor in soup.select('a[href*="/wp-content/uploads/"]'):
-            if not anchor.find("img"):
-                continue
-            for variant in lookup_variants(anchor["href"]):
-                target = lookup.get(variant)
-                if target is not None:
-                    for page_variant in lookup_variants(record.url):
-                        media_map.setdefault(page_variant, target)
-                    break
-            if any(v in media_map for v in lookup_variants(record.url)):
-                break
+        target = _attachment_media_target(soup, lookup)
+        if target is None:
+            continue
+        # Keyed on every address the page answered to -- `?attachment_id=N`
+        # and `?p=N` links reach the same wrapper as its pretty permalink.
+        for address in (record.url, *record.aliases, *record.redirect_from):
+            for page_variant in lookup_variants(address):
+                media_map.setdefault(page_variant, target)
     return media_map
 
 

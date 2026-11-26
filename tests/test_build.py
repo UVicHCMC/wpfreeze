@@ -1249,3 +1249,73 @@ def test_interactivity_directive_values_are_left_untouched_and_not_reported():
     out = rewriter.rewrite_html(html, f"{BASE}/post/", "/post.html")
     assert 'data-wp-bind--srcset="state.enlargedSrcset"' in out
     assert stats.unresolved == 0
+
+
+def _attachment_case(tmp_path: Path, wrapper_html: str, *, media_path: str = "/wp-content/uploads/2019/n.pdf",
+                     link: str = f"{BASE}/n-2019/", extra_media: tuple[str, ...] = (), aliases: tuple[str, ...] = ()):
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    for path in (media_path, *extra_media):
+        _write(output_dir, _fetched(manifest, f"{BASE}{path}", path, content_type="application/octet-stream"), b"x")
+    att = _attachment_page(manifest, f"{BASE}/n-2019/", "")
+    for alias in aliases:
+        att.aliases.append(alias)
+    _write(output_dir, home, f'<a href="{link}">doc</a>'.encode())
+    (output_dir / att.local_path).parent.mkdir(parents=True, exist_ok=True)
+    (output_dir / att.local_path).write_text(wrapper_html)
+    stats = build_site(manifest, output_dir, site_dir)
+    return stats, (site_dir / "index.html").read_text()
+
+
+def test_attachment_pdf_shown_as_a_plain_link(tmp_path: Path):
+    """WordPress core shows a non-image attachment as a text link in
+    <p class="attachment">: no <img>, so the old rule never matched."""
+    stats, out = _attachment_case(
+        tmp_path,
+        f'<div id="left-area"><p class="attachment"><a href="{BASE}/wp-content/uploads/2019/n.pdf">N</a></p></div>',
+    )
+    assert stats.attachment_links_retargeted == 1 and stats.unresolved == 0
+    assert 'href="wp-content/uploads/2019/n.pdf"' in out
+
+
+def test_attachment_audio_in_content(tmp_path: Path):
+    stats, out = _attachment_case(
+        tmp_path,
+        f'<article><audio><source src="{BASE}/wp-content/uploads/2020/r.mp3"></audio></article>',
+        media_path="/wp-content/uploads/2020/r.mp3",
+    )
+    assert stats.attachment_links_retargeted == 1
+    assert 'href="wp-content/uploads/2020/r.mp3"' in out
+
+
+def test_attachment_full_size_missing_falls_back_to_shown_copy(tmp_path: Path):
+    stats, out = _attachment_case(
+        tmp_path,
+        f'<div id="left-area"><img src="{BASE}/wp-content/uploads/2019/p-1080x675.jpg">'
+        f'<p class="attachment"><a href="{BASE}/wp-content/uploads/2019/p.jpg"><img src="x"></a></p></div>',
+        media_path="/wp-content/uploads/2019/p-1080x675.jpg",
+    )
+    assert 'href="wp-content/uploads/2019/p-1080x675.jpg"' in out
+
+
+def test_attachment_fallback_never_picks_the_header_logo(tmp_path: Path):
+    stats, out = _attachment_case(
+        tmp_path,
+        f'<header id="main-header"><img src="{BASE}/wp-content/uploads/logo.png"></header>'
+        '<div id="left-area"><p>Nothing captured here.</p></div>',
+        media_path="/wp-content/uploads/logo.png",
+    )
+    assert stats.attachment_links_retargeted == 0 and stats.unresolved == 1
+    assert "logo.png" not in out
+
+
+def test_attachment_id_alias_links_retarget_too(tmp_path: Path):
+    stats, out = _attachment_case(
+        tmp_path,
+        f'<p class="attachment"><a href="{BASE}/wp-content/uploads/2019/n.pdf">N</a></p>',
+        link=f"{BASE}/?attachment_id=5534",
+        aliases=(f"{BASE}/?attachment_id=5534",),
+    )
+    assert stats.attachment_links_retargeted == 1
+    assert 'href="wp-content/uploads/2019/n.pdf"' in out

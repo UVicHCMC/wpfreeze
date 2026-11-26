@@ -5,6 +5,20 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.3] — 2026-11-26
+
+### Fixed
+
+- **More links to WordPress attachment pages now reach the file.** The
+  build points a link to an attachment page (WordPress's one-page-per-upload
+  wrapper) at the file itself. It only recognised an image linked to its
+  full-size version, so links to a PDF or audio attachment, which WordPress
+  shows as a plain link, were left pointing at the original site. So were
+  `?attachment_id=N` links, which reach the same page by its ID. Both now
+  resolve. Only a file that was actually captured is ever used, and the
+  page header, where the site logo lives, is never searched. On one real
+  site this fixed 7 of 43 unresolved links.
+
 ## [1.3.2] — 2026-11-26
 
 ### Fixed
