@@ -63,6 +63,13 @@ case "${1:-}" in
     *) usage; exit 1 ;;
 esac
 
+# Working folders that tools create inside whatever directory they're run
+# from -- Claude Code's sandbox leaves `.claude/` -- never belong on a web
+# server. Removed from the copy, at any depth; site/ itself is left alone.
+strip_cruft() {
+    find "$1" -type d -name .claude -prune -exec rm -rf {} +
+}
+
 copy_reports() {
     # Not every report exists on every build -- broken-external-links.html
     # only appears after `wpfreeze checklinks`, for instance -- so each is
@@ -80,6 +87,7 @@ if [ "$MODE" = "local" ]; then
     rm -rf "$DEST"
     mkdir -p "$DEST"
     cp -a "$SITE_REL/." "$DEST/"
+    strip_cruft "$DEST"
     copy_reports "$DEST"
     echo "Local preview assembled at $DEST/ -- e.g. cd $DEST && python3 -m http.server"
     exit 0
@@ -98,6 +106,7 @@ if [ "$MODE" = "prod" ]; then
     TMP=$(mktemp -d)
     trap 'rm -rf "$TMP"' EXIT
     cp -a "$SITE_REL/." "$TMP/"
+    strip_cruft "$TMP"
     rsync -av --delete "$TMP/" "$PROD_REMOTE/"
     exit 0
 fi
@@ -110,6 +119,7 @@ fi
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 cp -a "$SITE_REL/." "$TMP/"
+strip_cruft "$TMP"
 copy_reports "$TMP"
 rsync -av --delete "$TMP/" "$REMOTE/"
 """

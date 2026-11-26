@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import stat
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from wpfreeze.upload import write_upload_script
 
@@ -75,3 +79,48 @@ def test_only_prod_mode_omits_reports(tmp_path: Path):
     content = write_upload_script(tmp_path, "user@staging:/path", "user@prod:/path").read_text(encoding="utf-8")
     prod_branch = content.split('if [ "$MODE" = "prod" ]')[1].split("# staging")[0]
     assert "copy_reports" not in prod_branch
+
+
+# --- tool cruft never ships ----------------------------------------------------
+
+
+def _site_with_cruft(output_dir: Path) -> None:
+    site = output_dir / "site"
+    (site / "news" / ".claude" / ".cc-writes").mkdir(parents=True)
+    (site / ".claude" / ".cc-writes").mkdir(parents=True)
+    (site / ".claude" / "note").write_text("x", encoding="utf-8")
+    (site / "index.html").write_text("<p>hi</p>", encoding="utf-8")
+    (site / "news" / "post.html").write_text("<p>post</p>", encoding="utf-8")
+
+
+def _run(output_dir: Path, *args: str, stdin: str = "") -> None:
+    subprocess.run(["bash", "upload.sh", *args], cwd=output_dir, input=stdin, text=True, check=True,
+                   capture_output=True)
+
+
+def _no_cruft(root: Path) -> None:
+    assert (root / "index.html").exists() and (root / "news" / "post.html").exists()
+    assert not list(root.rglob(".claude"))
+
+
+def test_local_mode_drops_claude_dirs_but_leaves_site_alone(tmp_path: Path):
+    _site_with_cruft(tmp_path)
+    write_upload_script(tmp_path, None, None)
+    _run(tmp_path, "--local")
+    _no_cruft(tmp_path / "preview")
+    assert (tmp_path / "site" / ".claude" / "note").exists()  # the copy is cleaned, not the source
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="needs rsync")
+def test_staging_and_prod_drop_claude_dirs(tmp_path: Path):
+    out = tmp_path / "out"
+    _site_with_cruft(out)
+    staging, prod = tmp_path / "staging", tmp_path / "prod"
+    staging.mkdir()
+    prod.mkdir()
+    (prod / ".claude").mkdir()  # shipped by an earlier upload: --delete removes it
+    write_upload_script(out, str(staging), str(prod))
+    _run(out)
+    _no_cruft(staging)
+    _run(out, "--prod", stdin="y\n")
+    _no_cruft(prod)

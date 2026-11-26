@@ -939,6 +939,14 @@ before confirming. Neither remote is required to write the script itself
 — an unconfigured mode just errors clearly, naming which config key to
 add, when you actually try to run it.
 
+Every mode works on a copy of `site/` and removes any `.claude/` folder
+from that copy before it goes anywhere. Claude Code leaves one in whatever
+folder it runs a command from, and it is not part of the site. `site/`
+itself is not touched. A copy uploaded by an older `upload.sh` is deleted
+from the server by the next staging or `--prod` sync. An existing
+`upload.sh` gets this only when it is rewritten: run `wpfreeze
+upload-script <project>` again.
+
 See [`example-site.yaml`](wpfreeze/example-site.yaml) for both `upload.remote` and
 `upload.prod_remote`.
 

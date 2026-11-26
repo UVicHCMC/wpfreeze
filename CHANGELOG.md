@@ -5,6 +5,19 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-11-26
+
+### Fixed
+
+- **`upload.sh` no longer uploads `.claude/` folders.** Claude Code leaves
+  a `.claude/` folder in whatever directory it runs a command from. One in
+  `site/` was copied to the server along with the site, and nothing warned
+  about it: the build's stale-file listing counts files, and the folder
+  held only an empty subfolder. Every mode now removes `.claude/` folders,
+  at any depth, from its copy of the site before syncing, and the next
+  sync deletes any already on the server. Rerun `wpfreeze upload-script`
+  to rewrite an existing `upload.sh`.
+
 ## [1.3.1] — 2026-11-26
 
 ### Fixed
