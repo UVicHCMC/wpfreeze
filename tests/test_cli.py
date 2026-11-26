@@ -1507,7 +1507,6 @@ def test_acquire_step_timing_excludes_time_spent_in_followup_prompts(tmp_path: P
     config.output_dir.mkdir(parents=True)
 
     monkeypatch.setattr(cli, "_run_acquire_locked", lambda *a, **k: (0, Manifest()))
-    monkeypatch.setattr(cli, "_maybe_offer_diagnostics", lambda *a, **k: None)
 
     def _slow_offer(cfg, summary):
         _time.sleep(0.4)  # stands in for a human sitting at the prompt
@@ -2072,21 +2071,19 @@ def test_direct_acquire_still_offers_followups_by_default(tmp_path: Path, monkey
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     calls: list[str] = []
-    monkeypatch.setattr(cli, "_maybe_offer_diagnostics", lambda *a, **k: calls.append("diagnostics"))
     monkeypatch.setattr(cli, "_maybe_offer_build_and_validate", lambda *a, **k: calls.append("build_and_validate"))
 
     with FixtureSite() as site:
         config = _config_for(site, tmp_path / "out")
         run_acquire(config, resume=False, dry_run=False)
 
-    assert calls == ["diagnostics", "build_and_validate"]
+    assert calls == ["build_and_validate"]
 
 
 def test_run_freeze_suppresses_acquires_followup_offers(tmp_path: Path, monkeypatch):
     import wpfreeze.cli as cli
 
     calls: list[str] = []
-    monkeypatch.setattr(cli, "_maybe_offer_diagnostics", lambda *a, **k: calls.append("diagnostics"))
     monkeypatch.setattr(cli, "_maybe_offer_build_and_validate", lambda *a, **k: calls.append("build_and_validate"))
     monkeypatch.setattr(cli, "run_build", lambda *a, **k: 0)
     monkeypatch.setattr(cli, "run_validate", lambda *a, **k: 0)
@@ -2465,3 +2462,15 @@ def test_build_report_records_the_wpfreeze_version(tmp_path: Path):
     output_dir = tmp_path / "out"
     run_build(_minimal_capture(output_dir), None, verify=False)
     assert json.loads((output_dir / "build-report.json").read_text())["wpfreeze_version"] == __version__
+
+
+def test_acquire_writes_diagnostics_without_asking(tmp_path: Path, monkeypatch):
+    """The cleanup checklist's integrity section reads diagnostics.json;
+    acquire writes it itself so it always describes the current capture."""
+    import wpfreeze.cli as cli
+
+    monkeypatch.setattr(cli, "_maybe_offer_build_and_validate", lambda *a, **k: None)
+    with FixtureSite() as site:
+        config = _config_for(site, tmp_path / "out")
+        run_acquire(config, resume=False, dry_run=False)
+    assert (tmp_path / "out" / "diagnostics.json").exists()

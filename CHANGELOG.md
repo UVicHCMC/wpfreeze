@@ -5,6 +5,16 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.8] — 2026-11-26
+
+### Changed
+
+- **`acquire` writes the capture's diagnostics itself** (`diagnostics.json`)
+  instead of asking whether to. It takes about a second. The cleanup
+  checklist's capture-integrity section reads this file, so a separate
+  `diagnose` run is no longer needed to keep the checklist current.
+  `wpfreeze diagnose` still regenerates it on demand.
+
 ## [1.3.7] — 2026-11-26
 
 ### Changed

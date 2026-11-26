@@ -188,9 +188,9 @@ def _integrity_section(diagnostics: dict | None) -> tuple[list[str], bool]:
             [
                 "## Capture integrity",
                 "",
-                "`wpfreeze diagnose` hasn't been run for this capture, so the duplicate-file "
-                "and content-hash checks haven't happened. Not urgent, but worth doing once: "
-                "`wpfreeze diagnose --config <your-config>.yaml`.",
+                "The duplicate-file and content-hash checks haven't run for this capture "
+                "(`acquire` does them automatically since 1.3.8; this capture is older). "
+                "Not urgent, but worth doing once: `wpfreeze diagnose <project>`.",
                 "",
             ],
             False,

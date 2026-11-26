@@ -592,7 +592,6 @@ def run_acquire(
         # same way `freeze` does it. Still inside the lock, so lock
         # semantics are unchanged by this fix.
         if offer_followups and not dry_run and manifest is not None:
-            _maybe_offer_diagnostics(manifest, output_dir, config.base_url)
             _maybe_offer_build_and_validate(config, summary)
     finally:
         lock.release()
@@ -693,6 +692,15 @@ def _run_acquire_locked(
     if progress is not None:
         progress.finish()
 
+    # Always, not offered: it takes about a second, and the cleanup
+    # checklist's capture-integrity section reads diagnostics.json -- left
+    # to a separate `diagnose` run, the checklist said "hasn't been run"
+    # (or described an older capture) after every acquire.
+    diagnostics_path = write_diagnostics(
+        build_diagnostics(manifest, output_dir, config.base_url, _latest_log_path(output_dir)), output_dir
+    )
+    print(f"Diagnostics: {diagnostics_path}")
+
     return (1 if manifest.has_gaps() else 0), manifest
 
 
@@ -709,25 +717,10 @@ def _latest_log_path(output_dir: Path) -> Path | None:
     return None
 
 
-def _maybe_offer_diagnostics(manifest: Manifest, output_dir: Path, base_url: str) -> None:
-    """Only prompts in a real interactive terminal -- this runs at the end
-    of `acquire`, which is routinely launched unattended/backgrounded, and
-    a blocking input() there would hang a run that already finished."""
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        return
-    try:
-        answer = input("Generate a diagnostics report for this run? [Y/n] ").strip().lower()
-    except EOFError:
-        return
-    if answer not in ("", "y", "yes"):
-        return
-    run_diagnose_for(manifest, output_dir, base_url)
-
-
 def _maybe_offer_build_and_validate(config: SiteConfig, summary: RunSummary) -> None:
-    """Same reasoning as _maybe_offer_diagnostics: only prompts in a real
-    interactive terminal, since `acquire` is routinely launched unattended
-    and a blocking input() here would hang a run that already finished.
+    """Only prompts in a real interactive terminal, since `acquire` is
+    routinely launched unattended and a blocking input() here would hang a
+    run that already finished.
 
     Two separate prompts, not one bundled offer: `build` is disk-only,
     deterministic, and fast, so there is no real downside to offering it
@@ -1974,8 +1967,8 @@ def _dispatch(argv: list[str] | None) -> int:
     if not raw_argv:
         # Interactive picker in a real terminal; the old plain-text
         # overview otherwise (piped output, CI, a script capturing
-        # `wpfreeze`'s stdout) -- same isatty gate _maybe_offer_diagnostics/
-        # _maybe_offer_build_and_validate already use for "don't block on
+        # `wpfreeze`'s stdout) -- same isatty gate
+        # _maybe_offer_build_and_validate already uses for "don't block on
         # input() when nothing's there to answer it".
         if sys.stdin.isatty() and sys.stdout.isatty():
             from wpfreeze.picker import run_picker

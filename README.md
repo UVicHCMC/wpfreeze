@@ -448,7 +448,8 @@ wpfreeze --version                       # the installed version
 - **`diagnose`** writes `diagnostics.json` — a compact capture-integrity
   summary (duplicate local paths, disk/manifest hash mismatches,
   content-type/URL-shape collisions) from the existing manifest, no
-  network involved.
+  network involved. `acquire` already writes it at the end of every run,
+  so you need this only to regenerate it by hand.
 - **`report`** regenerates `report.html`/`report.json` from the existing
   manifest without touching the network at all.
 - **`status`** prints a one-screen summary: counts by status, how much is
@@ -562,7 +563,7 @@ site/assets/pagefind-search.js  the search-wiring script -- same condition
 build-report.json  build's own stats -- unresolved refs, verification, what policy stripped, what was cleaned up
 build-files.json   every file the last `build` wrote, so the next one can remove what it no longer produces
 vnu-report.json    HTML/CSS issues from `wpfreeze validate`
-diagnostics.json   capture-integrity summary from `wpfreeze diagnose`
+diagnostics.json   capture-integrity summary, written by every `acquire` (and `wpfreeze diagnose`)
 cleanup-todo.md    human-readable punch list synthesized from the three reports above
 cleanup-todo.html  the same, styled like report.html, with clickable links -- see below
 upload.sh          only after `wpfreeze upload-script` -- see "Previewing a build somewhere"
