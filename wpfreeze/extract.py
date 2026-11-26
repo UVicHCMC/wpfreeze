@@ -21,6 +21,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
+from wpfreeze.normalize import EDITOR_PASTE_ATTRS
 from wpfreeze.urlnorm import resolve_url, safe_urlsplit
 
 logger = logging.getLogger(__name__)
@@ -525,6 +526,8 @@ def extract_from_html(html: str, base_url: str) -> list[ExtractedLink]:
                 continue
             if is_interactivity_directive(attr_name):
                 continue
+            if attr_name in EDITOR_PASTE_ATTRS:
+                continue  # a pasted copy of href/src, or Gmail's redirect wrapper -- see normalize.py
             if "srcset" in attr_name.lower():
                 for url in _parse_srcset(attr_value):
                     add(url, RENDER, f"{name}[{attr_name}]")

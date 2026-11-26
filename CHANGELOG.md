@@ -5,6 +5,22 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.4] — 2026-11-26
+
+### Fixed
+
+- **Links to other sites go to those sites, not to stored copies.** Some
+  invisible attributes that come along with pasted content were read as
+  links to files the page needs: Gmail's `data-saferedirecturl` and
+  CKEditor's `data-cke-saved-href`. Acquisition then downloaded Google's
+  redirect pages and other sites' pages into the capture. The build
+  pointed visitors at those frozen copies instead of the real pages: a
+  publisher's book page on one site, and a newspaper op-ed, a survey and
+  YouTube videos in a video block on another. Acquisition now ignores
+  these attributes, the build removes them from pages, and the build never
+  stores another site's page or links to a copy of one. Existing captures
+  are fixed by rebuilding; no new `acquire` is needed.
+
 ## [1.3.3] — 2026-11-26
 
 ### Fixed

@@ -68,6 +68,19 @@ _FORBIDDEN_CONTROLS = frozenset(
 )
 
 
+# Attributes an editor or mail client stamps onto pasted content. Each is a
+# copy of, or a tracking wrapper around, the element's real href/src, and
+# nothing on a static site reads them: Gmail's `data-saferedirecturl` (a
+# google.com/url?q=... redirect carrying the original reader's mail
+# session, pasted along with any link copied out of an email) and
+# CKEditor's `data-cke-saved-*` shadows of href/src/name. Acquisition
+# skips them too (extract.py) -- read as links, they fetched Google's
+# redirect pages and other sites' pages into the capture.
+EDITOR_PASTE_ATTRS: frozenset[str] = frozenset(
+    {"data-saferedirecturl", "data-cke-saved-href", "data-cke-saved-src", "data-cke-saved-name"}
+)
+
+
 @dataclass
 class NormalizeStats:
     word_artifacts_unwrapped: int = 0
@@ -75,6 +88,7 @@ class NormalizeStats:
     control_chars_stripped: int = 0
     invalid_dimensions_removed: int = 0
     boolean_attrs_normalized: int = 0
+    editor_paste_attrs_removed: int = 0
 
     @property
     def total(self) -> int:
@@ -84,6 +98,7 @@ class NormalizeStats:
             + self.control_chars_stripped
             + self.invalid_dimensions_removed
             + self.boolean_attrs_normalized
+            + self.editor_paste_attrs_removed
         )
 
 
@@ -95,6 +110,13 @@ def _unwrap_word_artifacts(soup: BeautifulSoup, stats: NormalizeStats) -> None:
     for tag in soup.find_all(lambda t: t.name and t.name.startswith("o:")):
         tag.unwrap()
         stats.word_artifacts_unwrapped += 1
+
+
+def _strip_editor_paste_attrs(soup: BeautifulSoup, stats: NormalizeStats) -> None:
+    for tag in soup.find_all(lambda t: any(a in EDITOR_PASTE_ATTRS for a in t.attrs)):
+        for attr in [a for a in tag.attrs if a in EDITOR_PASTE_ATTRS]:
+            del tag[attr]
+            stats.editor_paste_attrs_removed += 1
 
 
 def _strip_obsolete_attrs(soup: BeautifulSoup, stats: NormalizeStats) -> None:
@@ -157,6 +179,7 @@ def apply_normalizations(soup: BeautifulSoup, stats: NormalizeStats) -> None:
     """Apply every mechanical repair to a parsed document, in place."""
     _unwrap_word_artifacts(soup, stats)
     _strip_obsolete_attrs(soup, stats)
+    _strip_editor_paste_attrs(soup, stats)
     _strip_control_chars(soup, stats)
     _strip_invalid_dimensions(soup, stats)
     _normalize_boolean_attrs(soup, stats)

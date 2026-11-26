@@ -132,3 +132,14 @@ def test_stats_total_sums_every_category():
         '<iframe allowfullscreen="yes"></iframe>'
     )
     assert stats.total == 5
+
+
+def test_editor_paste_attrs_are_removed():
+    soup, stats = _run(
+        '<a href="https://example.org/" data-saferedirecturl="https://www.google.com/url?q=x">a</a>'
+        '<a href="x.html" data-cke-saved-href="x.html" data-id="7">b</a>'
+    )
+    html = str(soup)
+    assert "saferedirecturl" not in html and "data-cke-saved" not in html
+    assert 'data-id="7"' in html and 'href="https://example.org/"' in html
+    assert stats.editor_paste_attrs_removed == 2

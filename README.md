@@ -651,6 +651,10 @@ touching the capture, so re-running is always safe. In that tree:
 - WordPress.com `/_static/??…` concat bundles are reassembled into local
   CSS/JS files under `assets/bundles/`.
 - Links to WordPress attachment pages are redirected to the media they wrap.
+- Links to **other sites' pages** stay links to those sites. If the capture
+  holds a copy of another site's page (an older capture can: see
+  CHANGELOG 1.3.4), it is left out of `site/`, while other sites' *assets*
+  (fonts, images, scripts the pages load) are still stored locally.
 - The acquisition-generated redirect map is copied to `site/.htaccess`.
 - A **subdirectory install** (a multisite subsite at
   `example.com/subsite/`, say) gets its home page at `site/index.html`;

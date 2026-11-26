@@ -616,3 +616,17 @@ def test_hostless_double_slash_is_not_url_shaped():
     assert not any(u.startswith("//#") for u in found), found
     assert "//cdn.example.com/x.js" in found
     assert "//[2001:db8::1]/y.png" in found
+
+
+def test_editor_paste_attrs_are_not_read_as_urls():
+    """Real case (landscapesofinjustice.com): links pasted from Gmail carry
+    data-saferedirecturl (a google.com/url redirect), and CKEditor stamps
+    data-cke-saved-href. Read as data-* asset URLs, they fetched Google's
+    redirect pages and the linked site's page into the capture."""
+    html = (
+        '<a href="https://example.org/a" data-saferedirecturl="https://www.google.com/url?q=https://example.org/a&source=gmail">a</a>'
+        '<a href="https://www.mqup.ca/Books/W/X" data-cke-saved-href="https://www.mqup.ca/Books/W/X">b</a>'
+        '<img src="https://example.com/wp-content/uploads/i.jpg" data-cke-saved-src="https://example.com/wp-content/uploads/i.jpg">'
+    )
+    urls = [l.url for l in extract_from_html(html, BASE) if l.kind == RENDER]
+    assert not any("google.com" in u or "mqup.ca" in u for u in urls)

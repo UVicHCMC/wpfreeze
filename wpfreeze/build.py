@@ -191,6 +191,9 @@ class BuildStats:
     bundle_components_missing: int = 0
     attachment_links_retargeted: int = 0
     redirects_copied: bool = False
+    # Other sites' web pages in the capture, left out of the build; links
+    # to them stay pointed at the real thing. See is_foreign_page.
+    foreign_pages_skipped: int = 0
     policy: PolicyStats = field(default_factory=PolicyStats)
     normalize: NormalizeStats = field(default_factory=NormalizeStats)
     dedupe: DedupeStats = field(default_factory=DedupeStats)
@@ -288,6 +291,42 @@ def lookup_variants(url: str, *, owned: bool = True) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def record_is_owned(record: ManifestRecord, profile) -> bool:
+    """Whether `record` lives on the site being archived (its own hosts,
+    including configured extra_hosts) rather than somewhere it links to."""
+    if profile is not None:
+        return profile.owns_host((urlsplit(record.url).hostname or "").lower())
+    # Pre-schema-2 manifest, no persisted profile to ask -- fall back to the
+    # same signal outputs.compute_output_paths itself used to decide this
+    # record's bucket: an external record's output_path always lands under
+    # /assets/ (external_output_path), an internal one never does
+    # (page-shaped, or an already-file-like asset path preserved as-is).
+    return not (record.output_path or "").startswith("/assets/")
+
+
+def is_foreign_page(record: ManifestRecord, owned: bool) -> bool:
+    """A web page on another site. Never written into the archive, and
+    never a link target: a link to another site's page means "go there",
+    and a frozen copy served from this site's domain is neither that page
+    nor part of this site. Such records reach a capture only by mistake --
+    a URL read out of an attribute that wasn't really a link to an asset
+    (see normalize.EDITOR_PASTE_ATTRS) -- but captures made before that was
+    fixed still hold them, and this keeps them out of the build without a
+    fresh acquire. Other sites' *assets* (fonts, images, scripts the pages
+    load) are still localized as before."""
+    if owned:
+        return False
+    # Acquisition files a recognisable asset under a typed bucket
+    # (/assets/css/external/, /assets/img/external/, ...) and anything else
+    # under the generic /assets/external/. Requiring the generic bucket as
+    # well as an HTML content type keeps a mislabelled stylesheet (a server,
+    # or a Wayback snapshot, calling Google Fonts' CSS text/html) an asset.
+    if not (record.output_path or "").startswith("/assets/external/"):
+        return False
+    content_type = (record.content_type or "").split(";")[0].strip().lower()
+    return content_type in _HTML_TYPES
+
+
 def build_record_lookup(manifest: Manifest) -> dict[str, ManifestRecord]:
     """Map every spelling of every fetched resource to its manifest record.
 
@@ -305,16 +344,9 @@ def build_record_lookup(manifest: Manifest) -> dict[str, ManifestRecord]:
     for record in manifest.all():
         if record.status not in _FETCHED_STATUSES or not record.output_path:
             continue
-        if profile is not None:
-            owned = profile.owns_host((urlsplit(record.url).hostname or "").lower())
-        else:
-            # Pre-schema-2 manifest, no persisted profile to ask -- fall
-            # back to the same signal outputs.compute_output_paths itself
-            # used to decide this record's bucket: an external record's
-            # output_path always lands under /assets/ (external_output_path),
-            # an internal one never does (page-shaped, or an already-file-
-            # like asset path preserved as-is).
-            owned = not record.output_path.startswith("/assets/")
+        owned = record_is_owned(record, profile)
+        if is_foreign_page(record, owned):
+            continue  # links to it stay links to the other site -- see is_foreign_page
         add(record.url, record, owned)
         for alias in record.aliases:
             add(alias, record, owned)
@@ -960,6 +992,9 @@ def build_site(
             progress.tick(detail=record.url)
         if record.status not in _FETCHED_STATUSES or not record.output_path:
             continue
+        if is_foreign_page(record, record_is_owned(record, manifest.site_profile)):
+            stats.foreign_pages_skipped += 1
+            continue
         source = output_dir / record.local_path if record.local_path else None
         if source is None or not source.exists():
             logger.warning("build: missing file on disk for %s", record.url)
@@ -1283,6 +1318,11 @@ def format_build_summary(stats: BuildStats) -> str:
     ]
     if stats.unresolved:
         lines.append("  (unresolved references are left pointing at the original site)")
+    if stats.foreign_pages_skipped:
+        lines.append(
+            f"  {stats.foreign_pages_skipped} other site's page(s) in the capture left out; "
+            "links to them go to the real site"
+        )
     p = stats.policy
     if p.telemetry_removed or p.forms_removed or p.feeds_removed or p.wp_meta_links_removed:
         lines.append(
@@ -1327,6 +1367,7 @@ def format_build_summary(stats: BuildStats) -> str:
             f"{n.obsolete_attrs_removed} obsolete attribute(s), "
             f"{n.control_chars_stripped} forbidden control char(s), "
             f"{n.invalid_dimensions_removed} invalid dimension(s), "
-            f"{n.boolean_attrs_normalized} boolean attribute(s)"
+            f"{n.boolean_attrs_normalized} boolean attribute(s), "
+            f"{n.editor_paste_attrs_removed} pasted editor/Gmail attribute(s)"
         )
     return "\n".join(lines)

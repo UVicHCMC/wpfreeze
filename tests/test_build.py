@@ -1319,3 +1319,38 @@ def test_attachment_id_alias_links_retarget_too(tmp_path: Path):
     )
     assert stats.attachment_links_retargeted == 1
     assert 'href="wp-content/uploads/2019/n.pdf"' in out
+
+
+# --- other sites' pages in the capture ------------------------------------
+
+
+def test_other_sites_pages_are_neither_written_nor_linked(tmp_path: Path):
+    """Real cases: a publisher's book page (LOI), a newspaper op-ed and a
+    survey (JCLS), YouTube watch pages behind a video block's data-video.
+    A captured copy of another site's page is not part of this site, and
+    a link to it means "go there"."""
+    output_dir, site_dir = tmp_path / "capture", tmp_path / "site"
+    manifest = Manifest()
+    home = _fetched(manifest, f"{BASE}/", "/index.html")
+    book = _fetched(manifest, "https://www.mqup.ca/Books/W/X", "/assets/external/www.mqup.ca/X")
+    font = _fetched(manifest, "https://fonts.example.net/f.css", "/assets/css/external/f.css", content_type="text/css")
+    _write(output_dir, book, b"<html><body>publisher</body></html>")
+    _write(output_dir, font, b"body{}")
+    _write(
+        output_dir, home,
+        b'<link rel="stylesheet" href="https://fonts.example.net/f.css">'
+        b'<a href="https://www.mqup.ca/Books/W/X">Witness</a>'
+        b'<div data-video="https://www.mqup.ca/Books/W/X"></div>',
+    )
+
+    stats = build_site(manifest, output_dir, site_dir)
+
+    out = (site_dir / "index.html").read_text()
+    assert 'href="https://www.mqup.ca/Books/W/X"' in out
+    assert 'data-video="https://www.mqup.ca/Books/W/X"' in out
+    assert not (site_dir / "assets/external/www.mqup.ca").exists()
+    assert stats.foreign_pages_skipped == 1
+    # Other sites' assets are still localized.
+    assert 'href="assets/css/external/f.css"' in out
+    assert (site_dir / "assets/css/external/f.css").exists()
+    assert stats.unresolved == 0
