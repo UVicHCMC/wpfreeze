@@ -849,6 +849,12 @@ every page.
   handled; verification reports anything else still pointing at the page.
 - **`site.unwrap_links_to(url_regex, pages=None)`** -- turn every link whose
   `href` matches the regular expression back into plain text.
+- **`site.add_css(css, pages=None)`** -- append a `<style>` block to the
+  end of each page's `<head>`, after the theme's own stylesheets. For fixing
+  a layout bug in the original theme (a menu overlapping the logo, say),
+  where one rule fixes every page. Unlike the other helpers it can't "match
+  nothing", so it never fails for that reason. Check the result in a
+  browser.
 - **`site.replace(page, old, new)`** -- exact text replacement in one page's
   **HTML**, not its visible text: copy `old` from the built file under
   `site/`. It must occur exactly once.

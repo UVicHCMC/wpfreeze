@@ -445,3 +445,36 @@ def test_ledger_across_builds_with_and_without_the_hook(tmp_path: Path):
     run_build(dataclasses.replace(config, customize=False), None, verify=False)
     assert (out / "site" / "contact.html").exists()
     assert _report(out)["prune"]["untracked"] == []
+
+
+def test_add_css_appends_to_head_of_every_page(tmp_path: Path):
+    site_dir = _site(tmp_path)
+    site = Site(site_dir)
+    site.add_css("#et-top-navigation { padding-left: 386px !important; }")
+    stats = site.commit()
+    for rel in ("index.html", "contact.html", "news/post.html", "thanks.html"):
+        head = _read(site_dir, rel).split("</head>")[0]
+        assert "<style data-wpfreeze-customize=\"\">" in head
+        assert "padding-left: 386px" in head
+    assert len(stats.pages_changed) == 4
+
+
+def test_add_css_lands_after_existing_styles(tmp_path: Path):
+    site_dir = _site(tmp_path)
+    (site_dir / "styled.html").write_text(
+        "<html><head><style>a{color:red}</style><link rel=stylesheet href=x.css></head><body></body></html>",
+        encoding="utf-8",
+    )
+    site = Site(site_dir)
+    site.add_css("a{color:blue}", pages=["styled.html"])
+    site.commit()
+    text = _read(site_dir, "styled.html")
+    assert text.index("color:blue") > text.index("x.css") > text.index("color:red")
+
+
+def test_add_css_rejects_empty_or_style_breaking_css(tmp_path: Path):
+    site = Site(_site(tmp_path))
+    with pytest.raises(CustomizeError, match="empty"):
+        site.add_css("  ")
+    with pytest.raises(CustomizeError, match="</style"):
+        site.add_css("a{}</style><script>")

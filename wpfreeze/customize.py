@@ -294,6 +294,32 @@ class Site:
         self._require_matches(action, targets, explicit, f"no link matching {url_regex!r}")
         self.actions.append(action)
 
+    def add_css(self, css: str, pages: list[str] | str | None = None) -> None:
+        """Append a `<style>` block holding `css` to the end of each page's
+        `<head>`, after the theme's own stylesheets, so it wins ties. For
+        fixing the original theme's layout bugs, not for restyling. With
+        `pages` omitted, every page."""
+        if not css.strip():
+            raise CustomizeError("add_css: empty CSS")
+        if "</style" in css.lower():
+            raise CustomizeError("add_css: CSS must not contain '</style'")
+        targets, _ = self._select(pages)
+        action = CustomizeAction("add_css", repr(_sample(css)) + (f", pages={pages!r}" if pages is not None else ""))
+        for rel in targets:
+            soup = self._page(rel).soup()
+            head = soup.head
+            if head is None:  # html5lib always supplies one; belt and braces
+                raise CustomizeError(f"add_css: {rel} has no <head>")
+            style = soup.new_tag("style")
+            style["data-wpfreeze-customize"] = ""
+            style.string = "\n" + css.strip() + "\n"
+            head.append(style)
+            self._page(rel).dirty = True
+            action.matches += 1
+            self._record(action, rel)
+        action.samples.append(_sample(css))
+        self.actions.append(action)
+
     def replace(self, page: str, old: str, new: str) -> None:
         """Replace `old` with `new` in one page's HTML. `old` is markup,
         not visible text -- copy it from the built file under `site/` --

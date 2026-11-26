@@ -5,6 +5,15 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-11-26
+
+### Added
+
+- **`customize.py` can add CSS.** `site.add_css(css, pages=None)` appends a
+  `<style>` block to the end of each page's `<head>`, after the theme's own
+  stylesheets, to fix a layout bug in the original theme across the whole
+  site. See "Customizing a build" in the README.
+
 ## [1.2.0] — 2026-11-26
 
 ### Added
