@@ -5,6 +5,21 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-11-26
+
+### Added
+
+- **A site owner's last-minute edits now survive every rebuild.** Put them
+  in `<output_dir>/customize.py`: remove elements by CSS selector, delete a
+  page along with every link and redirect to it, unwrap links, or replace
+  one passage of HTML. `build` runs the script straight after writing the
+  pages, so verification, the search index and the reports all describe
+  the customized site. Set `customize: true` in the site's config to run it
+  every time, or `false` to never run it. With the key absent, `build`
+  asks, and if it can't ask, it skips the script and says so. Any edit that
+  matches nothing stops the build with the site unchanged, and every edit
+  prints what it matched. See "Customizing a build" in the README.
+
 ## [1.1.2] — 2026-11-25
 
 ### Fixed

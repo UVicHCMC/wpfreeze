@@ -64,6 +64,7 @@ from wpfreeze.urlnorm import (
 if TYPE_CHECKING:
     from wpfreeze.cli import SearchSettings
     from wpfreeze.prune import PruneReport
+    from wpfreeze.customize import CustomizeStats
     from wpfreeze.progress import Progress
 
 logger = logging.getLogger(__name__)
@@ -1156,6 +1157,7 @@ def write_build_report(
     verify: "VerifyReport | None" = None,
     content_issues: ContentIssues | None = None,
     prune: "PruneReport | None" = None,
+    customize: "CustomizeStats | None" = None,
 ) -> Path:
     """Persist build stats to build-report.json, mirroring
     validate.write_validation_report. Makes this run's findings --
@@ -1200,6 +1202,11 @@ def write_build_report(
         }
     )
     data["content_issues"] = None if content_issues is None else asdict(content_issues)
+    # None: no customize.py exists. Otherwise ran/declined/unattended/
+    # disabled, with what it did when it ran -- so anyone reading the report
+    # knows site/ was deliberately altered after the build, and by which
+    # version of the script (sha256).
+    data["customize"] = None if customize is None or customize.reason is None else asdict(customize)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return path
 

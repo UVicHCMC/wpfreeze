@@ -71,6 +71,77 @@ def _load_json(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _customize_section(build_report: dict | None) -> tuple[list[str], bool]:
+    """Whether customize.py changed the site after the build (see
+    customize.py). Comes first among the build sections: every other one
+    describes the customized site when it ran, and a reader comparing the
+    site against the capture needs to know that before anything else.
+
+    Needs attention only when a script exists and didn't run because the
+    build couldn't ask -- an uncustomized site shipped by accident is the
+    one outcome here worth stopping for. Declined and disabled were
+    someone's deliberate choice, so they are noted, not flagged.
+    """
+    if build_report is None:
+        return ([], False)
+    info = build_report.get("customize")
+    if not info:
+        return ([], False)
+
+    reason = info.get("reason")
+    if reason == "unattended":
+        return (
+            [
+                "## Customization script NOT run",
+                "",
+                "`customize.py` exists but this build couldn't ask whether to run it, and the "
+                "config doesn't say, so **the site is uncustomized**: the owner's requested "
+                "changes are not in it. Set `customize: true` (or `customize: false`) in the "
+                "site's config and rebuild.",
+                "",
+            ],
+            True,
+        )
+    if reason == "declined":
+        return (
+            ["## Customization script skipped", "", "`customize.py` exists but was declined for this build; the site is uncustomized.", ""],
+            False,
+        )
+    if reason == "disabled":
+        return (
+            ["## Customization script disabled", "", "`customize.py` exists but the config sets `customize: false`; the site is uncustomized.", ""],
+            False,
+        )
+    if not info.get("ran"):
+        return ([], False)
+
+    actions = info.get("actions") or []
+    changed = info.get("pages_changed") or []
+    deleted = info.get("pages_deleted") or []
+    lines = [
+        "## Customized after build",
+        "",
+        f"`customize.py` changed this site after the build: {len(actions)} action(s), "
+        f"{len(changed)} page(s) edited, {len(deleted)} deleted. Everything else in this "
+        "checklist describes the customized site. `checklinks` output (owner-tasks' "
+        "external-link section, `broken-external-links.*`) is from whenever it last ran -- "
+        "rerun `wpfreeze checklinks` if that was before this build.",
+        "",
+    ]
+    for action in actions:
+        lines.append(
+            f"- `{action.get('helper')}({action.get('args')})`: {action.get('matches', 0)} match(es) "
+            f"on {len(action.get('pages_changed') or [])} page(s)"
+        )
+    lines.append("")
+    if deleted:
+        lines.append("Deleted pages:")
+        lines.append("")
+        lines.extend(f"- `{page}`" for page in deleted)
+        lines.append("")
+    return (lines, False)
+
+
 def _site_link(output_path: str) -> str:
     """A path relative to cleanup-todo's own location (output_dir) into the
     built site, or "" if there's no output path to link to (an older
@@ -764,6 +835,7 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
         return None
 
     integrity_lines, integrity_needs_attention = _integrity_section(diagnostics)
+    customize_lines, customize_needs_attention = _customize_section(build_report)
     broken_lines, broken_needs_attention = _broken_reference_section(build_report)
     verify_lines, verify_needs_attention = _verification_section(build_report)
     excised_lines, excised_needs_attention = _excised_content_section(build_report)
@@ -775,6 +847,7 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
     markup_needs_attention = bool(vnu_report and vnu_report.get("issues"))
     broken_needs_attention = (
         broken_needs_attention
+        or customize_needs_attention
         or verify_needs_attention
         or excised_needs_attention
         or kept_search_needs_attention
@@ -826,6 +899,7 @@ def build_cleanup_todo(output_dir: Path) -> str | None:
         "",
     ]
     lines.extend(integrity_lines)
+    lines.extend(customize_lines)
     lines.extend(broken_lines)
     lines.extend(verify_lines)
     lines.extend(excised_lines)

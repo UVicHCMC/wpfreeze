@@ -35,6 +35,9 @@ web scraper and makes no attempt to be polite to sites it doesn't own.
   attachment-page links are redirected to the media they wrap, and the whole
   tree is verified — every local reference is resolved against a real file on
   disk before the command returns. See "Building a servable site" below.
+- **Also does**: apply a site owner's last-minute edits ("remove the
+  header email, delete the contact page") to every build, from a short
+  per-project `customize.py`. See "Customizing a build" below.
 - **Does not**: execute JavaScript. Link discovery and rewriting are
   markup-based, so anything a script constructs at runtime (a gallery that
   builds image URLs in JS, a JS-only navigation path) is neither captured nor
@@ -429,6 +432,9 @@ wpfreeze --version                       # the installed version
   (re)generates the cleanup checklist (see "The cleanup checklist" below)
   unless `--no-todo` is passed, and, when `search.enabled` is set in the
   config, builds the offline search index (see "Offline search" below).
+  If `<output_dir>/customize.py` exists, it runs the site owner's edits
+  before verifying (see "Customizing a build" below). Exits 2 if that script
+  fails or matches nothing, with the site left as built.
 - **`validate`** checks the built site's HTML/CSS with the [Nu Html
   Checker](https://validator.github.io/validator/) and writes
   `vnu-report.json`. Informational only — these are defects in the
@@ -560,6 +566,7 @@ diagnostics.json   capture-integrity summary from `wpfreeze diagnose`
 cleanup-todo.md    human-readable punch list synthesized from the three reports above
 cleanup-todo.html  the same, styled like report.html, with clickable links -- see below
 upload.sh          only after `wpfreeze upload-script` -- see "Previewing a build somewhere"
+customize.py       yours, never generated -- owner-requested edits applied by `build` (see "Customizing a build")
 preview/           only after `upload.sh --local` -- site + reports, assembled for local browsing
 external-links.json       only after `wpfreeze checklinks` -- the page -> external-URL list it found
 broken-external-links.md  only after `wpfreeze checklinks` -- broken links, grouped by internal page
@@ -783,6 +790,108 @@ into a script that also did real work, that script goes too. This isn't seen
 on real WordPress (tracking is injected as its own dedicated blocks), but
 it's the deliberate cost of stripping everything rather than editing script
 internals.
+
+## Customizing a build
+
+Sooner or later a site owner says "we're done -- except for these little
+adjustments": take the email out of the header, delete the contact page,
+drop the social-media icons, reword one sentence. Those are one owner's
+editorial choices, not anything wpfreeze should do to other sites, and
+hand-editing `site/` doesn't stick: the next `build` overwrites it.
+
+Instead, put them in `<output_dir>/customize.py` (beside `upload.sh`; you
+write it, wpfreeze never does). It defines one function:
+
+```python
+def customize(site):
+    site.remove("#top-header")                          # every page
+    site.delete_page("contact.html")
+    site.remove('.et_pb_row:-soup-contains("Follow us")', pages=["index.html"])
+    site.unwrap_links_to(r"^https?://(www\.)?twitter\.com/", pages=["news/launch.html"])
+    site.replace("about.html", "website</a>, facebook page or", "website</a> or")
+```
+
+`build` runs it **straight after the pages are written, before
+verification, search indexing, pruning and the reports**, so the link
+check, the Pagefind index and the cleanup checklist all describe the site
+as it will ship.
+
+### Whether it runs
+
+| In the site's YAML | `customize.py` exists | What `build` does |
+|---|---|---|
+| `customize: true` | yes | runs it |
+| `customize: true` | no | stops with an error (exit 2) -- the config says the site isn't finished without it |
+| `customize: false` | either | never runs it, never asks |
+| key absent | yes | asks: *Found customize.py. Run it before verifying and indexing? [y/N]* |
+| key absent | yes, but nobody to ask | doesn't run it, and says so loudly in the output and the cleanup checklist |
+
+"Nobody to ask" is output that isn't a terminal (a pipe, a cron job) or
+`freeze.unattended: true`. Once a site's script is settled, set
+`customize: true` so it never depends on someone answering. The value must
+be an unquoted YAML `true`/`false`.
+
+### The helpers
+
+Paths are relative to `site/`, exactly as the files appear there. `pages=`
+takes a path, a list of paths, or globs (`"news/*"`); omitted, it means
+every page.
+
+- **`site.remove(selector, pages=None)`** -- delete every element matching
+  a CSS selector. Any selector BeautifulSoup supports works, including
+  `:-soup-contains("some text")`.
+- **`site.delete_page(page, redirect_to=None)`** -- delete a page and every
+  link to it. A link that is the only thing in a list item (a menu entry)
+  takes the item with it; any other link is unwrapped, keeping its text.
+  In `site/.htaccess`, redirects to the page are dropped so its old
+  addresses return 404 -- or, with `redirect_to="index.html"`, they and the
+  page's own address redirect there instead. Only `<a>` links are
+  handled; verification reports anything else still pointing at the page.
+- **`site.unwrap_links_to(url_regex, pages=None)`** -- turn every link whose
+  `href` matches the regular expression back into plain text.
+- **`site.replace(page, old, new)`** -- exact text replacement in one page's
+  **HTML**, not its visible text: copy `old` from the built file under
+  `site/`. It must occur exactly once.
+
+Edits apply in the order written. A later call sees the result of an
+earlier one, so a `replace` after a `remove` on the same page sees the
+markup with that element already gone.
+
+### When something doesn't match
+
+**A helper that matches nothing is an error, and the build stops (exit 2)**
+with nothing changed: no page is written until the whole script has
+succeeded. The capture is frozen, so rebuilding gives the same pages every
+time, and a selector that stops matching means the script is wrong.
+Quietly carrying on would ship exactly the content the owner asked to have
+removed. With `pages=` naming specific pages, *each* named page must match.
+`delete_page` is the exception: a page nothing links to is normal, so it
+fails only when the page doesn't exist.
+
+Matching the *wrong* thing is the subtler risk, so every action prints the
+first words of what it matched:
+
+```
+Customized (customize.py): 12 action(s), 513 page(s) changed, 3 deleted
+  remove('.et_pb_row:-soup-contains("Follow Us on Social Medias")', pages=['index.html']): 1 match(es) on 1 page(s)
+      'Follow Us on Social Medias'
+```
+
+Read that list after the first build with a new script. Page builders
+make it necessary. Divi's `et_pb_row_8` is "the eighth row *on this
+page*", so the same class names a different element on every page. Match
+on content (`:-soup-contains`) or name the page.
+
+### What it records
+
+`build-report.json` gets a `customize` entry: whether the script ran (or
+why not), its SHA-256 so you can tell which version made the site, and
+every action with its matches. The cleanup checklist says up front that
+the site was customized after the build. Build findings on a deleted page
+(unresolved links, removed forms) are dropped from the report so nobody is
+asked to fix a page that no longer exists. `checklinks` results are not
+regenerated by `build`, so rerun `wpfreeze checklinks` if they predate the
+customization.
 
 ## Previewing a build somewhere
 

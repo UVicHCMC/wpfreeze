@@ -8,6 +8,7 @@ import logging
 import re
 import sys
 import time
+import traceback
 from collections import Counter
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -57,6 +58,14 @@ from wpfreeze.outputs import compute_output_paths, generate_redirects_htaccess
 from wpfreeze.policy import Policy
 from wpfreeze.progress import Progress
 from wpfreeze.projects import AmbiguousProject, ProjectNotFound, resolve_project, validate_name
+from wpfreeze.customize import (
+    SCRIPT_NAME as CUSTOMIZE_SCRIPT_NAME,
+    CustomizeError,
+    CustomizeStats,
+    format_customize_summary,
+    run_customize_script,
+    script_path as customize_script_path,
+)
 from wpfreeze.prune import format_prune_summary, load_ledger, prune_site, write_ledger
 from wpfreeze.report import assess_dry_run, format_readiness, inventory_records, write_report_html, write_report_json
 from wpfreeze.rescan import format_rescan_summary, rescan
@@ -142,9 +151,11 @@ class FreezeSettings:
     steps: tuple[str, ...] = DEFAULT_FREEZE_STEPS
     # `freeze.unattended: true` makes freeze behave in a real terminal
     # exactly as it already does when its output is piped: it never asks a
-    # question. Both of freeze's prompts are suppressed -- the
-    # resume confirmation (it resumes) and the end-of-run checklinks offer
-    # (it does not run, unless `checklinks` is a declared step). For a
+    # question. All of freeze's prompts are suppressed -- the
+    # resume confirmation (it resumes), build's "run customize.py?" (it
+    # doesn't, unless the config sets `customize: true`), and the
+    # end-of-run checklinks offer (it does not run, unless `checklinks` is
+    # a declared step). For a
     # genuinely hands-off full run, set this AND list `checklinks` in
     # `steps`. Default False: an interactive operator is better served by
     # being asked, which is why the prompts exist.
@@ -262,6 +273,10 @@ class SiteConfig:
     upload: UploadSettings = field(default_factory=UploadSettings)  # upload.sh destination; see `upload-script`
     search: SearchSettings = field(default_factory=SearchSettings)  # offline search (Pagefind); see `search-index`
     freeze: FreezeSettings = field(default_factory=FreezeSettings)  # what `wpfreeze freeze` runs, and in what order
+    # Whether `build` runs <output_dir>/customize.py (see customize.py):
+    # True runs it, False never does, None (key absent) asks when the
+    # file exists. Tri-state on purpose -- absent is not the same as False.
+    customize: bool | None = None
 
 
 def _parse_date(value) -> date:
@@ -351,6 +366,12 @@ def load_config(path: Path) -> SiteConfig:
     freeze_unattended = bool(freeze_raw.get("unattended", False))
     freeze = FreezeSettings(steps=freeze_steps, unattended=freeze_unattended)
 
+    # Strictly a YAML boolean: a quoted "false" is a truthy string, and
+    # bool() on it would run a script the config meant to switch off.
+    customize = raw.get("customize")
+    if customize is not None and not isinstance(customize, bool):
+        raise ConfigError(f"customize: must be true or false (unquoted), got {customize!r}")
+
     return SiteConfig(
         base_url=raw["base_url"].rstrip("/") + "/",
         output_dir=Path(raw["output_dir"]),
@@ -374,6 +395,7 @@ def load_config(path: Path) -> SiteConfig:
         ),
         search=search,
         freeze=freeze,
+        customize=customize,
     )
 
 
@@ -878,8 +900,13 @@ def run_build(
     write_todo: bool = True,
     *,
     print_wrapup: bool = True,
+    interactive: bool = True,
 ) -> int:
     """Emit the rewritten, servable site from an existing capture.
+
+    `interactive` False means never ask a question even in a real terminal
+    (`freeze.unattended`); the only one `build` asks today is whether to
+    run customize.py.
 
     Reads only; writes only into the site directory. Never touches raw/,
     so it is safe to re-run as often as the policy flags change.
@@ -895,7 +922,7 @@ def run_build(
     host = urlsplit(config.base_url).hostname or config.base_url
     with Progress(f"Building {host}") as progress:
         exit_code = time_step(
-            summary, "build", lambda: _run_build_body(config, manifest, target, verify, write_todo, progress)
+            summary, "build", lambda: _run_build_body(config, manifest, target, verify, write_todo, progress, interactive)
         )
     if print_wrapup:
         print(format_wrapup(summary))
@@ -903,7 +930,13 @@ def run_build(
 
 
 def _run_build_body(
-    config: SiteConfig, manifest: Manifest, target: Path, verify: bool, write_todo: bool, progress: "Progress | None"
+    config: SiteConfig,
+    manifest: Manifest,
+    target: Path,
+    verify: bool,
+    write_todo: bool,
+    progress: "Progress | None",
+    interactive: bool = True,
 ) -> int:
     # Captured before build_site writes anything, so verify_site can tell
     # this run's own output apart from whatever else might already be
@@ -916,7 +949,26 @@ def _run_build_body(
     )
     if progress is not None:
         progress.finish()
+
+    # Straight after the pages are written and before anything reads them
+    # back -- verification, Pagefind, prune's ledger, the reports -- so all
+    # of those describe the site as it will ship, not as build_site left it.
+    try:
+        customize_stats = _maybe_run_customize(config, target, interactive)
+    except CustomizeError as exc:
+        print(f"{CUSTOMIZE_SCRIPT_NAME}: {exc}\nNothing in {target} was changed by it; the build stopped here.")
+        return 2
+    except Exception:
+        # A bug in the script itself: its own traceback (file and line in
+        # customize.py) is the useful part, so show it in full.
+        traceback.print_exc()
+        print(f"{CUSTOMIZE_SCRIPT_NAME} raised an error (above); nothing in {target} was changed by it, the build stopped here.")
+        return 2
+    if customize_stats.ran:
+        _drop_deleted_pages_from_stats(stats, customize_stats.pages_deleted)
     print(format_build_summary(stats))
+    if customize_stats.ran:
+        print(format_customize_summary(customize_stats))
     print(f"Site written to {target}")
 
     # Verification runs before the report is written, not after: its
@@ -980,7 +1032,7 @@ def _run_build_body(
     if prune_summary:
         print(prune_summary)
 
-    write_build_report(stats, config.output_dir, verify_report, content_issues, prune_report)
+    write_build_report(stats, config.output_dir, verify_report, content_issues, prune_report, customize_stats)
 
     if write_todo:
         _announce_cleanup_todo(config.output_dir)
@@ -991,6 +1043,78 @@ def _run_build_body(
     # hijacked search form and no index behind it is a failed build, not a
     # warning.
     return 1 if (stats.unresolved or broken or (search_result is not None and not search_result.ok)) else 0
+
+
+def _maybe_run_customize(config: SiteConfig, target: Path, interactive: bool) -> CustomizeStats:
+    """Decide whether <output_dir>/customize.py runs this build, and run
+    it if so. See customize.py for what the script is; the decision table:
+
+        customize: true   -> run (missing file is a CustomizeError)
+        customize: false  -> never run, never ask
+        key absent        -> ask in a real terminal; unattended, skip loudly
+    """
+    script = customize_script_path(config.output_dir)
+    stats = CustomizeStats()
+    if not script.is_file():
+        if config.customize:
+            raise CustomizeError(
+                f"{config.name}.yaml sets `customize: true` but {script} does not exist. "
+                "Create it (see the README's \"Customizing a build\" section) or remove the key."
+            )
+        return stats
+
+    stats.script = str(script)
+    if config.customize is False:
+        stats.reason = "disabled"
+        return stats
+    if config.customize is None:
+        if not (interactive and sys.stdin.isatty() and sys.stdout.isatty()):
+            print(
+                f"WARNING: {script} exists but was NOT run: this build can't ask whether to, and\n"
+                f"  {config.name}.yaml doesn't say. The site is uncustomized. Set `customize: true`\n"
+                "  (or `customize: false`) in the config to decide once."
+            )
+            stats.reason = "unattended"
+            return stats
+        try:
+            answer = input(f"Found {CUSTOMIZE_SCRIPT_NAME}. Run it before verifying and indexing? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            print(
+                f"Skipped {CUSTOMIZE_SCRIPT_NAME}. To decide once, set in {config.name}.yaml:\n"
+                "    customize: true     # always run it\n"
+                "    customize: false    # never run it, and stop asking"
+            )
+            stats.reason = "declined"
+            return stats
+        print(f"To stop being asked, set `customize: true` in {config.name}.yaml.")
+
+    return run_customize_script(script, target)
+
+
+def _drop_deleted_pages_from_stats(stats: BuildStats, deleted: list[str]) -> None:
+    """build_site counted per-page findings (unresolved references, forms
+    removed, search coverage) on pages customize.py has since deleted. Left
+    in, the cleanup checklist and owner-tasks would ask someone to fix a
+    page that no longer exists, and an unresolved link on it would still
+    fail the build. Findings inside elements a script *removed* are left
+    as they are: tracing those back is more machinery than they're worth."""
+    if not deleted:
+        return
+    gone = {"/" + p for p in deleted}
+    kept = [s for s in stats.unresolved_samples if s.get("page_output") not in gone]
+    stats.unresolved -= len(stats.unresolved_samples) - len(kept)
+    stats.unresolved_samples = kept
+    p = stats.policy
+    p.forms_removed_pages = {k: v for k, v in p.forms_removed_pages.items() if v.get("output_path") not in gone}
+    p.search_forms_kept_pages = {
+        k: v for k, v in p.search_forms_kept_pages.items() if v.get("output_path") not in gone
+    }
+    s = stats.search
+    s.pages_without_body_match = [x for x in s.pages_without_body_match if x not in gone]
+    s.pages_excluded_by_config = [x for x in s.pages_excluded_by_config if x not in gone]
+    s.pages_without_form = [x for x in s.pages_without_form if x not in gone]
 
 
 def _confirm_search_with_no_forms(config: SiteConfig, stats: BuildStats, progress: "Progress | None") -> bool:
@@ -1416,7 +1540,9 @@ def run_freeze(config: SiteConfig, project: str) -> int:
         "acquire": lambda: run_acquire(
             config, resume=resume, dry_run=False, offer_followups=False, print_wrapup=False
         ),
-        "build": lambda: run_build(config, None, verify=True, print_wrapup=False),
+        "build": lambda: run_build(
+            config, None, verify=True, print_wrapup=False, interactive=not config.freeze.unattended
+        ),
         # "validate" is handled separately in the loop below (_freeze_validate_step):
         # a checker that can't be obtained is a skipped step, not a failure.
         "diagnose": lambda: run_diagnose(config),

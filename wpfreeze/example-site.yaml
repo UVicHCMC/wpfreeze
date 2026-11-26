@@ -94,9 +94,17 @@ freeze:
   steps: [acquire, build, validate]
   # true makes freeze behave in a real terminal exactly as it does when
   # piped: it never asks a question -- no resume confirmation, no
-  # end-of-run checklinks offer. For a fully hands-off run, set this and
-  # add `checklinks` to steps above.
+  # "run customize.py?" (see `customize` below), no end-of-run checklinks
+  # offer. For a fully hands-off run, set this and add `checklinks` to
+  # steps above.
   unattended: false
+
+# Owner-requested edits to the built site, kept in <output_dir>/customize.py
+# (see "Customizing a build" in the README). true: `build` runs it every
+# time. false: never runs it, never asks. Omitted: `build` asks whenever
+# the file exists, and skips it -- loudly -- when it can't ask. Unquoted
+# true/false only.
+# customize: true
 
 # Content policy for `wpfreeze build` -- what to strip when turning the raw
 # capture into a servable static site. All three default to true: the point
