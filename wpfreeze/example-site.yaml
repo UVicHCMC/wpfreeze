@@ -146,7 +146,8 @@ policy:
   # comment thread, if captured, is still real content someone may want the
   # count for); a "0 comments" blurb is still removed either way, since it's
   # noise, not information. The dead #respond link itself is always fixed,
-  # regardless of this setting.
+  # regardless of this setting. Applies equally to the plain-text
+  # "| N Comments" ending each post's byline in Divi's blog/archive listings.
   strip_comment_counts: true
 
   # Only meaningful when strip_forms would remove a recognized search form

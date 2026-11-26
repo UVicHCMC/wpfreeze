@@ -545,6 +545,33 @@ def _clean_dead_fragment_links(
             stats.dead_fragment_links_removed += 1
 
 
+# The comment count Divi's archive/blog listings print as plain text at the
+# end of each post's byline: `... | <a rel="tag">News</a> | 0 Comments`.
+# Unlike the single-post blurb above it has no link and no class -- it is
+# the byline's last text node -- so nothing ties it to a removed form and
+# _clean_dead_fragment_links never sees it.
+_PLAIN_COMMENT_COUNT_RE = re.compile(r"^\s*[|/•·]\s*(\d+)\s+comments?\s*$", re.IGNORECASE)
+
+
+def _strip_plain_comment_counts(soup: BeautifulSoup, stats: PolicyStats, strip_comment_counts: bool) -> None:
+    """Remove the plain-text "| N Comments" ending a listing's byline, by the
+    same rule as the single-post blurb (see _clean_dead_fragment_links):
+    always when it says 0, and for any count when `strip_comment_counts`.
+    Only the byline's *last* text node, and only when the whole node is
+    separator + count, so a sentence mentioning comments is never touched.
+    """
+    for meta in soup.select(".post-meta"):
+        last = meta.contents[-1] if meta.contents else None
+        if not isinstance(last, NavigableString):
+            continue
+        match = _PLAIN_COMMENT_COUNT_RE.match(str(last))
+        if match is None:
+            continue
+        if strip_comment_counts or int(match.group(1)) == 0:
+            last.extract()
+            stats.comment_count_blurbs_removed += 1
+
+
 # Matched against a link's path, case-insensitively. wp-login.php covers
 # logout too (WordPress routes ?action=logout through the same script).
 _LOGIN_PATH_MARKERS = ("/wp-login.php", "/wp-admin")
@@ -845,6 +872,9 @@ def _strip_forms(soup: BeautifulSoup, policy: "Policy", stats: PolicyStats, page
 
     if removed_ids:
         _clean_dead_fragment_links(soup, removed_ids, stats, policy.strip_comment_counts)
+    # Not gated on removed_ids: a listing page has no comment form of its own
+    # to remove, but with forms stripped site-wide its counts are just as dead.
+    _strip_plain_comment_counts(soup, stats, policy.strip_comment_counts)
 
     if newsletter_captions_removed:
         stats.newsletter_captions_removed += newsletter_captions_removed

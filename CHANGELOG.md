@@ -5,6 +5,18 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-11-26
+
+### Fixed
+
+- **Comment counts in Divi's blog and archive listings are now removed
+  too.** Each post in those listings ends its byline with a plain-text
+  `| 0 Comments`. The build removed the "N comments" count only from a
+  post's own page, where it links to the comment form, so the listing
+  counts survived. That included "0 Comments", which is documented as
+  always removed. They now follow the same rule: a zero count always goes,
+  and every count goes with `strip_comment_counts: true`, the default.
+
 ## [1.3.0] — 2026-11-26
 
 ### Added

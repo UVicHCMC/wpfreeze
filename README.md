@@ -710,7 +710,9 @@ touching the capture, so re-running is always safe. In that tree:
   at that removed id (WordPress's own "N comments" post-meta link) is
   fixed too; the "N comments" text itself is removed by default, or kept
   for a nonzero count when `strip_comment_counts: false` — see
-  `wpfreeze/example-site.yaml`.
+  `wpfreeze/example-site.yaml`. The same rule covers the plain-text
+  ` | N Comments` that Divi's blog and archive listings put at the end of
+  each post's byline.
 - **WordPress's password-protected-post prompt is detected and removed
   like any other form** — via core's own fixed `class="post-password-form"`
   (baked into `get_the_password_form()`, theme-independent), and reported

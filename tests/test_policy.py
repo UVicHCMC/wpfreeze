@@ -877,3 +877,36 @@ def test_safelink_unwrapping_can_be_turned_off():
     assert stats.safelinks_unwrapped == 0
     assert "safelinks" in soup.find("a")["href"]
     assert Policy.from_config({"unwrap_safelinks": False}).unwrap_safelinks is False
+
+
+# --- plain-text comment counts in listing bylines (Divi archives) ----------
+
+_LISTING = (
+    '<html><body><p class="post-meta">by <span class="author vcard"><a href="a.html">Admin</a></span>'
+    ' | <span class="published">Oct 25, 2022</span> | <a href="c.html" rel="tag">News</a>{tail}</p>'
+    "</body></html>"
+)
+
+
+def test_listing_byline_zero_count_always_removed():
+    out, stats = _apply(_LISTING.format(tail=" | 0 Comments"), Policy(strip_comment_counts=False))
+    assert "Comments" not in out
+    assert out.count("News</a></p>") == 1
+    assert stats.comment_count_blurbs_removed == 1
+
+
+def test_listing_byline_nonzero_count_follows_strip_comment_counts():
+    out, _ = _apply(_LISTING.format(tail=" | 9 Comments"), Policy(strip_comment_counts=False))
+    assert "9 Comments" in out
+    out, stats = _apply(_LISTING.format(tail=" | 9 Comments"), Policy(strip_comment_counts=True))
+    assert "Comments" not in out and stats.comment_count_blurbs_removed == 1
+    out, _ = _apply(_LISTING.format(tail=" | 1 comment"), Policy(strip_comment_counts=True))
+    assert "comment" not in out.split("News</a>")[1]
+
+
+def test_listing_byline_other_text_is_untouched():
+    for tail in (" | read the comments", " | 3 Comments on this", ""):
+        out, stats = _apply(_LISTING.format(tail=tail), Policy(strip_comment_counts=True))
+        assert stats.comment_count_blurbs_removed == 0
+        if tail:
+            assert tail.strip(" |") in out
