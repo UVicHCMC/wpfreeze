@@ -5,6 +5,16 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.5] — 2026-11-26
+
+### Fixed
+
+- **A rebuild now refreshes the owner worksheet.** `owner-tasks.html` uses
+  both the link check's results and the build report, but only
+  `checklinks` regenerated it. After a rebuild, the worksheet meant for the
+  site owner could be out of date while looking current. Once `checklinks`
+  has run at least once, every `build` now refreshes it too.
+
 ## [1.3.4] — 2026-11-26
 
 ### Fixed

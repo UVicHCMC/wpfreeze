@@ -2424,3 +2424,22 @@ def test_recheck_is_still_accepted_and_says_it_is_no_longer_needed(tmp_path, mon
     assert main(["checklinks", "examplesite", "--recheck", "--no-owner-tasks"]) == 1
     assert "--recheck is no longer needed" in capsys.readouterr().out
     assert [link.url for link in seen] == ["https://gone.example/x"]
+
+
+def test_build_refreshes_owner_tasks_once_checklinks_has_run(tmp_path: Path, capsys):
+    """owner-tasks.html reads build-report.json too, so a rebuild must
+    refresh it -- otherwise the worksheet emailed to the owner is stale."""
+    from wpfreeze.cli import run_build
+
+    output_dir = tmp_path / "out"
+    config = replace(_minimal_capture(output_dir), name="ex")
+    run_build(config, None, verify=False)
+    assert not (output_dir / "owner-tasks.html").exists()  # no checklinks yet: nothing to refresh
+
+    (output_dir / "broken-external-links.json").write_text(
+        json.dumps({"base_url": "https://example.com/", "checked_at": "2026-11-26T00:00:00+00:00", "results": []}),
+        encoding="utf-8",
+    )
+    run_build(config, None, verify=False)
+    assert (output_dir / "owner-tasks.html").exists()
+    assert "Owner worksheet:" in capsys.readouterr().out

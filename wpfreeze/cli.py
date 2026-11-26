@@ -1036,6 +1036,13 @@ def _run_build_body(
 
     if write_todo:
         _announce_cleanup_todo(config.output_dir)
+        # owner-tasks.html reads build-report.json (its unresolved-reference
+        # section) as well as checklinks' results, so a rebuild leaves it
+        # stale -- and it is the one report that gets emailed to someone.
+        # Only once checklinks has run: without its results there is no
+        # worksheet to refresh.
+        if (config.output_dir / "broken-external-links.json").exists():
+            _announce_owner_tasks(config)
 
     # Unresolved references, broken local links, and a failed search index
     # are all real (if partial) failures to finish the job, and mirror
@@ -1452,13 +1459,11 @@ def _announce_owner_tasks(config: SiteConfig) -> None:
     where it landed -- the same contract as _announce_cleanup_todo, for
     the same reason.
 
-    This is the only place it can sensibly happen automatically:
-    `owner-tasks` reads broken-external-links.json, which only checklinks
-    produces, and checklinks scans the *built* site, so it necessarily
-    runs after `build`. Regenerating here also closes the staleness hole
-    -- re-checking links without rebuilding the worksheet would otherwise
-    leave a stale worksheet that looks current, and the whole point of it
-    is that it gets emailed to someone.
+    Called after checklinks, and after every build once checklinks has run
+    at least once: the worksheet reads broken-external-links.json (only
+    checklinks produces it) *and* build-report.json, so either one changing
+    leaves a worksheet that looks current but isn't -- and the whole point
+    of it is that it gets emailed to someone.
 
     Never raises: a missing build-report or manifest is already handled as
     an un-run section, and anything else is a report we simply don't write
