@@ -1417,7 +1417,16 @@ def run_checklinks(
         return 2
 
     if not links:
+        # Still record the (empty) result: "checked, nothing to check" must
+        # look different on disk from "never checked", or every later look
+        # at this project (next-step suggestions, the owner worksheet) would
+        # keep asking for a check that has nothing to do.
+        checked_at = datetime.now(timezone.utc).isoformat()
+        write_report([], config.output_dir, checked_at)
+        write_results_json([], config.output_dir, config.base_url, checked_at)
         print("No external links to check.")
+        if write_owner_tasks:
+            _announce_owner_tasks(config)
         return 0
 
     summary = RunSummary(project=config.name, base_url=config.base_url, output_dir=config.output_dir)

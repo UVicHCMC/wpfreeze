@@ -2443,3 +2443,16 @@ def test_build_refreshes_owner_tasks_once_checklinks_has_run(tmp_path: Path, cap
     run_build(config, None, verify=False)
     assert (output_dir / "owner-tasks.html").exists()
     assert "Owner worksheet:" in capsys.readouterr().out
+
+
+def test_checklinks_with_no_external_links_records_an_empty_result(tmp_path: Path, capsys):
+    """"Checked, nothing to check" must differ on disk from "never checked"."""
+    from wpfreeze.cli import run_build, run_checklinks
+
+    output_dir = tmp_path / "out"
+    config = replace(_minimal_capture(output_dir), name="ex")
+    run_build(config, None, verify=False)
+    assert run_checklinks(config, None) == 0
+    data = json.loads((output_dir / "broken-external-links.json").read_text())
+    assert data["results"] == []
+    assert "No external links to check." in capsys.readouterr().out

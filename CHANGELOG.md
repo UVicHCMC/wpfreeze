@@ -5,6 +5,15 @@ versioning is [semantic](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.6] — 2026-11-26
+
+### Fixed
+
+- **`checklinks` on a site with no external links now records that it
+  ran.** It printed "No external links to check." and wrote nothing, which
+  on disk looks the same as never having checked. It now writes empty
+  results and refreshes the owner worksheet like any other check.
+
 ## [1.3.5] — 2026-11-26
 
 ### Fixed
